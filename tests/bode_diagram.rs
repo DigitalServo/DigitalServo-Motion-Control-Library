@@ -1,6 +1,6 @@
-use mclib::discretize::bilinear_transform;
-use mclib::logger::DataStorage;
-use mclib::{BodeDiagramPlotter, TransferFunction};
+use dsmc::discretize::bilinear_transform;
+use dsmc::logger::DataStorage;
+use dsmc::{BodeDiagramPlotter, TransferFunction};
 
 #[test]
 fn test_bode_plotter_s() {

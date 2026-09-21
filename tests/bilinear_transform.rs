@@ -1,4 +1,4 @@
-use mclib::{
+use dsmc::{
     BodeDiagramPlotter,
     discretize::bilinear_transform::{discretize, DiscretizedSystem},
     logger::DataStorage,

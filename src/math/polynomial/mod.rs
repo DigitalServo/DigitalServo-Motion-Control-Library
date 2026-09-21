@@ -40,11 +40,13 @@ impl<T: Float + AddAssign> Add for &Polynomial<T> {
         let max_len = self.len().max(rhs.len());
         let mut result = vec![T::zero(); max_len];
 
-        for (i, &v) in self.iter().enumerate() {
-            if i < max_len { result[i] += v; }
+        // Coefficients are descending-order (index 0 = highest degree), so operands of
+        // different lengths must be aligned by degree from the constant-term end.
+        for (slot, &v) in result.iter_mut().rev().zip(self.iter().rev()) {
+            *slot += v;
         }
-        for (i, &v) in rhs.iter().enumerate() {
-            if i < max_len { result[i] += v; }
+        for (slot, &v) in result.iter_mut().rev().zip(rhs.iter().rev()) {
+            *slot += v;
         }
         Polynomial(result)
     }
@@ -54,12 +56,12 @@ impl<T: Float + AddAssign> AddAssign<&Polynomial<T>> for Polynomial<T> {
     fn add_assign(&mut self, rhs: &Polynomial<T>) {
         let max_len = self.len().max(rhs.len());
         if self.len() < max_len {
-            self.resize(max_len, T::zero());
+            // Prepend (not append) zeros, since index 0 is the highest degree.
+            self.0.splice(0..0, std::iter::repeat(T::zero()).take(max_len - self.len()));
         }
+        let offset = self.len() - rhs.len();
         for (i, &v) in rhs.iter().enumerate() {
-            if i < self.len() {
-                self[i] += v;
-            }
+            self[offset + i] += v;
         }
     }
 }

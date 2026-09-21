@@ -1,6 +1,6 @@
 use std::f64::consts::PI;
 
-use mclib::{
+use dsmc::{
     TransferFunction,
     discretize::{bilinear_transform, exact_discretize::{DiscretizedSystem, LiftedDiscretizedSystem}},
     logger::DataStorage,

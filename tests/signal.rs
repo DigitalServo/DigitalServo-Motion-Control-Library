@@ -1,8 +1,8 @@
-use mclib::factorial;
+use dsmc::factorial;
 
 #[test]
 fn test_delayer() {
-    use mclib::signal::Delayer;
+    use dsmc::signal::Delayer;
     let mut delayer = Delayer::new(5);
     for i in 0..20 {
         let out = delayer.output(i);
@@ -12,8 +12,8 @@ fn test_delayer() {
 
 #[test]
 fn test_differentiator() {
-    use mclib::logger::DataStorage;
-    use mclib::signal::Differentiator;
+    use dsmc::logger::DataStorage;
+    use dsmc::signal::Differentiator;
 
     let ts: f64 = 1e-5;
     let mut t: f64 = 0.0;

@@ -16,3 +16,5 @@ pub mod trajectory;
 pub mod signal;
 
 pub mod system_identification;
+
+pub mod status;

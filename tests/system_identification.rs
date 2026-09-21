@@ -1,6 +1,6 @@
 #[test]
 fn test_lsm_arx() {
-    use mclib::{TransferFunction, discretize::bilinear_transform, system_identification::{kalman_filter, lsm}};
+    use dsmc::{TransferFunction, discretize::bilinear_transform, system_identification::{kalman_filter, lsm}};
 
     let ts: f64 = 1e-3;
 
@@ -37,7 +37,7 @@ fn test_lsm_arx() {
 
 #[test]
 fn test_lsm_polynomial() {
-    use mclib::system_identification::{kalman_filter, lsm};
+    use dsmc::system_identification::{kalman_filter, lsm};
 
     let dx: f64 = 1e-3;
 
@@ -65,8 +65,8 @@ fn test_lsm_polynomial() {
 fn test_levy() {
 
     use nalgebra::Complex;
-    use mclib::FrequencyResponse;
-    use mclib::system_identification::frequency_response::levy;
+    use dsmc::FrequencyResponse;
+    use dsmc::system_identification::frequency_response::levy;
 
     fn system(omega: f64) -> Complex<f64> {
         let g = Complex::new(100.0, 0.0);
@@ -96,7 +96,7 @@ fn test_levy() {
 #[test]
 fn test_vector_fitting() {
     use std::f64::consts::PI;
-    use mclib::{FrequencyResponse, TransferFunction, system_identification::frequency_response::vector_fitting::{VectorFittingOptions, VectorFittingResult, identify}};
+    use dsmc::{FrequencyResponse, TransferFunction, system_identification::frequency_response::vector_fitting::{VectorFittingOptions, VectorFittingResult, identify}};
     use num_complex::Complex64;
 
     // poles and residues of the true function
@@ -162,13 +162,13 @@ fn test_vector_fitting() {
 #[test]
 fn test_identification_from_simulation() {
     use num_complex::Complex;
-    use mclib::TransferFunction;
-    use mclib::discretize::bilinear_transform;
-    use mclib::FrequencyResponse;
-    use mclib::fft::{fft, welch};
-    use mclib::logger::DataStorage;
-    use mclib::system_identification::{kalman_filter,lsm};
-    use mclib::BodeDiagramPlotter;
+    use dsmc::TransferFunction;
+    use dsmc::discretize::bilinear_transform;
+    use dsmc::FrequencyResponse;
+    use dsmc::fft::{fft, welch};
+    use dsmc::logger::DataStorage;
+    use dsmc::system_identification::{kalman_filter,lsm};
+    use dsmc::BodeDiagramPlotter;
 
     let iterations = 10000;
 
@@ -274,7 +274,7 @@ fn test_identification_from_simulation() {
         out3.add(&[omega, v1.gain, v1.phase, v2.gain, v2.phase]).unwrap();
     }
 
-    // use mclib::system_identification::frequency_response::vector_fitting::{identify, VectorFittingOptions, VectorFittingResult};
+    // use dsmc::system_identification::frequency_response::vector_fitting::{identify, VectorFittingOptions, VectorFittingResult};
 
     // let mut rms = f64::INFINITY;
     // let mut ret: Option<(usize, VectorFittingResult<f64>)> = None;

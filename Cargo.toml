@@ -1,11 +1,11 @@
 [package]
-name = "mclib"
+name = "dsmc"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 csv = "1.4.0"
-nalgebra = "0.34.2"
+nalgebra = "0.35.0"
 num-complex = "0.4.6"
 num-traits = "0.2.19"
 rustfft = "6.4.1"

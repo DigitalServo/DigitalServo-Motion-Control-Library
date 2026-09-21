@@ -1,7 +1,7 @@
 use std::time::Instant;
 use serde::Serialize;
 
-use mclib::logger::{DataStorage, serializer};
+use dsmc::logger::{DataStorage, serializer};
 
 #[cfg(test)]
 #[derive(Serialize)]

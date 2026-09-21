@@ -1,10 +1,12 @@
 use nalgebra::Complex;
 
 mod bode_diagram;
+mod nyquist;
 mod statistics;
 pub mod fft;
 
 pub use bode_diagram::BodeDiagramPlotter;
+pub use nyquist::NyquistPlotter;
 pub use statistics::Statistics;
 
 use num_traits::Float;

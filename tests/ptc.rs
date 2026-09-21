@@ -1,4 +1,4 @@
-use mclib::{TransferFunction, discretize::exact_discretize::{DiscretizedSystem, LiftedDiscretizedSystem}, logger::DataStorage, trajectory};
+use dsmc::{TransferFunction, discretize::exact_discretize::{DiscretizedSystem, LiftedDiscretizedSystem}, logger::DataStorage, trajectory};
 
 #[test]
 fn ptc() {

@@ -1,4 +1,4 @@
-use mclib::{logger::DataStorage, trajectory};
+use dsmc::{logger::DataStorage, trajectory};
 
 #[test]
 fn test_trajectory() {

@@ -1,4 +1,4 @@
-use mclib::{
+use dsmc::{
     StateSpace, TransferFunction, discretize::exact_discretize::{DiscretizedSystem, discretize_ssr}, logger::DataStorage
 };
 use nalgebra::dmatrix;
