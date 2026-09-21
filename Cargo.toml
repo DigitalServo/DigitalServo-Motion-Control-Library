@@ -2,6 +2,13 @@
 name = "dsmc"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+author = "Digitalservo"
+about = "Digitalservo Motion Control Library"
+description = "Digitalservo Motion Control Library"
+readme = "README.md"
+homepage = "https://github.com/DigitalServo/DigitalServo-Motion-Control-Library"
+repository = "https://github.com/DigitalServo/DigitalServo-Motion-Control-Library"
 
 [dependencies]
 csv = "1.4.0"
