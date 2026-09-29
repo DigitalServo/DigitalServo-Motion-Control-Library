@@ -1,4 +1,4 @@
-use dsmc::{dka_method, vieta_formula};
+use dsmc::{TransferFunction, dka_method, vieta_formula};
 
 #[test]
 fn test_vieta_formula() {
@@ -50,4 +50,59 @@ fn test_search_roots() {
 
     let roots = dka_method(&coeffs);
     println!("Roots: {:#.2?}", roots);
+}
+
+
+#[test]
+fn test_pz_map() {
+    let tf = TransferFunction::<f64>::new(
+        &[1.0, 10.0, 100.0],
+        &[1.0, 20.0, 100.0],
+    );
+
+    let pz_map = tf.pz_map();
+    println!("{:.2}", pz_map);
+}
+
+#[test]
+fn test_transfer_function_parser() {
+    use dsmc::tf;
+
+    let expected = TransferFunction::<f64>::new(&[1.0, 10.0, 10.0], &[1.0, 20.0, 100.0]);
+
+    let g: TransferFunction<f64> = tf!((s^2 + 10.0 * s + 10.0) / (s^2 + 20.0 * s + 100.0));
+    assert_eq!(g.numerator, expected.numerator);
+    assert_eq!(g.denominator, expected.denominator);
+
+    let g = TransferFunction::<f64>::parse("(s^2 + 10s + 10) / (s + 10)^2").unwrap();
+    assert_eq!(g.numerator, expected.numerator);
+    assert_eq!(g.denominator, expected.denominator);
+
+    // Pole-zero cancellation: (s+1)/((s+1)(s+2)) = 1/(s+2)
+    let g: TransferFunction<f64> = "(s + 1) / ((s + 1)(s + 2)(s + 4))".parse().unwrap();
+    println!("{:.2}", g);
+
+    assert!(TransferFunction::<f64>::parse("1 / 0").is_err());
+    assert!(TransferFunction::<f64>::parse("(s + 1").is_err());
+    assert!(TransferFunction::<f64>::parse("s^0.5").is_err());
+    assert!(TransferFunction::<f64>::parse("x + 1").is_err());
+}
+
+#[test]
+fn test_transfer_function_display() {
+    let g = TransferFunction::<f64>::parse("1 / (s + 2)").unwrap();
+    assert_eq!(g.to_string(), "1.0 / (s + 2.0)");
+
+    let g = TransferFunction::<f64>::parse("(s^2 - 3s) / (2s^2 + 20s + 100)").unwrap();
+    println!("{}", g);
+    println!("{:.2}", g);
+
+    let g = TransferFunction::<f64>::parse("-s^2 + 1").unwrap();
+    assert_eq!(g.to_string(), "-s^2 + 1.0");
+
+    // Round trip
+    let g = TransferFunction::<f64>::parse("(s^2 + 10s + 10) / (s^2 + 20s + 100)").unwrap();
+    let h = TransferFunction::<f64>::parse(&g.to_string()).unwrap();
+    assert_eq!(g.numerator, h.numerator);
+    assert_eq!(g.denominator, h.denominator);
 }

@@ -3,20 +3,22 @@ use num_complex::Complex;
 use num_traits::Float;
 use std::ops::{Add, AddAssign, Mul};
 
+mod display;
+mod parser;
+pub use parser::TransferFunctionParseError;
+
 #[derive(Clone, Debug)]
 pub struct TransferFunction<T> {
     pub numerator: Polynomial<T>,
     pub denominator: Polynomial<T>,
 }
 
-impl<T: Clone> TransferFunction<T> {
-    pub fn new(numerator: &[T], denominator: &[T]) -> Self {
-        Self {
-            numerator: Polynomial(numerator.to_vec()),
-            denominator: Polynomial(denominator.to_vec()),
-        }
-    }
+#[derive(Clone, Debug)]
+pub struct PzMap<T> {
+    pub poles: Vec<Complex<T>>,
+    pub zeros: Vec<Complex<T>>,
 }
+
 
 impl<T: Float + AddAssign> TransferFunction<T> {
     /// Cancel poles/zeros shared by the numerator and denominator (pole-zero cancellation).
@@ -107,5 +109,39 @@ impl<T: Float + AddAssign> Add for TransferFunction<T> {
     type Output = TransferFunction<T>;
     fn add(self, rhs: TransferFunction<T>) -> TransferFunction<T> {
         &self + &rhs
+    }
+}
+
+impl<T: Clone + Float + AddAssign> TransferFunction<T> {
+    pub fn new(numerator: &[T], denominator: &[T]) -> Self {
+        let tf = Self {
+            numerator: Polynomial(numerator.to_vec()),
+            denominator: Polynomial(denominator.to_vec()),
+        };
+
+        tf.reduced()
+    }
+
+    pub fn pz_map(&self) -> PzMap<T> {
+        let tf = self.reduced();
+
+        let (denom, numer) = {
+            let denom_complex = tf.denominator
+                .iter()
+                .map(|&x| Complex::from(x))
+                .collect::<Vec<Complex<T>>>();
+
+            let numer_complex = tf.numerator
+                .iter()
+                .map(|&x| Complex::from(x))
+                .collect::<Vec<Complex<T>>>();
+
+            (Polynomial(denom_complex), Polynomial(numer_complex))
+        };
+
+        PzMap {
+            poles: dka_method(&denom).unwrap_or(vec![]),
+            zeros: dka_method(&numer).unwrap_or(vec![]),
+        }
     }
 }
