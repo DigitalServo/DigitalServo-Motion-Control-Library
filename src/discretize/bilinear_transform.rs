@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use std::ops::{AddAssign, MulAssign};
 use num_traits::Float;
 
-use crate::{Polynomial, TransferFunction};
+use crate::{Continuous, Discrete, Polynomial, TransferFunction};
 use crate::math::binomial_coefficient;
 
 /// Descending order of powers for (1 + x)^n
@@ -32,10 +32,10 @@ fn binom_one_minus_x<T: Float>(n: usize) -> Polynomial<T> {
 pub fn discretize<T, S>(
     tf: S,
     ts: T,
-) -> TransferFunction<T>
+) -> TransferFunction<T, Discrete>
 where
     T: Float + AddAssign + MulAssign,
-    S: Borrow<TransferFunction<T>>
+    S: Borrow<TransferFunction<T, Continuous>>
 {
     let tf = tf.borrow();
 
@@ -67,7 +67,7 @@ where
     numer_z *= scale;
     denom_z *= scale;
 
-    TransferFunction { numerator: numer_z, denominator: denom_z }
+    TransferFunction::from_polynomials(numer_z, denom_z)
 }
 
 /// y\[k\] = (bn\[0\] * x\[k\] + bn\[1\] * x\[k-1\] + ... + bn\[N\] * x\[k-N\]) - (an\[0\] * y\[k-1\] + an\[1\] * y\[k-2\] - ... + an\[N\] * y\[k-N-1\])
@@ -80,7 +80,7 @@ pub struct DiscretizedSystem<T> {
 }
 
 impl <T:Float + AddAssign + MulAssign> DiscretizedSystem<T> {
-    pub fn new<S: Borrow<TransferFunction<T>>>(tf: S, ts: T) -> Self {
+    pub fn new<S: Borrow<TransferFunction<T, Continuous>>>(tf: S, ts: T) -> Self {
 
         let tf_z = discretize(tf, ts);
         let numer_order = tf_z.numerator.len() - 1;
@@ -97,9 +97,9 @@ impl <T:Float + AddAssign + MulAssign> DiscretizedSystem<T> {
         Self { an, bn, xz, yz, output: T::zero() }
     }
 
-    pub fn from_tf_z<S: Borrow<TransferFunction<T>>>(tf_z: S) -> Self {
+    pub fn from_tf_z<S: Borrow<TransferFunction<T, Discrete>>>(tf: S) -> Self {
 
-        let tf_z = tf_z.borrow();
+        let tf_z = tf.borrow();
         let numer_order = tf_z.numerator.len() - 1;
         let denom_order = tf_z.denominator.len() - 1;
         let relative_order = denom_order - numer_order;

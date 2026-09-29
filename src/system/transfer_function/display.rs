@@ -1,11 +1,12 @@
 //! `Display` implementations for `TransferFunction` and `PzMap`.
 
 use super::{PzMap, TransferFunction};
+use crate::Domain;
 use crate::Polynomial;
 use num_complex::Complex;
 use num_traits::Float;
 
-impl<T: Float + std::fmt::Display> std::fmt::Display for PzMap<T> {
+impl<T: Float + std::fmt::Display, D> std::fmt::Display for PzMap<T, D> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Honor the precision given by the caller (e.g. `{:.2}`).
         let write_complex = |f: &mut std::fmt::Formatter<'_>, c: &Complex<T>| {
@@ -27,11 +28,11 @@ impl<T: Float + std::fmt::Display> std::fmt::Display for PzMap<T> {
     }
 }
 
-impl<T: Float + std::fmt::Display> std::fmt::Display for TransferFunction<T> {
-    /// e.g. `1.0 / (s + 2.0)`. The output can be read back by `TransferFunction::parse`.
+impl<T: Float + std::fmt::Display, D: Domain> std::fmt::Display for TransferFunction<T, D> {
+    /// e.g. `1.0 / (s + 2.0)` or `0.5 / (z - 0.5)`. The output can be read back with `str::parse` (`FromStr`).
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let numer = format_polynomial(&self.numerator, f.precision());
-        let denom = format_polynomial(&self.denominator, f.precision());
+        let numer = format_polynomial(&self.numerator, D::VARIABLE, f.precision());
+        let denom = format_polynomial(&self.denominator, D::VARIABLE, f.precision());
         let paren = |s: String, terms: usize| if terms > 1 { format!("({})", s) } else { s };
 
         let denom_terms = count_terms(&self.denominator);
@@ -49,10 +50,11 @@ fn count_terms<T: Float>(p: &Polynomial<T>) -> usize {
     p.iter().filter(|c| !c.is_zero()).count()
 }
 
-/// Descending polynomial in `s`, e.g. `s^2 - 3.0 * s + 2.0`. Without an explicit precision,
+/// Descending polynomial in `variable`, e.g. `s^2 - 3.0 * s + 2.0`. Without an explicit precision,
 /// coefficients get a trailing `.0` when integral, so that `1.0` is printed as `1.0` rather than `1`.
 fn format_polynomial<T: Float + std::fmt::Display>(
     p: &Polynomial<T>,
+    variable: char,
     precision: Option<usize>,
 ) -> String {
     let fmt_num = |c: T| match precision {
@@ -76,8 +78,8 @@ fn format_polynomial<T: Float + std::fmt::Display>(
 
         let var = match power {
             0 => String::new(),
-            1 => "s".to_string(),
-            n => format!("s^{}", n),
+            1 => variable.to_string(),
+            n => format!("{}^{}", variable, n),
         };
         let term = if power == 0 {
             fmt_num(abs)

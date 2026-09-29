@@ -2,6 +2,9 @@ mod error;
 pub use error::StateSpaceError;
 
 use nalgebra::DMatrix;
+use std::marker::PhantomData;
+
+use crate::Continuous;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct StateSpaceOrder {
@@ -10,16 +13,19 @@ pub struct StateSpaceOrder {
     pub output: usize,
 }
 
+/// `D` tells whether this is a continuous-time system (`dx/dt = Ax + Bu`, `Continuous`, the default)
+/// or a discrete-time one (`x[k+1] = Ax[k] + Bu[k]`, `Discrete`).
 #[derive(Clone, Debug)]
-pub struct StateSpace<T> {
+pub struct StateSpace<T, D = Continuous> {
     pub a: DMatrix<T>,
     pub b: DMatrix<T>,
     pub c: DMatrix<T>,
     pub d: DMatrix<T>,
     pub order: StateSpaceOrder,
+    _domain: PhantomData<D>,
 }
 
-impl<T> StateSpace<T> {
+impl<T, D> StateSpace<T, D> {
     pub fn new(a: DMatrix<T>, b: DMatrix<T>, c: DMatrix<T>, d: DMatrix<T>) -> Result<Self, StateSpaceError> {
 
         let state_order = a.nrows();
@@ -66,6 +72,6 @@ impl<T> StateSpace<T> {
             output: c.nrows(),
         };
 
-        Ok(Self {a, b, c, d, order})
+        Ok(Self {a, b, c, d, order, _domain: PhantomData})
     }
 }

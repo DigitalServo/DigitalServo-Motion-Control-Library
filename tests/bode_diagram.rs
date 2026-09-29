@@ -10,7 +10,7 @@ fn test_bode_plotter_s() {
 
     // 1st order LPF
     let g = 2.0 * std::f64::consts::PI * 10.0;
-    let tf_s = TransferFunction::new(&[g * g], &[1.0, 0.01 * g, g * g]);
+    let tf_s = TransferFunction::continuous(&[g * g], &[1.0, 0.01 * g, g * g]);
     let responses = bode_plotter.frequency_response_s(&tf_s);
 
     for res in responses {
@@ -30,9 +30,9 @@ fn test_bode_plotter_z() {
 
     // 1st order LPF
     let g = 2.0 * std::f64::consts::PI * 10.0;
-    // let tf_z = TransferFunction::new(&[g * ts, g * ts], &[2.0 + g * ts, -2.0 + g * ts]);
+    // let tf_z = TransferFunction::discrete(&[g * ts, g * ts], &[2.0 + g * ts, -2.0 + g * ts]);
 
-    let tf_s = TransferFunction::new(&[g * g], &[1.0, 0.01 * g, g * g]);
+    let tf_s = TransferFunction::continuous(&[g * g], &[1.0, 0.01 * g, g * g]);
     let tf_z = bilinear_transform::discretize(tf_s, ts);
 
     let responses = bode_plotter.frequency_response_z(&tf_z, ts);

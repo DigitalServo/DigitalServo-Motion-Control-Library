@@ -20,8 +20,8 @@ fn test_nyquist_plot() {
         let plotter_n = NyquistPlotter::<f64>::new(10.0, 2000.0, 0.01);
         let plotter_b = BodeDiagramPlotter::<f64>::new(0.1, 1000.0, 0.01, true);
 
-        let tf_main = TransferFunction::new(&[alpha * kd, alpha * kp, alpha * ki], &[1.0, 0.0]);
-        let tf_pl = TransferFunction::new(&[1.0], &[1.0, 0.0, 0.0]);
+        let tf_main = TransferFunction::continuous(&[alpha * kd, alpha * kp, alpha * ki], &[1.0, 0.0]);
+        let tf_pl = TransferFunction::continuous(&[1.0], &[1.0, 0.0, 0.0]);
         let tf = tf_main * tf_pl;
         {
             let responses = plotter_n.plot(&tf);

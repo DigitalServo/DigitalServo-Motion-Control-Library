@@ -2,7 +2,7 @@ use std::ops::{AddAssign, DivAssign, MulAssign, SubAssign};
 use nalgebra::{DMatrix, DVector, Scalar};
 use num_traits::Float;
 
-use crate::TransferFunction;
+use crate::{Discrete, TransferFunction};
 
 pub struct KalmanFilter<T>
 {
@@ -68,7 +68,7 @@ impl<T: Float + AddAssign + SubAssign + MulAssign + DivAssign + Scalar> KalmanFi
         self.covariance -= (&x * &x.transpose()) / uncertainty_observe;
     }
 
-    pub fn identify(&self) -> TransferFunction<T> {
+    pub fn identify(&self) -> TransferFunction<T, Discrete> {
         let mut denom = Vec::<T>::with_capacity(self.state_order + 1);
         let mut numer = Vec::<T>::with_capacity(self.input_order + 1);
 
@@ -80,7 +80,7 @@ impl<T: Float + AddAssign + SubAssign + MulAssign + DivAssign + Scalar> KalmanFi
             numer.push(self.parameter[i + self.state_order]);
         }
 
-        TransferFunction::new(&numer, &denom)
+        TransferFunction::discrete(&numer, &denom)
     }
 
 }

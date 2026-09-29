@@ -2,7 +2,7 @@ use std::ops::{AddAssign, MulAssign};
 use nalgebra::{ComplexField, DMatrix, DVector};
 use num_traits::Float;
 
-use crate::TransferFunction;
+use crate::{Discrete, TransferFunction};
 
 //Use sequential data
 pub struct DataBuffer<T> {
@@ -51,7 +51,7 @@ impl<T: Float + AddAssign + MulAssign + ComplexField> DataBuffer<T> {
         self.phi_sum += &phi * &phi.transpose();
     }
 
-    pub fn identify(&self) -> Option<TransferFunction<T>> {
+    pub fn identify(&self) -> Option<TransferFunction<T, Discrete>> {
         match self.phi_sum.clone().try_inverse() {
             Some(res) => {
                 let theta = &res * &self.psi_sum;
@@ -67,7 +67,7 @@ impl<T: Float + AddAssign + MulAssign + ComplexField> DataBuffer<T> {
                     numer.push(theta[i + self.state_order]);
                 }
 
-                Some(TransferFunction::new(&numer, &denom))
+                Some(TransferFunction::discrete(&numer, &denom))
             }
             None => None,
         }

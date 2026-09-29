@@ -1,8 +1,5 @@
 use dsmc::{
-    BodeDiagramPlotter,
-    discretize::bilinear_transform::{discretize, DiscretizedSystem},
-    logger::DataStorage,
-    TransferFunction
+    BodeDiagramPlotter, TransferFunction, discretize::bilinear_transform::{DiscretizedSystem, discretize}, logger::DataStorage, tf
 };
 
 #[test]
@@ -12,7 +9,7 @@ fn test_bilinear_transform() {
 
     let g = 2.0 * std::f64::consts::PI * 10.0;
 
-    let tf_s = TransferFunction::new(&[g * g],  &[1.0, 0.01 * g, g * g]);
+    let tf_s = TransferFunction::continuous(&[g * g],  &[1.0, 0.01 * g, g * g]);
     let tf_z = discretize(&tf_s, ts);
 
     let bode_plotter = BodeDiagramPlotter::<f64>::new(0.0, 1000.0, 0.01, true);
@@ -36,7 +33,7 @@ fn test_bilinear_transform_filter() {
 
     let g = 10.0;
 
-    let tf = TransferFunction::new(&[g * g], &[1.0, 2.0 * g, g * g]);
+    let tf = TransferFunction::continuous(&[g * g], &[1.0, 2.0 * g, g * g]);
 
     let mut filter = DiscretizedSystem::new(&tf, ts);
 
@@ -50,4 +47,16 @@ fn test_bilinear_transform_filter() {
     }
 
     storage.close().unwrap();
+}
+
+
+#[test]
+fn test_discretize_filter() {
+
+    let ts = 1e-4;
+
+    let tf = tf!("10.0 / (s + 10.0)", 's');
+    let tf_d = discretize(&tf, ts);
+
+    println!("{}", tf_d);
 }

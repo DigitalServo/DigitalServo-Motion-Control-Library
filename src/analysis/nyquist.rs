@@ -3,7 +3,7 @@ use std::borrow::Borrow;
 use num_traits::{float::FloatConst, Float, NumAssignOps, One, ToPrimitive};
 use num_complex::Complex;
 
-use crate::TransferFunction;
+use crate::{Continuous, TransferFunction};
 
 pub struct NyquistPlotter<T> {
     freq_from: T,
@@ -25,7 +25,7 @@ where
 
     /// Calculate the frequency response of a polynomial in the s-domain.
     /// If polynomial is an*s^n +an-1*s^(n-1) + ... + a0, coefficient should be set \[an, an-1, ..., a0\]
-    pub fn plot<S: Borrow<TransferFunction<T>>>(&self, tf: S) -> Vec<Complex<T>> {
+    pub fn plot<S: Borrow<TransferFunction<T, Continuous>>>(&self, tf: S) -> Vec<Complex<T>> {
 
         let tf = tf.borrow();
 

@@ -55,7 +55,7 @@ fn test_exact_discretize_system_tf() {
     let mut storage = DataStorage::new("./out/exact_discretized_tf_out.csv", ',', false).unwrap();
 
     let g = 10.0;
-    let system = TransferFunction::new(&[g * g], &[1.0, 2.0 * g, g * g]);
+    let system = TransferFunction::continuous(&[g * g], &[1.0, 2.0 * g, g * g]);
     let mut system = DiscretizedSystem::from_tf(system, ts).unwrap();
 
     let mut t = 0.0;

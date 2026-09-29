@@ -24,7 +24,7 @@ use nalgebra::{Complex, DMatrix, DVector, RealField};
 use num_traits::Float;
 use thiserror::Error;
 
-use crate::{FrequencyResponse, Polynomial, TransferFunction};
+use crate::{Continuous, FrequencyResponse, Polynomial, TransferFunction};
 
 #[derive(Error, Debug)]
 pub enum VectorFittingError {
@@ -83,14 +83,14 @@ pub struct VectorFittingResult<T> {
     pub rms_errors: Vec<T>,
 }
 
-impl<T: Float + RealField> Into<TransferFunction<T>> for VectorFittingResult<T> {
-    fn into(self) -> TransferFunction<T> {
+impl<T: Float + RealField> Into<TransferFunction<T, Continuous>> for VectorFittingResult<T> {
+    fn into(self) -> TransferFunction<T, Continuous> {
         let n = self.poles.len();
         if n == 0 {
-            return TransferFunction {
-                numerator: Polynomial(vec![self.e, self.d]),
-                denominator: Polynomial(vec![T::one()]),
-            };
+            return TransferFunction::from_polynomials(
+                Polynomial(vec![self.e, self.d]),
+                Polynomial(vec![T::one()]),
+            );
         }
 
         // G(s) = B(s) / A(s)
@@ -168,10 +168,7 @@ impl<T: Float + RealField> Into<TransferFunction<T>> for VectorFittingResult<T> 
             numer
         };
 
-        TransferFunction {
-            numerator: Polynomial(numer),
-            denominator: Polynomial(denom),
-        }
+        TransferFunction::from_polynomials(Polynomial(numer), Polynomial(denom))
     }
 }
 

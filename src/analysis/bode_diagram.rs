@@ -3,7 +3,7 @@ use std::borrow::Borrow;
 use num_traits::{float::FloatConst, Float, NumAssignOps, One, ToPrimitive};
 use num_complex::Complex;
 
-use crate::TransferFunction;
+use crate::{Continuous, Discrete, TransferFunction};
 
 use super::FrequencyCharacteristics;
 
@@ -29,7 +29,7 @@ where
 
     /// Calculate the frequency response of a polynomial in the s-domain.
     /// If polynomial is an*s^n +an-1*s^(n-1) + ... + a0, coefficient should be set \[an, an-1, ..., a0\]
-    pub fn frequency_response_s<S: Borrow<TransferFunction<T>>>(&self, tf: S) -> Vec<FrequencyCharacteristics<T>> {
+    pub fn frequency_response_s<S: Borrow<TransferFunction<T, Continuous>>>(&self, tf: S) -> Vec<FrequencyCharacteristics<T>> {
 
         let tf = tf.borrow();
 
@@ -87,7 +87,7 @@ where
 
     /// Calculate the frequency response of a polynomial in the z-domain.
     /// If polynomial is an*z^n +an-1*z^(n-1) + ... + a0, coefficient should be set \[an, an-1, ..., a0\]
-    pub fn frequency_response_z<S: Borrow<TransferFunction<T>>>(&self, tf: S,  ts: T) -> Vec<FrequencyCharacteristics<T>> {
+    pub fn frequency_response_z<S: Borrow<TransferFunction<T, Discrete>>>(&self, tf: S,  ts: T) -> Vec<FrequencyCharacteristics<T>> {
 
         let tf = tf.borrow();
 

@@ -7,7 +7,7 @@ fn ptc() {
 
     let mut storage = DataStorage::new("./out/ptc.csv", ',', false).unwrap();
 
-    let plant: TransferFunction<f64> = TransferFunction::<f64>::new(&[1.0], &[2.0e-4, 0.05, 0.0]);
+    let plant: TransferFunction<f64> = TransferFunction::<f64>::continuous(&[1.0], &[2.0e-4, 0.05, 0.0]);
     let mut model: DiscretizedSystem<f64> = DiscretizedSystem::from_tf(plant, ts).unwrap();
     let model_lifted: LiftedDiscretizedSystem<f64> = model.clone().try_into().unwrap();
 

@@ -18,10 +18,10 @@ fn smith() {
     let j = 2.0e-4;
     let d = 0.02;
 
-    let plant: TransferFunction<f64> = TransferFunction::<f64>::new(&[1.0], &[j, d, 0.0]);
+    let plant: TransferFunction<f64> = TransferFunction::<f64>::continuous(&[1.0], &[j, d, 0.0]);
     let mut plant_ssr: DiscretizedSystem<f64> = DiscretizedSystem::from_tf(plant, ts).unwrap();
 
-    let model: TransferFunction<f64> = TransferFunction::<f64>::new(&[1.0], &[j * 1.0, d * 1.0, 0.0]);
+    let model: TransferFunction<f64> = TransferFunction::<f64>::continuous(&[1.0], &[j * 1.0, d * 1.0, 0.0]);
     // model for disturbance observer
     let mut model_ssr: DiscretizedSystem<f64> = DiscretizedSystem::from_tf(model.clone(), ts).unwrap();
     let model_lifted: LiftedDiscretizedSystem<f64> = model_ssr.clone().try_into().unwrap();
@@ -37,13 +37,13 @@ fn smith() {
     let mut model_delayr_1 = Delayer::<f64>::new(model_delay_sample);
 
     let g_q = 1000.0;
-    let q_filter = TransferFunction::new(&[j * g_q * g_q, d * g_q * g_q, 0.0], &[1.0, 2.0 * g_q, g_q * g_q]);
+    let q_filter = TransferFunction::continuous(&[j * g_q * g_q, d * g_q * g_q, 0.0], &[1.0, 2.0 * g_q, g_q * g_q]);
     let mut q_filter = bilinear_transform::DiscretizedSystem::new(q_filter, ts);
 
     let g_s = 1000.0;
     let kp: f64 = 1200.0;
     let kd: f64 = 2.0 * kp.sqrt();
-    let controller = TransferFunction::new(&[kp + kd * g_s, kp * g_s], &[1.0, g_s]);
+    let controller = TransferFunction::continuous(&[kp + kd * g_s, kp * g_s], &[1.0, g_s]);
     let mut controller = bilinear_transform::DiscretizedSystem::new(controller, ts * over_sampling_rate as f64);
 
     // Trajectory

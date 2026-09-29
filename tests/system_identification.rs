@@ -4,7 +4,7 @@ fn test_lsm_arx() {
 
     let ts: f64 = 1e-3;
 
-    let tf_c = TransferFunction::new(&[1000.0], &[1.0, 20.0, 1000.0]);
+    let tf_c = TransferFunction::continuous(&[1000.0], &[1.0, 20.0, 1000.0]);
 
     let mut lsm = lsm::arx::DataBuffer::<f64>::new(2, 2);
     let mut kf = kalman_filter::arx::KalmanFilter::<f64>::new(2, 2, 0.01, 0.01, 1.0e10);
@@ -177,7 +177,7 @@ fn test_identification_from_simulation() {
     let f_nyquist = 1.0 / (2.0 * ts);
 
     let g = 20.0;
-    let tf_s = TransferFunction::new(&[g * g], &[1.0, 0.1 * g, g * g]);
+    let tf_s = TransferFunction::continuous(&[g * g], &[1.0, 0.1 * g, g * g]);
     let tf_z = bilinear_transform::discretize(&tf_s, ts);
 
     let mut system = bilinear_transform::DiscretizedSystem::new(&tf_s, ts);

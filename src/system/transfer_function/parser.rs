@@ -1,5 +1,5 @@
-//! Parse a transfer function from a rational expression in `s`, e.g.
-//! `"(s^2 + 10*s + 10) / (s^2 + 20*s + 100)"`.
+//! Parse a transfer function from a rational expression in `s` (continuous) or `z` (discrete),
+//! e.g. `"(s^2 + 10*s + 10) / (s^2 + 20*s + 100)"`. The variable is chosen by the `Domain`.
 //!
 //! Grammar (`^` binds tighter than unary minus, so `-s^2` is `-(s^2)`):
 //! ```text
@@ -7,10 +7,11 @@
 //! term    := unary (('*' | '/') unary | primary)*   // juxtaposition = implicit '*', e.g. 10s, (s+1)(s+2)
 //! unary   := ('+' | '-') unary | power
 //! power   := primary ('^' ['+' | '-'] integer)?
-//! primary := number | 's' | '(' expr ')'
+//! primary := number | variable | '(' expr ')'
 //! ```
 
 use super::TransferFunction;
+use crate::Domain;
 use crate::Polynomial;
 use num_traits::Float;
 use std::ops::AddAssign;
@@ -53,7 +54,7 @@ enum Token {
     RParen,
 }
 
-fn tokenize(src: &str) -> ParseResult<Vec<(Token, usize)>> {
+fn tokenize(src: &str, variable: char) -> ParseResult<Vec<(Token, usize)>> {
     let chars: Vec<char> = src.chars().collect();
     let mut tokens = Vec::new();
     let mut i = 0;
@@ -89,7 +90,7 @@ fn tokenize(src: &str) -> ParseResult<Vec<(Token, usize)>> {
                 tokens.push((Token::Number(value), start));
                 continue;
             }
-            's' => Token::Var,
+            _ if c == variable => Token::Var,
             '+' => Token::Plus,
             '-' => Token::Minus,
             '*' => Token::Star,
@@ -285,7 +286,7 @@ impl Parser {
             }
             _ => {
                 self.pos -= 1;
-                Err(self.error("number, 's' or '('"))
+                Err(self.error("number, variable or '('"))
             }
         }
     }
@@ -296,41 +297,72 @@ fn trim_leading_zeros<T: Float>(p: Polynomial<T>) -> Polynomial<T> {
     if coeffs.is_empty() { Polynomial(vec![T::zero()]) } else { Polynomial(coeffs) }
 }
 
-impl<T: Float + AddAssign> TransferFunction<T> {
-    /// Build a transfer function from a rational expression in `s`, e.g.
-    /// `TransferFunction::<f64>::parse("(s^2 + 10*s + 10) / (s^2 + 20*s + 100)")`.
-    /// Common poles/zeros are cancelled (see `reduced`).
-    pub fn parse(src: &str) -> Result<Self, TransferFunctionParseError> {
-        let mut parser = Parser { tokens: tokenize(src)?, pos: 0 };
+impl<T: Float + AddAssign, D: Domain> TransferFunction<T, D> {
+    /// Build a transfer function from a rational expression in `s` (`Continuous`) or `z`
+    /// (`Discrete`). Common poles/zeros are cancelled (see `reduced`).
+    /// Public entry points are `tf!` and `FromStr` (`"0.5 / (z - 0.5)".parse()`).
+    fn parse(src: &str) -> Result<Self, TransferFunctionParseError> {
+        let mut parser = Parser { tokens: tokenize(src, D::VARIABLE)?, pos: 0 };
         let rational: Rational<T> = parser.expr()?;
         if parser.pos < parser.tokens.len() {
             return Err(parser.error("end of input"));
         }
-        Ok(Self {
-            numerator: trim_leading_zeros(rational.num),
-            denominator: trim_leading_zeros(rational.den),
-        }
-        .reduced())
+        Ok(Self::from_polynomials(trim_leading_zeros(rational.num), trim_leading_zeros(rational.den)).reduced())
+    }
+
+    /// Used by `tf!`: the float literal passed as `_hint` lets `T` fall back to `f64` when
+    /// nothing else constrains it, while still allowing `f32` via a type annotation.
+    #[doc(hidden)]
+    pub fn __parse_with_hint(src: &str, _hint: T) -> Result<Self, TransferFunctionParseError> {
+        Self::parse(src)
     }
 }
 
-impl<T: Float + AddAssign> FromStr for TransferFunction<T> {
+/// Parse a string known only at runtime, with errors returned instead of panicking:
+/// `"(s + 1) / (s + 2)".parse::<TransferFunction<f64>>()`.
+impl<T: Float + AddAssign, D: Domain> FromStr for TransferFunction<T, D> {
     type Err = TransferFunctionParseError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::parse(s)
     }
 }
 
-/// Write a transfer function directly as a rational expression in `s`:
+/// Write a transfer function as a string, with the variable choosing the time domain:
+/// ```ignore
+/// let g = tf!("(s^2 + 10s + 10) / (s^2 + 20s + 100)", 's'); // TransferFunction<f64, Continuous>
+/// let h = tf!("0.5 / (z - 0.5)", 'z');                      // TransferFunction<f64, Discrete>
+/// let k: TransferFunction<f32> = tf!("1 / (s + 1)", 's');    // other float types via annotation
+/// ```
+/// The string is a `format!` string, so values can be embedded:
+/// ```ignore
+/// let g = 100.0;
+/// let a = tf!("{g} / (s + {g})", 's');
+/// let b = tf!("{} / (s + {})", 's', g, 2.0 * g);
+/// ```
+/// (`f64`/`f32` `Display` prints the shortest string that reads back to the same value, so
+/// embedding does not lose precision.)
+///
+/// The tokens can also be written directly; then the domain comes from the type annotation:
 /// ```ignore
 /// let g: TransferFunction<f64> = tf!((s^2 + 10.0 * s + 10.0) / (s^2 + 20.0 * s + 100.0));
 /// ```
-/// The tokens are stringified and handed to `TransferFunction::parse`, so `^` means power here
-/// (not XOR). Panics if the expression is invalid; use `TransferFunction::parse` to handle errors.
+/// In that form the tokens are stringified before parsing, so `^` means power (not XOR).
+/// Panics if the expression is invalid; use `str::parse` (`FromStr`) to handle errors.
 #[macro_export]
 macro_rules! tf {
+    ($fmt:literal, 's' $(, $arg:expr)* $(,)?) => {
+        $crate::TransferFunction::<_, $crate::Continuous>::__parse_with_hint(&format!($fmt $(, $arg)*), 0.0)
+            .unwrap_or_else(|e| panic!("tf!: {}", e))
+    };
+    ($fmt:literal, 'z' $(, $arg:expr)* $(,)?) => {
+        $crate::TransferFunction::<_, $crate::Discrete>::__parse_with_hint(&format!($fmt $(, $arg)*), 0.0)
+            .unwrap_or_else(|e| panic!("tf!: {}", e))
+    };
+    ($fmt:literal, $var:literal $(, $arg:expr)* $(,)?) => {
+        compile_error!(concat!("tf!: variable must be 's' or 'z', got ", stringify!($var)))
+    };
     ($($expr:tt)+) => {
-        $crate::TransferFunction::parse(stringify!($($expr)+))
+        $crate::TransferFunction::__parse_with_hint(stringify!($($expr)+), 0.0)
             .unwrap_or_else(|e| panic!("tf!: {}", e))
     };
 }

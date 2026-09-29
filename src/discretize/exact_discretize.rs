@@ -3,10 +3,10 @@ use std::{borrow::Borrow};
 use nalgebra::{ComplexField, DMatrix, DVector, RealField};
 use num_traits::Float;
 
-use crate::{StateSpace, StateSpaceError, StateSpaceOrder, TransferFunction};
+use crate::{Continuous, Discrete, StateSpace, StateSpaceError, StateSpaceOrder, TransferFunction};
 
-pub fn discretize_ssr<T: Float + ComplexField + RealField, S: Borrow<StateSpace<T>>>(ssr_c: S, ts: T) -> Result<StateSpace<T>, StateSpaceError> {
-    let system = ssr_c.borrow();
+pub fn discretize_ssr<T: Float + ComplexField + RealField, S: Borrow<StateSpace<T, Continuous>>>(ssr: S, ts: T) -> Result<StateSpace<T, Discrete>, StateSpaceError> {
+    let system = ssr.borrow();
 
     // Augmented matrix method
     let (a, b) = {
@@ -33,22 +33,22 @@ pub fn discretize_ssr<T: Float + ComplexField + RealField, S: Borrow<StateSpace<
 
 #[derive(Clone)]
 pub struct DiscretizedSystem<T> {
-    pub ssr: StateSpace<T>,
+    pub ssr: StateSpace<T, Discrete>,
     pub state: DVector<T>,
     pub output: DVector<T>,
     pub ts: T,
 }
 
 impl<T: Float + ComplexField + RealField> DiscretizedSystem<T> {
-    pub fn from_ssr<S: Borrow<StateSpace<T>>>(ssr_c: S, ts: T) -> Result<Self, StateSpaceError> {
-        let ssr = discretize_ssr(ssr_c, ts)?;
+    pub fn from_ssr<S: Borrow<StateSpace<T, Continuous>>>(ssr: S, ts: T) -> Result<Self, StateSpaceError> {
+        let ssr = discretize_ssr(ssr, ts)?;
         let state = DVector::zeros(ssr.order.system);
         let output = DVector::zeros(ssr.order.output);
 
         Ok(Self { ssr, state, output, ts})
     }
 
-    pub fn from_tf<S: Borrow<TransferFunction<T>>>(tf_c: S, ts: T) -> Result<Self, StateSpaceError> {
+    pub fn from_tf<S: Borrow<TransferFunction<T, Continuous>>>(tf_c: S, ts: T) -> Result<Self, StateSpaceError> {
         let tf_c = tf_c.borrow();
 
         let order = StateSpaceOrder {
@@ -113,7 +113,7 @@ impl<T: Float + ComplexField + RealField> DiscretizedSystem<T> {
 
 
 pub struct LiftedDiscretizedSystem<T> {
-    pub ssr: StateSpace<T>,
+    pub ssr: StateSpace<T, Discrete>,
     pub ts: T,
     pub order: u32,
     inv_b: DMatrix<T>,

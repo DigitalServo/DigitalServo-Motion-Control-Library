@@ -4,7 +4,7 @@ use nalgebra::{Complex, ComplexField, DMatrix, DVector};
 use num_traits::{Float, Zero};
 use thiserror::Error;
 
-use crate::{FrequencyResponse, Polynomial, TransferFunction};
+use crate::{Continuous, FrequencyResponse, Polynomial, TransferFunction};
 
 #[derive(Error, Debug)]
 pub enum LevyIdentificationError {
@@ -22,7 +22,7 @@ pub fn identify<T: Float + ComplexField + AddAssign + MulAssign>(
     samples: &[FrequencyResponse<T>],
     numer_order: usize,
     denom_order: usize,
-) -> Result<TransferFunction<T>, LevyIdentificationError> {
+) -> Result<TransferFunction<T, Continuous>, LevyIdentificationError> {
     levy_step(samples, numer_order, denom_order, None)
 }
 
@@ -31,7 +31,7 @@ pub fn sanathanan_koerner_identification<T: Float + ComplexField + AddAssign + M
     numer_order: usize,
     denom_order: usize,
     iterations: usize,
-) -> Result<TransferFunction<T>, LevyIdentificationError> {
+) -> Result<TransferFunction<T, Continuous>, LevyIdentificationError> {
     let mut ret = None;
     for _ in 0..iterations {
         ret = match levy_step(samples, numer_order, denom_order, ret) {
@@ -50,8 +50,8 @@ fn levy_step<T: Float + ComplexField + AddAssign + MulAssign>(
     samples: &[FrequencyResponse<T>],
     numer_order: usize,
     denom_order: usize,
-    prev_result: Option<TransferFunction<T>>,
-) -> Result<TransferFunction<T>, LevyIdentificationError> {
+    prev_result: Option<TransferFunction<T, Continuous>>,
+) -> Result<TransferFunction<T, Continuous>, LevyIdentificationError> {
     let num_data = samples.len();
     if num_data == 0 {
         return Err(LevyIdentificationError::EmptyData);
@@ -141,8 +141,5 @@ fn levy_step<T: Float + ComplexField + AddAssign + MulAssign>(
     let mut denom_coeffs = vec![T::one()];
     denom_coeffs.extend(a_coeffs_desc);
 
-    Ok(TransferFunction {
-        numerator: Polynomial(numer_coeffs),
-        denominator: Polynomial(denom_coeffs),
-    })
+    Ok(TransferFunction::from_polynomials(Polynomial(numer_coeffs), Polynomial(denom_coeffs)))
 }
