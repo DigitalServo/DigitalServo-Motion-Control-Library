@@ -2,11 +2,14 @@ use crate::{dka_method, vieta_formula, Continuous, Discrete, Polynomial};
 use num_complex::Complex;
 use num_traits::Float;
 use std::marker::PhantomData;
-use std::ops::{Add, AddAssign, Mul};
+use std::ops::AddAssign;
 
 mod display;
+mod ops;
 mod parser;
 pub use parser::TransferFunctionParseError;
+#[doc(hidden)]
+pub use parser::{__detect_domain, __DomainTag, __SelectDomain};
 
 /// Descending-order numerator / denominator polynomials. `D` tells whether they are in `s`
 /// (`Continuous`, the default) or in `z` (`Discrete`), so the two cannot be mixed up.
@@ -83,45 +86,6 @@ fn cancel_common_roots<T: Float>(a: &mut Vec<Complex<T>>, b: &mut Vec<Complex<T>
 fn reconstruct<T: Float>(gain: T, roots: &[Complex<T>]) -> Polynomial<T> {
     let monic = vieta_formula(roots);
     Polynomial(monic.0.iter().map(|c| c.re * gain).collect())
-}
-
-impl<T: Float + AddAssign, D> Mul for &TransferFunction<T, D> {
-    type Output = TransferFunction<T, D>;
-    fn mul(self, rhs: &TransferFunction<T, D>) -> TransferFunction<T, D> {
-        TransferFunction::from_polynomials(
-            &self.numerator * &rhs.numerator,
-            &self.denominator * &rhs.denominator,
-        )
-        .reduced()
-    }
-}
-
-impl<T: Float + AddAssign, D> Mul for TransferFunction<T, D> {
-    type Output = TransferFunction<T, D>;
-    fn mul(self, rhs: TransferFunction<T, D>) -> TransferFunction<T, D> {
-        &self * &rhs
-    }
-}
-
-impl<T: Float + AddAssign, D> Add for &TransferFunction<T, D> {
-    type Output = TransferFunction<T, D>;
-    fn add(self, rhs: &TransferFunction<T, D>) -> TransferFunction<T, D> {
-        // n1/d1 + n2/d2 = (n1*d2 + n2*d1) / (d1*d2); `reduced()` then cancels any factor
-        // shared by d1 and d2 (and any other common numerator/denominator roots), which is
-        // equivalent to reducing to a common denominator first.
-        let n1d2 = &self.numerator * &rhs.denominator;
-        let n2d1 = &self.denominator * &rhs.numerator;
-        let numerator = &n1d2 + &n2d1;
-        let denominator = &self.denominator * &rhs.denominator;
-        TransferFunction::from_polynomials(numerator, denominator).reduced()
-    }
-}
-
-impl<T: Float + AddAssign, D> Add for TransferFunction<T, D> {
-    type Output = TransferFunction<T, D>;
-    fn add(self, rhs: TransferFunction<T, D>) -> TransferFunction<T, D> {
-        &self + &rhs
-    }
 }
 
 impl<T: Float + AddAssign> TransferFunction<T, Continuous> {

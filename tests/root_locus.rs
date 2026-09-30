@@ -1,8 +1,20 @@
 use dsmc::{dka_method, vieta_formula};
+use num_complex::Complex;
+
+/// |p(r)| relative to the size of the terms, i.e. how well `r` satisfies `p(r) = 0`.
+fn relative_residual(coeffs: &[Complex<f64>], r: Complex<f64>) -> f64 {
+    let (mut value, mut scale) = (Complex::new(0.0, 0.0), 0.0);
+    for (k, c) in coeffs.iter().enumerate() {
+        let term = c * r.powi((coeffs.len() - 1 - k) as i32);
+        value += term;
+        scale += term.norm();
+    }
+    value.norm() / scale
+}
 
 #[test]
 fn test_roots_plot() {
-    use num_complex::Complex;
+
     use dsmc::Polynomial;
     use dsmc::logger::DataStorage;
 
@@ -36,7 +48,20 @@ fn test_roots_plot() {
         let coeffs = Polynomial(coeffs);
 
         let roots = dka_method(&coeffs);
-        println!("alpha: {:.2}, Roots: {:#.2?}", alpha, roots);
+
+        // Every root satisfies the cubic, and complex roots come in conjugate pairs.
+        let found = roots.as_ref().expect("dka_method failed");
+        assert_eq!(found.len(), 3, "alpha = {alpha}");
+        for r in found {
+            assert!(relative_residual(&coeffs.0, *r) < 1e-9, "alpha = {alpha}: {r} is not a root");
+            assert!(found.iter().any(|q| (q - r.conj()).norm() < 1e-6 * r.norm()), "alpha = {alpha}: no conjugate for {r}");
+        }
+        // alpha = 1 reproduces the triple root; its accuracy is only ~eps^(1/3).
+        if (alpha - 1.0).abs() < 1e-12 {
+            for r in found {
+                assert!((r - Complex::new(omega_c, 0.0)).norm() < 1e-2, "triple root: {r}");
+            }
+        }
 
         let mut storage = DataStorage::new(format!("./out/roots_locus/roots_locus_alpha_{:.02}.csv", alpha), ',', false).unwrap();
         if let Some(roots) = roots {
@@ -52,7 +77,7 @@ fn test_roots_plot() {
 
 #[test]
 fn test_roots_plot_2order() {
-    use num_complex::Complex;
+
     use dsmc::Polynomial;
     use dsmc::logger::DataStorage;
 
@@ -72,7 +97,16 @@ fn test_roots_plot_2order() {
         let coeffs = Polynomial(coeffs);
 
         let roots = dka_method(&coeffs);
-        println!("zeta: {:.2}, Roots: {:#.2?}", zeta, roots);
+
+        // Analytic roots: -ζω ± ω√(ζ² - 1) (complex for ζ < 1). The double root at ζ = 1 is only
+        // found to ~sqrt(eps) accuracy, hence the loose tolerance.
+        let disc = Complex::new(zeta * zeta - 1.0, 0.0).sqrt() * omega_c;
+        let expected = [Complex::new(-zeta * omega_c, 0.0) + disc, Complex::new(-zeta * omega_c, 0.0) - disc];
+        let found = roots.as_ref().expect("dka_method failed");
+        assert_eq!(found.len(), 2, "zeta = {zeta}");
+        for e in expected {
+            assert!(found.iter().any(|r| (r - e).norm() < 1e-3), "zeta = {zeta}: {e} not in {found:?}");
+        }
 
         let mut storage = DataStorage::new(format!("./out/roots_locus_2order/roots_locus_zeta_{:.01}.csv", zeta), ',', false).unwrap();
         if let Some(roots) = roots {

@@ -16,7 +16,7 @@ struct TestStruct {
 
 #[test]
 fn test_data_storage() {
-    let mut storage = DataStorage::new("./out/out.csv", ',', false).unwrap();
+    let mut storage = DataStorage::new("./out/logger.csv", ',', false).unwrap();
 
     let timer = Instant::now();
 

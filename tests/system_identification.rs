@@ -1,6 +1,32 @@
+use dsmc::TransferFunction;
+
+/// Max absolute difference between the coefficients of two transfer functions, after
+/// normalizing both so that the leading denominator coefficient is 1.
+// Tolerances on normalized coefficients. All data are noise-free, so the measured errors are
+// 1e-16 .. 1e-8; these leave a margin while still catching a broken identification.
+const TOL_LSM_ARX: f64 = 1e-6;
+const TOL_KF_ARX: f64 = 1e-6;
+const TOL_LSM_POLY: f64 = 1e-8;
+const TOL_KF_POLY: f64 = 1e-8;
+const TOL_LEVY: f64 = 1e-6;
+const TOL_VF: f64 = 1e-8;
+
+fn tf_distance<D: dsmc::Domain>(a: &TransferFunction<f64, D>, b: &TransferFunction<f64, D>) -> f64 {
+    let normalize = |tf: &TransferFunction<f64, D>| {
+        let k = tf.denominator[0];
+        let n: Vec<f64> = tf.numerator.iter().map(|c| c / k).collect();
+        let d: Vec<f64> = tf.denominator.iter().map(|c| c / k).collect();
+        (n, d)
+    };
+    let (na, da) = normalize(a);
+    let (nb, db) = normalize(b);
+    assert_eq!((na.len(), da.len()), (nb.len(), db.len()), "orders differ: {a:?} vs {b:?}");
+    na.iter().zip(&nb).chain(da.iter().zip(&db)).map(|(x, y)| (x - y).abs()).fold(0.0, f64::max)
+}
+
 #[test]
 fn test_lsm_arx() {
-    use dsmc::{TransferFunction, discretize::bilinear_transform, system_identification::{kalman_filter, lsm}};
+    use dsmc::{discretize::bilinear_transform, system_identification::{kalman_filter, lsm}};
 
     let ts: f64 = 1e-3;
 
@@ -27,11 +53,14 @@ fn test_lsm_arx() {
         t += ts;
     }
 
+    // The data come from the bilinear-discretized system itself (noise-free), so both methods
+    // should recover it.
     let tf_z = bilinear_transform::discretize(&tf_c, ts);
 
-    println!("Bilinear: {:.6?}", tf_z);
-    println!("LS method: {:.6?}", lsm.identify().unwrap());
-    println!("Kalman flt: {:.6?}", kf.identify());
+    let err_lsm = tf_distance(&lsm.identify().unwrap(), &tf_z);
+    let err_kf = tf_distance(&kf.identify(), &tf_z);
+    assert!(err_lsm < TOL_LSM_ARX, "LS method: error {err_lsm:e}");
+    assert!(err_kf < TOL_KF_ARX, "Kalman filter: error {err_kf:e}");
 }
 
 
@@ -56,8 +85,13 @@ fn test_lsm_polynomial() {
         x += dx;
     }
 
-    println!("lsm: {:.02?}", lsm.identify());
-    println!("kf: {:.02?}", kf.identify());
+    // Coefficients are in descending order: 3x^3 - x^2 + 0.3x + 0.05
+    let expected = [3.0, -1.0, 0.3, 0.05];
+    let lsm_coeffs = lsm.identify().unwrap();
+    let kf_coeffs = kf.identify();
+    let err = |c: &[f64]| c.iter().zip(expected).map(|(x, e)| (x - e).abs()).fold(0.0, f64::max);
+    assert!(err(&lsm_coeffs) < TOL_LSM_POLY, "LS method: {lsm_coeffs:?}");
+    assert!(err(&kf_coeffs) < TOL_KF_POLY, "Kalman filter: {kf_coeffs:?}");
 }
 
 
@@ -89,14 +123,18 @@ fn test_levy() {
     }
 
     let ret = levy::sanathanan_koerner_identification(&samples, numer_order, denom_order, 5).unwrap();
-    println!("{:.02?}", ret);
+
+    // True system: (-3s^2 + 10s + 100) / (2s^3 + 4s^2 + 200s + 10000)
+    let expected = TransferFunction::continuous(&[-3.0, 10.0, 100.0], &[2.0, 4.0, 200.0, 10000.0]);
+    let err = tf_distance(&ret, &expected);
+    assert!(err < TOL_LEVY, "Levy: {ret:?}");
 
 }
 
 #[test]
 fn test_vector_fitting() {
     use std::f64::consts::PI;
-    use dsmc::{FrequencyResponse, TransferFunction, system_identification::frequency_response::vector_fitting::{VectorFittingOptions, VectorFittingResult, identify}};
+    use dsmc::{FrequencyResponse, system_identification::frequency_response::vector_fitting::{VectorFittingOptions, VectorFittingResult, identify}};
     use num_complex::Complex64;
 
     // poles and residues of the true function
@@ -143,18 +181,24 @@ fn test_vector_fitting() {
 
     let (order, result) = ret.unwrap();
 
-    println!("Order: {order}");
-    println!("Final RMS error: {:.2e}", rms);
-    println!("Fitted poles: {:.2?}", result.poles);
-    println!("Fitted residues: {:.2?}", result.residues);
     assert!(
         rms < 1e-4,
         "RMS error too large: {:.2e}",
         rms
     );
 
+    // The true system has two poles ±j with residues 1.
+    assert_eq!(order, 2);
+    for (&p, &r) in true_poles.iter().zip(true_residues.iter()) {
+        let k = result.poles.iter().position(|&q| (q - p).norm() < 1e-8).expect("pole not found");
+        assert!((result.residues[k] - r).norm() < 1e-8, "residue {} != {}", result.residues[k], r);
+    }
+
+    // True system: 1/(s - j) + 1/(s + j) = 2s / (s^2 + 1)
     let tf: TransferFunction<f64> = result.into();
-    println!("Transfer function: {:.2?}", tf);
+    let expected = TransferFunction::continuous(&[2.0, 0.0], &[1.0, 0.0, 1.0]);
+    let err = tf_distance(&tf, &expected);
+    assert!(err < TOL_VF, "Vector fitting: {tf:?}");
 
 }
 
@@ -162,7 +206,6 @@ fn test_vector_fitting() {
 #[test]
 fn test_identification_from_simulation() {
     use num_complex::Complex;
-    use dsmc::TransferFunction;
     use dsmc::discretize::bilinear_transform;
     use dsmc::FrequencyResponse;
     use dsmc::fft::{fft, welch};
@@ -259,9 +302,11 @@ fn test_identification_from_simulation() {
     let tf_z_lsm = lsm.identify().unwrap();
     let tf_z_kf = kf.identify();
 
-    println!("Simulator: {:.6?}", tf_z);
-    println!("LS method: {:.6?}", tf_z_lsm);
-    println!("Kalman flt: {:.6?}", tf_z_kf);
+    // Noise-free data from the bilinear-discretized system: both methods should recover it.
+    let err_lsm = tf_distance(&tf_z_lsm, &tf_z);
+    let err_kf = tf_distance(&tf_z_kf, &tf_z);
+    assert!(err_lsm < TOL_LSM_ARX, "LS method: error {err_lsm:e}");
+    assert!(err_kf < TOL_KF_ARX, "Kalman filter: error {err_kf:e}");
 
     let bode_plotter = BodeDiagramPlotter::<f64>::new(0.0, 50.0,  0.01, false);
 

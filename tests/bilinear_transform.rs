@@ -52,11 +52,25 @@ fn test_bilinear_transform_filter() {
 
 #[test]
 fn test_discretize_filter() {
+    // `f64` fixes `T` for `tf!` below, which cannot infer it before `.abs()` is called.
+    let ts: f64 = 1e-4;
 
-    let ts = 1e-4;
-
-    let tf = tf!("10.0 / (s + 10.0)", 's');
+    let g = 10.0;
+    let tf = tf!("{g} / (s + {g})");
     let tf_d = discretize(&tf, ts);
 
-    println!("{}", tf_d);
+    // s = a(z - 1)/(z + 1), a = 2/ts:
+    // g / (s + g) = g(z + 1) / ((a + g)z + (g - a)), normalized so the leading denominator is 1.
+    let a = 2.0 / ts;
+    let b = g / (a + g);
+    let expected_numer = [b, b];
+    let expected_denom = [1.0, (g - a) / (a + g)];
+    for (x, e) in tf_d.numerator.iter().zip(expected_numer) {
+        assert!((x - e).abs() < 1e-12, "numerator {:?} != {:?}", tf_d.numerator, expected_numer);
+    }
+    for (x, e) in tf_d.denominator.iter().zip(expected_denom) {
+        assert!((x - e).abs() < 1e-12, "denominator {:?} != {:?}", tf_d.denominator, expected_denom);
+    }
+    assert_eq!(tf_d.numerator.len(), 2);
+    assert_eq!(tf_d.denominator.len(), 2);
 }

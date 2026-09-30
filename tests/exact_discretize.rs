@@ -15,9 +15,24 @@ fn test_exact_discretize_ssr() {
         dmatrix![g * g, 0.0],
         dmatrix![0.0],
     ).unwrap();
-    let ssr_z = discretize_ssr(&system, ts);
+    let ssr_z = discretize_ssr(&system, ts).unwrap();
 
-    println!("{:#?}", ssr_z);
+    // A has the double eigenvalue λ = -g, so e^{At} = e^{λt}(I + t(A - λI)) with
+    // A - λI = [[g, 1], [-g^2, -g]]. Then
+    //   A_d = e^{λT} [[1 + gT, T], [-g^2 T, 1 - gT]]
+    //   B_d = ∫_0^T e^{Aτ} B dτ = [I1, I0 - g I1],  I0 = ∫ e^{λτ}, I1 = ∫ τ e^{λτ}
+    let lambda: f64 = -g;
+    let e = (lambda * ts).exp();
+    let i0 = (e - 1.0) / lambda;
+    let i1 = e * (ts / lambda - 1.0 / (lambda * lambda)) + 1.0 / (lambda * lambda);
+    let expected_a = dmatrix![e * (1.0 + g * ts), e * ts; -g * g * ts * e, e * (1.0 - g * ts)];
+    let expected_b = dmatrix![i1; i0 - g * i1];
+
+    assert!((&ssr_z.a - &expected_a).abs().max() < 1e-12, "A_d = {} expected {}", ssr_z.a, expected_a);
+    assert!((&ssr_z.b - &expected_b).abs().max() < 1e-15, "B_d = {} expected {}", ssr_z.b, expected_b);
+    // C and D are unchanged by discretization.
+    assert_eq!(ssr_z.c, system.c);
+    assert_eq!(ssr_z.d, system.d);
 }
 
 #[test]

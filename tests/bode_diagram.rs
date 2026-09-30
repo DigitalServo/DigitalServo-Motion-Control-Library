@@ -1,6 +1,6 @@
 use dsmc::discretize::bilinear_transform;
 use dsmc::logger::DataStorage;
-use dsmc::{BodeDiagramPlotter, TransferFunction};
+use dsmc::{BodeDiagramPlotter, tf};
 
 #[test]
 fn test_bode_plotter_s() {
@@ -10,7 +10,9 @@ fn test_bode_plotter_s() {
 
     // 1st order LPF
     let g = 2.0 * std::f64::consts::PI * 10.0;
-    let tf_s = TransferFunction::continuous(&[g * g], &[1.0, 0.01 * g, g * g]);
+    let k1 = 0.01 * g;
+    let k2 = g * g;
+    let tf_s = tf!("{k2} / (s^2 + {k1}s + {k2})");
     let responses = bode_plotter.frequency_response_s(&tf_s);
 
     for res in responses {
@@ -30,10 +32,14 @@ fn test_bode_plotter_z() {
 
     // 1st order LPF
     let g = 2.0 * std::f64::consts::PI * 10.0;
-    // let tf_z = TransferFunction::discrete(&[g * ts, g * ts], &[2.0 + g * ts, -2.0 + g * ts]);
 
-    let tf_s = TransferFunction::continuous(&[g * g], &[1.0, 0.01 * g, g * g]);
+
+    let k1 = 0.01 * g;
+    let k2 = g * g;
+    let tf_s = tf!("{k2} / (s^2 + {k1}s + {k2})");
     let tf_z = bilinear_transform::discretize(tf_s, ts);
+
+    // let tf_z = tf!("({}z + {})  / ({}z + {})", g * ts, g * ts, 2.0 + g * ts, -2.0 + g * ts);
 
     let responses = bode_plotter.frequency_response_z(&tf_z, ts);
 

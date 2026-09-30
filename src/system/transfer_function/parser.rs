@@ -1,5 +1,6 @@
 //! Parse a transfer function from a rational expression in `s` (continuous) or `z` (discrete),
-//! e.g. `"(s^2 + 10*s + 10) / (s^2 + 20*s + 100)"`. The variable is chosen by the `Domain`.
+//! e.g. `"(s^2 + 10*s + 10) / (s^2 + 20*s + 100)"`. The variable must match the `Domain`
+//! (`tf!` picks the `Domain` from the variable at compile time, see `__detect_domain`).
 //!
 //! Grammar (`^` binds tighter than unary minus, so `-s^2` is `-(s^2)`):
 //! ```text
@@ -11,7 +12,7 @@
 //! ```
 
 use super::TransferFunction;
-use crate::Domain;
+use crate::{Continuous, Discrete, Domain};
 use crate::Polynomial;
 use num_traits::Float;
 use std::ops::AddAssign;
@@ -37,6 +38,12 @@ pub enum TransferFunctionParseError {
 
     #[error("Division by zero")]
     DivisionByZero,
+
+    #[error("Expression mixes 's' and 'z'")]
+    MixedVariables,
+
+    #[error("Variable '{found}' at position {pos} does not match the time domain (expected '{expected}')")]
+    WrongVariable { expected: char, found: char, pos: usize },
 }
 
 type ParseResult<T> = Result<T, TransferFunctionParseError>;
@@ -57,6 +64,8 @@ enum Token {
 fn tokenize(src: &str, variable: char) -> ParseResult<Vec<(Token, usize)>> {
     let chars: Vec<char> = src.chars().collect();
     let mut tokens = Vec::new();
+    // First occurrence of the other domain's variable (`z` when parsing `s`, and vice versa).
+    let mut foreign: Option<(char, usize)> = None;
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
@@ -91,6 +100,11 @@ fn tokenize(src: &str, variable: char) -> ParseResult<Vec<(Token, usize)>> {
                 continue;
             }
             _ if c == variable => Token::Var,
+            's' | 'z' => {
+                foreign = foreign.or(Some((c, i)));
+                i += 1;
+                continue;
+            }
             '+' => Token::Plus,
             '-' => Token::Minus,
             '*' => Token::Star,
@@ -103,7 +117,13 @@ fn tokenize(src: &str, variable: char) -> ParseResult<Vec<(Token, usize)>> {
         tokens.push((token, i));
         i += 1;
     }
-    Ok(tokens)
+    match foreign {
+        None => Ok(tokens),
+        Some(_) if tokens.iter().any(|&(t, _)| t == Token::Var) => {
+            Err(TransferFunctionParseError::MixedVariables)
+        }
+        Some((found, pos)) => Err(TransferFunctionParseError::WrongVariable { expected: variable, found, pos }),
+    }
 }
 
 /// Intermediate value: numerator / denominator, both descending-order polynomials in `s`.
@@ -327,42 +347,94 @@ impl<T: Float + AddAssign, D: Domain> FromStr for TransferFunction<T, D> {
     }
 }
 
-/// Write a transfer function as a string, with the variable choosing the time domain:
+/// Compile-time domain detection for `tf!`: `0` if the expression uses only `s`, `1` if only `z`.
+/// Panics (i.e. fails to compile when used in a const context) if it uses both or neither.
+/// `{...}` placeholders of the `format!` string are skipped, so `{zeta}` does not count as `z`.
+#[doc(hidden)]
+pub const fn __detect_domain(src: &str) -> u8 {
+    let bytes = src.as_bytes();
+    let (mut has_s, mut has_z, mut in_placeholder) = (false, false, false);
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            // `{{` / `}}` are escaped braces, not placeholders.
+            b'{' if !in_placeholder && i + 1 < bytes.len() && bytes[i + 1] == b'{' => i += 1,
+            b'}' if !in_placeholder && i + 1 < bytes.len() && bytes[i + 1] == b'}' => i += 1,
+            b'{' => in_placeholder = true,
+            b'}' => in_placeholder = false,
+            b's' if !in_placeholder => has_s = true,
+            b'z' if !in_placeholder => has_z = true,
+            _ => {}
+        }
+        i += 1;
+    }
+    match (has_s, has_z) {
+        (true, false) => 0,
+        (false, true) => 1,
+        (true, true) => panic!("tf!: expression mixes `s` and `z`"),
+        (false, false) => panic!(
+            "tf!: expression contains neither `s` nor `z`, so the time domain cannot be determined; \
+             use `TransferFunction::continuous` / `TransferFunction::discrete` instead"
+        ),
+    }
+}
+
+/// Maps the result of `__detect_domain` to `Continuous` / `Discrete` at the type level.
+#[doc(hidden)]
+pub struct __DomainTag<const N: u8>;
+
+#[doc(hidden)]
+pub trait __SelectDomain {
+    type Domain: Domain;
+}
+
+impl __SelectDomain for __DomainTag<0> {
+    type Domain = Continuous;
+}
+
+impl __SelectDomain for __DomainTag<1> {
+    type Domain = Discrete;
+}
+
+/// Write a transfer function as a string. The time domain is detected from the variable at
+/// compile time: `s` gives `Continuous`, `z` gives `Discrete`.
 /// ```ignore
-/// let g = tf!("(s^2 + 10s + 10) / (s^2 + 20s + 100)", 's'); // TransferFunction<f64, Continuous>
-/// let h = tf!("0.5 / (z - 0.5)", 'z');                      // TransferFunction<f64, Discrete>
-/// let k: TransferFunction<f32> = tf!("1 / (s + 1)", 's');    // other float types via annotation
+/// let g = tf!("(s^2 + 10s + 10) / (s^2 + 20s + 100)"); // TransferFunction<f64, Continuous>
+/// let h = tf!("0.5 / (z - 0.5)");                      // TransferFunction<f64, Discrete>
+/// let k: TransferFunction<f32> = tf!("1 / (s + 1)");    // other float types via annotation
 /// ```
+/// Mixing `s` and `z`, or using neither (a constant), is a compile error.
+///
 /// The string is a `format!` string, so values can be embedded:
 /// ```ignore
 /// let g = 100.0;
-/// let a = tf!("{g} / (s + {g})", 's');
-/// let b = tf!("{} / (s + {})", 's', g, 2.0 * g);
+/// let a = tf!("{g} / (s + {g})");
+/// let b = tf!("{} / (s + {})", g, 2.0 * g);
 /// ```
 /// (`f64`/`f32` `Display` prints the shortest string that reads back to the same value, so
-/// embedding does not lose precision.)
+/// embedding does not lose precision.) Only the literal is inspected for `s`/`z`; the embedded
+/// values are expected to be numbers.
 ///
-/// The tokens can also be written directly; then the domain comes from the type annotation:
+/// The tokens can also be written directly:
 /// ```ignore
-/// let g: TransferFunction<f64> = tf!((s^2 + 10.0 * s + 10.0) / (s^2 + 20.0 * s + 100.0));
+/// let g = tf!((s^2 + 10.0 * s + 10.0) / (s^2 + 20.0 * s + 100.0));
 /// ```
 /// In that form the tokens are stringified before parsing, so `^` means power (not XOR).
 /// Panics if the expression is invalid; use `str::parse` (`FromStr`) to handle errors.
 #[macro_export]
 macro_rules! tf {
-    ($fmt:literal, 's' $(, $arg:expr)* $(,)?) => {
-        $crate::TransferFunction::<_, $crate::Continuous>::__parse_with_hint(&format!($fmt $(, $arg)*), 0.0)
+    ($fmt:literal $(, $arg:expr)* $(,)?) => {
+        $crate::TransferFunction::<
+            _,
+            <$crate::__DomainTag<{ $crate::__detect_domain($fmt) }> as $crate::__SelectDomain>::Domain,
+        >::__parse_with_hint(&format!($fmt $(, $arg)*), 0.0)
             .unwrap_or_else(|e| panic!("tf!: {}", e))
-    };
-    ($fmt:literal, 'z' $(, $arg:expr)* $(,)?) => {
-        $crate::TransferFunction::<_, $crate::Discrete>::__parse_with_hint(&format!($fmt $(, $arg)*), 0.0)
-            .unwrap_or_else(|e| panic!("tf!: {}", e))
-    };
-    ($fmt:literal, $var:literal $(, $arg:expr)* $(,)?) => {
-        compile_error!(concat!("tf!: variable must be 's' or 'z', got ", stringify!($var)))
     };
     ($($expr:tt)+) => {
-        $crate::TransferFunction::__parse_with_hint(stringify!($($expr)+), 0.0)
+        $crate::TransferFunction::<
+            _,
+            <$crate::__DomainTag<{ $crate::__detect_domain(stringify!($($expr)+)) }> as $crate::__SelectDomain>::Domain,
+        >::__parse_with_hint(stringify!($($expr)+), 0.0)
             .unwrap_or_else(|e| panic!("tf!: {}", e))
     };
 }
