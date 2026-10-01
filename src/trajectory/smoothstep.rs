@@ -8,7 +8,22 @@
 //! is the unique polynomial of degree `2k + 1` with `P(0) = 0`, `P(1) = 1` and derivatives
 //! 1..k vanishing at both ends, so the move is `C^k` (the `(k+1)`-th derivative jumps).
 //! `k = 1`: cubic, `k = 2`: quintic (minimum jerk), `k = 3`: septic, ...
-//! With stable inversion, a plant of relative degree `ρ` needs `k >= ρ - 2`.
+//!
+//! # Smoothness for perfect tracking control
+//!
+//! For a plant `N(s) / D(s)` of order `n` and relative degree `ρ = n - deg N`, the state reference
+//! (`ReferenceSignal::to_state_reference`) contains `y_d` up to its `(ρ - 1)`-th derivative
+//! (the zeros of `N` only filter it), so it is free of impulses iff `y_d^(ρ - 1)` is, i.e.
+//!
+//! ```text
+//! k >= ρ - 2
+//! ```
+//!
+//! (otherwise `StableInverseError::NotSmoothEnough`). E.g. `ρ = 1`: any `k`, `ρ = 2`: `k >= 0`,
+//! `ρ = 3`: `k >= 1`. The input `u = D(d/dt) ξ_d` needs `y_d^(ρ)`, which is not required to be
+//! bounded since the lifted PTC input only matches the state at frame instants; with the minimum
+//! `k` the input becomes large pulses at both ends of the move (scaling with `1 / (n ts)`), so use
+//! `k >= ρ - 1` (bounded continuous-time input) or larger in practice.
 
 use num_traits::Float;
 
