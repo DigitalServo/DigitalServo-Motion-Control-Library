@@ -38,7 +38,7 @@ mod traits {
     use dsmc::feedforward::ptc::{LiftedDiscretizedSystem, ReferenceSignal};
     use dsmc::tf;
     use dsmc::trajectory::{
-        Cycloid, ModifiedConstantVelocity, ModifiedSine, ModifiedTrapezoid, SignalTrajectory, Sin, SmoothPolynomial,
+        Cycloid, ModifiedConstantVelocity, ModifiedSine, ModifiedTrapezoid, ReferenceTrajectory, Sin, SmoothPolynomial,
         Trajectory, TrajectoryKind,
     };
 
@@ -97,12 +97,12 @@ mod traits {
         }
     }
 
-    /// The exact signal on the time axis agrees with the normalized profile.
+    /// The exact reference on the time axis agrees with the normalized profile.
     #[test]
-    fn signal_matches_profile() {
+    fn reference_matches_profile() {
         let (distance, duration, start) = (1.5, 0.05, 0.02);
-        let sin = Sin.signal(distance, duration, start).inverse_laplace();
-        let poly = SmoothPolynomial { smoothness: 4 }.signal(distance, duration, start);
+        let sin = Sin.reference(distance, duration, start).inverse_laplace();
+        let poly = SmoothPolynomial { smoothness: 4 }.reference(distance, duration, start);
         for i in 0..=100 {
             let t = i as f64 * 1e-3;
             let x = (t - start) / duration;
@@ -112,10 +112,10 @@ mod traits {
         }
     }
 
-    /// Any `SignalTrajectory` whose signal is a `ReferenceSignal` can drive output-reference PTC.
-    fn ptc_error<P: Trajectory<f64> + SignalTrajectory<f64>>(profile: &P) -> f64
+    /// Any `ReferenceTrajectory` whose signal is a `ReferenceSignal` can drive output-reference PTC.
+    fn ptc_error<P: Trajectory<f64> + ReferenceTrajectory<f64>>(profile: &P) -> f64
     where
-        P::Signal: ReferenceSignal<f64>,
+        P::Reference: ReferenceSignal<f64>,
     {
         let (ts, rest, duration) = (1e-4, 0.02, 0.05);
         let plant = tf!("(1 - 0.001s) / (0.0002s^2 + 0.05s)");
@@ -123,7 +123,7 @@ mod traits {
         let lifted: LiftedDiscretizedSystem<f64> = model.clone().try_into().unwrap();
         let samples = ((2.0 * rest + duration) / ts).round() as usize;
         let u = lifted
-            .calculate_ptc_input_for_reference_output(&profile.signal(1.0, duration, rest), 0.0, samples)
+            .calculate_ptc_input_for_reference_output(&profile.reference(1.0, duration, rest), 0.0, samples)
             .unwrap();
         let mut max_error: f64 = 0.0;
         for (i, &ui) in u.iter().enumerate() {
@@ -137,7 +137,7 @@ mod traits {
     }
 
     #[test]
-    fn signal_trajectories_drive_ptc() {
+    fn reference_trajectories_drive_ptc() {
         assert!(ptc_error(&Sin) < 1e-8);
         assert!(ptc_error(&SmoothPolynomial { smoothness: 2 }) < 1e-8);
     }

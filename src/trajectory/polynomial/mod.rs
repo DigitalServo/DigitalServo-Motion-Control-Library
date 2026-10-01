@@ -10,7 +10,7 @@
 
 use num_traits::Float;
 
-use crate::trajectory::{PiecewisePolynomial, SignalTrajectory, Trajectory, TrajectoryProfile};
+use crate::trajectory::{PiecewisePolynomial, ReferenceTrajectory, Trajectory, TrajectoryProfile};
 use crate::Polynomial;
 
 pub mod piecewise_polynomial;
@@ -83,11 +83,11 @@ impl<T: Float> Trajectory<T> for SmoothPolynomial {
     }
 }
 
-impl<T: Float> SignalTrajectory<T> for SmoothPolynomial {
-    type Signal = PiecewisePolynomial<T>;
+impl<T: Float> ReferenceTrajectory<T> for SmoothPolynomial {
+    type Reference = PiecewisePolynomial<T>;
 
     /// Exact piecewise-polynomial form (see `piecewise`).
-    fn signal(&self, distance: T, duration: T, start: T) -> PiecewisePolynomial<T> {
+    fn reference(&self, distance: T, duration: T, start: T) -> PiecewisePolynomial<T> {
         piecewise(distance, duration, start, self.smoothness)
     }
 }

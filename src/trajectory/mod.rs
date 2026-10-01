@@ -49,7 +49,7 @@ pub trait Trajectory<T: Float> {
 }
 
 /// Any of the profiles of this module, selected by value (e.g. at runtime or in a list) without
-/// boxing. For bounds on what a profile can do (e.g. `SignalTrajectory` for the reference of
+/// boxing. For bounds on what a profile can do (e.g. `ReferenceTrajectory` for the reference of
 /// perfect tracking control), use the individual types instead.
 ///
 /// ```ignore
@@ -123,12 +123,12 @@ impl From<SmoothPolynomial> for TrajectoryKind {
     }
 }
 
-/// Profiles with an exact continuous-time representation on the time axis, e.g. for the reference
-/// of perfect tracking control by stable inversion
-/// (`Signal: feedforward::ptc::ReferenceSignal`).
-pub trait SignalTrajectory<T: Float> {
-    type Signal;
+/// Profiles usable as a reference: they have an exact continuous-time representation on the time
+/// axis (`LaplaceSignal`, `PiecewisePolynomial`), as needed e.g. for the output reference of
+/// perfect tracking control by stable inversion (`Reference: feedforward::ptc::ReferenceSignal`).
+pub trait ReferenceTrajectory<T: Float> {
+    type Reference;
 
     /// A move of `distance` in `duration` [s] starting at `start` [s] (0 before, `distance` after).
-    fn signal(&self, distance: T, duration: T, start: T) -> Self::Signal;
+    fn reference(&self, distance: T, duration: T, start: T) -> Self::Reference;
 }

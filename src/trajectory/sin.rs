@@ -3,7 +3,7 @@ use std::ops::AddAssign;
 use num_traits::{Float, FloatConst};
 
 use crate::laplace_transform::LaplaceSignal;
-use crate::trajectory::{SignalTrajectory, Trajectory, TrajectoryProfile};
+use crate::trajectory::{ReferenceTrajectory, Trajectory, TrajectoryProfile};
 use crate::{Polynomial, TransferFunction};
 
 /// Half-cosine (harmonic) profile: `s = distance / 2 (1 - cos(π x))`.
@@ -28,11 +28,11 @@ impl<T: Float + FloatConst> Trajectory<T> for Sin {
     }
 }
 
-impl<T: Float + FloatConst + AddAssign> SignalTrajectory<T> for Sin {
-    type Signal = LaplaceSignal<T>;
+impl<T: Float + FloatConst + AddAssign> ReferenceTrajectory<T> for Sin {
+    type Reference = LaplaceSignal<T>;
 
     /// Exact Laplace-domain form (see `laplace`).
-    fn signal(&self, distance: T, duration: T, start: T) -> LaplaceSignal<T> {
+    fn reference(&self, distance: T, duration: T, start: T) -> LaplaceSignal<T> {
         laplace(distance, duration, start)
     }
 }
