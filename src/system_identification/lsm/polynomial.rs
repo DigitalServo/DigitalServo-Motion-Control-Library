@@ -2,6 +2,8 @@ use std::ops::{AddAssign, MulAssign};
 use nalgebra::{ComplexField, DMatrix, DVector};
 use num_traits::Float;
 
+/// Least-squares polynomial fit `y = Σ θ_i x^(order - i)`; `identify` returns the
+/// descending-order coefficients. Samples are accumulated with `add`.
 pub struct DataBuffer<T> {
     psi_sum: DVector<T>,
     phi_sum: DMatrix<T>,

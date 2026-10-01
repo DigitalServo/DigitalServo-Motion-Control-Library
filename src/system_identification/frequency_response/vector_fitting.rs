@@ -26,6 +26,7 @@ use thiserror::Error;
 
 use crate::{Continuous, FrequencyResponse, Polynomial, TransferFunction};
 
+/// Errors of vector fitting.
 #[derive(Error, Debug)]
 pub enum VectorFittingError {
     #[error("No sampled data provided")]
@@ -55,11 +56,16 @@ fn poly_from_roots<T: Float + RealField>(roots: &[Complex<T>]) -> Vec<Complex<T>
     p
 }
 
+/// Options of vector fitting.
 #[derive(Debug, Clone)]
 pub struct VectorFittingOptions<T> {
+    /// Maximum number of pole relocation iterations.
     pub max_iter: usize,
+    /// Convergence tolerance.
     pub tol: T,
+    /// Fit the constant term `d`.
     pub fit_d: bool,
+    /// Fit the proportional term `e s`.
     pub fit_e: bool,
 }
 
@@ -74,12 +80,18 @@ impl<T: Float> Default for VectorFittingOptions<T> {
     }
 }
 
+/// Fitted model `G(s) = Σ r_k / (s - p_k) + d + e s`. Converts into a `TransferFunction` with `into`.
 #[derive(Debug, Clone)]
 pub struct VectorFittingResult<T> {
+    /// Poles `p_k`.
     pub poles: Vec<Complex<T>>,
+    /// Residues `r_k`, one per pole.
     pub residues: Vec<Complex<T>>,
+    /// Constant term.
     pub d: T,
+    /// Proportional term (coefficient of `s`).
     pub e: T,
+    /// RMS fitting error after each iteration.
     pub rms_errors: Vec<T>,
 }
 

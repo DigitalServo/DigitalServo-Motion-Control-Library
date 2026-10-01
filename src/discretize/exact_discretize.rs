@@ -50,13 +50,19 @@ where
     }
 }
 
+/// Zero-order-hold discretization of a continuous-time state-space model, with its state,
+/// for sample-by-sample simulation (`update`).
 #[derive(Clone)]
 pub struct DiscretizedSystem<T> {
     /// Continuous-time model the system was discretized from.
     pub continuous: StateSpace<T, Continuous>,
+    /// Discretized model (`discretize_ssr`).
     pub ssr: StateSpace<T, Discrete>,
+    /// Current state `x[k]`.
     pub state: DVector<T>,
+    /// Output `y[k]` of the last `update`.
     pub output: DVector<T>,
+    /// Sampling period.
     pub ts: T,
 }
 

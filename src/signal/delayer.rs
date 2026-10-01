@@ -1,3 +1,4 @@
+/// Pure delay of `delay_sample` samples (ring buffer), initially filled with `T::default()`.
 pub struct Delayer<T> {
     buffer: Vec<T>,
     index: usize,

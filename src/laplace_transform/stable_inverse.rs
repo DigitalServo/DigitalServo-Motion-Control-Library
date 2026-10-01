@@ -19,6 +19,7 @@ use num_traits::Float;
 use std::ops::AddAssign;
 use thiserror::Error;
 
+/// Errors of `stable_inverse` and of the reference generation built on it.
 #[derive(Clone, Debug, Error, PartialEq)]
 pub enum StableInverseError {
     #[error("The system is identically zero, so it has no inverse")]

@@ -1,32 +1,55 @@
+use std::marker::PhantomData;
+
 use nalgebra::Complex;
 
 mod bode_diagram;
+mod frequency_transfer_function;
+mod frequency_unit;
 mod nyquist;
 mod statistics;
 pub mod fft;
 
 pub use bode_diagram::BodeDiagramPlotter;
+pub use frequency_transfer_function::FrequencyTransferFunction;
+pub use frequency_unit::{FrequencyUnit, Hz, RadPerSec};
 pub use nyquist::NyquistPlotter;
 pub use statistics::Statistics;
 
 use num_traits::Float;
-use serde::Serialize;
+use serde::{ser::SerializeStruct, Serialize, Serializer};
 
+/// Complex frequency response `value = G(jω)` at angular frequency `omega` [rad/s].
 #[derive(Copy, Clone)]
 pub struct FrequencyResponse<T> {
+    /// Angular frequency [rad/s].
     pub omega: T,
+    /// `G(jω)`.
     pub value: Complex<T>
 }
 
+/// Serialized flat as `[omega, re, im]`.
+impl<T: Serialize> Serialize for FrequencyResponse<T> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut state = serializer.serialize_struct("FrequencyResponse", 3)?;
+        state.serialize_field("omega", &self.omega)?;
+        state.serialize_field("re", &self.value.re)?;
+        state.serialize_field("im", &self.value.im)?;
+        state.end()
+    }
+}
+
+/// Gain and phase \[rad\] at `frequency`, whose unit is `U` (`Hz` or `RadPerSec`).
 #[derive(Copy, Clone, Serialize)]
-pub struct FrequencyCharacteristics<T>{
+pub struct FrequencyCharacteristics<T, U = Hz>{
     pub frequency: T,
     pub gain: T,
     pub phase: T,
+    #[serde(skip)]
+    _unit: PhantomData<U>,
 }
 
-impl<T: Float> FrequencyCharacteristics<T> {
+impl<T: Float, U> FrequencyCharacteristics<T, U> {
     pub fn new() -> Self {
-        Self { frequency: T::zero(), gain: T::zero(), phase: T::zero() }
+        Self { frequency: T::zero(), gain: T::zero(), phase: T::zero(), _unit: PhantomData }
     }
 }

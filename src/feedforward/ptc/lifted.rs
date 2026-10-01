@@ -16,11 +16,16 @@ use crate::discretize::exact_discretize::DiscretizedSystem;
 use crate::laplace_transform::StableInverseError;
 use crate::{Continuous, Discrete, StateSpace, StateSpaceError};
 
+/// `DiscretizedSystem` lifted over a frame of `order` samples, for multirate perfect tracking
+/// control (see the module documentation). Built with `DiscretizedSystem::try_into`.
 pub struct LiftedDiscretizedSystem<T> {
     /// Continuous-time model the system was discretized from.
     pub continuous: StateSpace<T, Continuous>,
+    /// Lifted model `x[(i+1)n] = A^n x[in] + B_lifted [u[in], ..., u[in+n-1]]`.
     pub ssr: StateSpace<T, Discrete>,
+    /// Sampling period of the input (not of the frame).
     pub ts: T,
+    /// Samples per frame `n` (= number of states).
     pub order: u32,
     inv_b: DMatrix<T>,
 }
@@ -69,6 +74,7 @@ impl<T: Float + ComplexField + RealField> TryInto<LiftedDiscretizedSystem<T>> fo
 }
 
 
+/// Errors of perfect tracking control.
 #[derive(Clone, Debug, Error, PartialEq)]
 pub enum PtcError {
     #[error("Perfect tracking from an output reference supports SISO systems only, got {inputs} inputs and {outputs} outputs")]

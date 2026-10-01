@@ -19,6 +19,7 @@ use std::ops::AddAssign;
 use std::str::FromStr;
 use thiserror::Error;
 
+/// Errors of parsing a transfer function from a string (`FromStr`, `tf!`).
 #[derive(Clone, Debug, Error, PartialEq)]
 pub enum TransferFunctionParseError {
     #[error("Unexpected character '{ch}' at position {pos}")]

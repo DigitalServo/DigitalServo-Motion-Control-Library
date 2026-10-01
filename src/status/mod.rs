@@ -1,11 +1,16 @@
 use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign};
 use num_traits::Float;
 
+/// Motion state of an axis. Arithmetic operators act element-wise.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Motion<T> {
+    /// Position.
     pub x: T,
+    /// Velocity.
     pub v: T,
+    /// Acceleration.
     pub a: T,
+    /// Force (or torque).
     pub f: T
 }
 

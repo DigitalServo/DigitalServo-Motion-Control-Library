@@ -7,6 +7,8 @@ use std::path::Path;
 
 pub mod serializer;
 
+/// CSV logger: each `add` writes one `Serialize` value as a row (struct fields become columns).
+/// Parent directories are created as needed; the buffer is flushed every 100 rows and on drop.
 pub struct DataStorage {
     writer: Option<csv::Writer<BufWriter<File>>>,
     cnt: usize,

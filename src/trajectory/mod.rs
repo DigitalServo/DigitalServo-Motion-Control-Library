@@ -14,9 +14,13 @@ pub use sin::Sin;
 
 use num_traits::{Float, FloatConst};
 
+/// Position, velocity and acceleration of a trajectory at one instant (see `Trajectory::profile`).
 pub struct TrajectoryProfile<T> {
+    /// Position.
     pub s: T,
+    /// Velocity.
     pub v: T,
+    /// Acceleration.
     pub a: T
 }
 

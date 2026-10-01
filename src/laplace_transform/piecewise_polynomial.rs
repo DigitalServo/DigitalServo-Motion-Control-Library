@@ -16,6 +16,8 @@ use num_traits::Float;
 /// round-off from the Taylor shift and are set to zero, so that continuity is detected exactly.
 const JUMP_RELATIVE_TOLERANCE: f64 = 1e-9;
 
+/// Signal made of polynomial pieces in time: zero before `start`, then `pieces` in order,
+/// then `tail` (see the module documentation).
 #[derive(Clone, Debug)]
 pub struct PiecewisePolynomial<T> {
     /// Time at which the first piece starts (`y(t) = 0` before).

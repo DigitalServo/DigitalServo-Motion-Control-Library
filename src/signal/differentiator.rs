@@ -3,6 +3,9 @@ use num_traits::Float;
 
 use crate::binomial_coefficients;
 
+/// Pseudo-differentiator based on a minimal-order state observer of a chain of integrators,
+/// with all observer poles at `-bandwidth`. `filter_order` adds extra low-pass states.
+/// `update` returns the `derivative_order`-th derivative; `output[i]` holds the `(i + 1)`-th one.
 #[derive(Debug, Clone)]
 pub struct Differentiator<T>
 {

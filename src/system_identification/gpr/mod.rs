@@ -2,10 +2,16 @@ use std::ops::{AddAssign, MulAssign};
 
 use num_traits::Float;
 
+/// Gaussian process regression of a scalar function `y = f(x)` with a user-given kernel.
+/// Samples are added with `add`; the inverse covariance matrix is recomputed lazily in `predict`.
 pub struct GaussianProcessRegression<T> {
+    /// Sampled inputs.
     pub x_sample: Vec<T>,
+    /// Sampled outputs.
     pub y_sample: Vec<T>,
+    /// Largest sampled input.
     pub x_max: T,
+    /// Smallest sampled input.
     pub x_min: T,
     kernel: fn(T, T) -> T,
     sense_variance: T,
@@ -13,9 +19,12 @@ pub struct GaussianProcessRegression<T> {
     sample: usize,
 }
 
+/// Prediction of `GaussianProcessRegression::predict`.
 #[derive(Debug)]
 pub struct PredictedValue<T> {
+    /// Posterior mean.
     pub mean: T,
+    /// Posterior standard deviation (including the measurement noise).
     pub stdev: T,
 }
 

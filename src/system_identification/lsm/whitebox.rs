@@ -2,7 +2,8 @@ use std::ops::{AddAssign, MulAssign};
 use nalgebra::{ComplexField, DMatrix, DVector, Scalar};
 use num_traits::Float;
 
-//Use sequential data
+/// Least-squares estimation of `θ` in the linear regression `y = φ^T θ`.
+/// Samples are accumulated with `add` (only `Σ φ φ^T` and `Σ φ y` are kept).
 pub struct DataBuffer<T> {
     psi_sum: DVector<T>,
     phi_sum: DMatrix<T>,

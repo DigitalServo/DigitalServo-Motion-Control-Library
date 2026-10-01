@@ -24,9 +24,12 @@ pub struct TransferFunction<T, D = Continuous> {
     _domain: PhantomData<D>,
 }
 
+/// Poles and zeros of a `TransferFunction` (see `TransferFunction::pz_map`).
 #[derive(Clone, Debug)]
 pub struct PzMap<T, D = Continuous> {
+    /// Roots of the denominator.
     pub poles: Vec<Complex<T>>,
+    /// Roots of the numerator.
     pub zeros: Vec<Complex<T>>,
     _domain: PhantomData<D>,
 }

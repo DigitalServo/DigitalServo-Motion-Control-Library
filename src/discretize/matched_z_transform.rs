@@ -43,6 +43,7 @@ pub enum ZerosAtInfinity {
     KeepOneDelay,
 }
 
+/// Errors of the matched z-transform (`to_discrete`) and of its inverse.
 #[derive(Clone, Debug, Error, PartialEq)]
 pub enum MatchedZError {
     #[error("The transfer function is zero")]

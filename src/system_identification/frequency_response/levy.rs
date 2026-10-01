@@ -6,6 +6,7 @@ use thiserror::Error;
 
 use crate::{Continuous, FrequencyResponse, Polynomial, TransferFunction};
 
+/// Errors of Levy's method and the Sanathanan-Koerner iteration.
 #[derive(Error, Debug)]
 pub enum LevyIdentificationError {
     #[error("No sampled data provided")]

@@ -2,7 +2,10 @@ use std::ops::{AddAssign, DivAssign, MulAssign, SubAssign};
 use nalgebra::{DMatrix, DVector, Scalar};
 use num_traits::Float;
 
+/// Recursive polynomial fit `y = Σ θ_i x^(order - i)` by a Kalman filter (see `whitebox::KalmanFilter`);
+/// `identify` returns the descending-order coefficients.
 pub struct KalmanFilter<T> {
+    /// Current estimate of the descending-order coefficients.
     pub parameter: DVector<T>,
     covariance: DMatrix<T>,
     sigma_v: DMatrix<T>,

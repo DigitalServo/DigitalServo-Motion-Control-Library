@@ -7,10 +7,14 @@ use std::marker::PhantomData;
 
 use crate::{Continuous, Polynomial, TransferFunction};
 
+/// Dimensions of a `StateSpace`.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct StateSpaceOrder {
+    /// Number of states.
     pub system: usize,
+    /// Number of inputs.
     pub input: usize,
+    /// Number of outputs.
     pub output: usize,
 }
 

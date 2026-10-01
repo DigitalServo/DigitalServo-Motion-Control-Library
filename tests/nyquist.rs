@@ -26,7 +26,7 @@ fn test_nyquist_plot() {
         {
             let responses = plotter_n.plot(&tf);
             for res in responses {
-                storage_n.add(&[res.re, res.im]).unwrap();
+                storage_n.add(&res).unwrap();
             }
         }
         {

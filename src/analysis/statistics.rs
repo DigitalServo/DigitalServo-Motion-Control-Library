@@ -1,5 +1,8 @@
 use num_traits;
 
+/// Running statistics of a data stream, updated by `add`.
+/// Sums are accumulated relative to `offset` (a value close to the data) to reduce cancellation
+/// in the variance.
 #[derive(Debug, Copy, Clone)]
 pub struct Statistics<T> {
     len: usize,
@@ -7,10 +10,13 @@ pub struct Statistics<T> {
     sum: T,
     sum_of_square: T,
     pub mean: T,
+    /// Population variance (divided by the number of samples).
     pub variance: T,
+    /// Standard deviation, `sqrt(variance)`.
     pub sigma: T,
     pub max: T,
     pub min: T,
+    /// `max - min`.
     pub range: T,
 }
 

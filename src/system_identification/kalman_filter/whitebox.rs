@@ -2,7 +2,10 @@ use std::ops::{AddAssign, DivAssign, MulAssign, SubAssign};
 use nalgebra::{DMatrix, DVector, Scalar};
 use num_traits::Float;
 
+/// Recursive estimation of `θ` in the linear regression `y = φ^T θ` by a Kalman filter,
+/// modeling `θ` as a random walk (process noise variance `sigma_v`, measurement noise variance `sigma_w`).
 pub struct KalmanFilter<T> {
+    /// Current estimate of `θ`.
     pub parameter: DVector<T>,
     covariance: DMatrix<T>,
     sigma_v: DMatrix<T>,

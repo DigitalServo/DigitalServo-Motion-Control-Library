@@ -1,5 +1,6 @@
 use thiserror::Error;
 
+/// Errors of building or converting a `StateSpace`.
 #[derive(Clone, Debug, Error, PartialEq)]
 pub enum StateSpaceError {
     #[error("System matrix A must be square and non-empty. Got {rows}×{cols}")]
