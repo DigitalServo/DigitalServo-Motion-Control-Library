@@ -123,14 +123,15 @@ mod traits {
         let lifted: LiftedDiscretizedSystem<f64> = model.clone().try_into().unwrap();
         let samples = ((2.0 * rest + duration) / ts).round() as usize;
         let u = lifted
-            .calculate_ptc_input_for_reference_output(&profile.reference(1.0, duration, rest), 0.0, samples)
+            .calculate_ptc_input_for_reference_output(&profile.reference(1.0, duration, rest), samples)
             .unwrap();
         let mut max_error: f64 = 0.0;
         for (i, &ui) in u.iter().enumerate() {
-            model.update(&[ui]).unwrap();
-            if (i + 1) % 2 == 0 {
-                let x = ((i + 1) as f64 * ts - rest) / duration;
-                max_error = max_error.max((model.output[0] - profile.profile(1.0, x).s).abs());
+            // y[i] at t = i ts; frames start at i = 0, 2, 4, ...
+            let yi = model.update(&[ui]).unwrap()[0];
+            if i % 2 == 0 {
+                let x = (i as f64 * ts - rest) / duration;
+                max_error = max_error.max((yi - profile.profile(1.0, x).s).abs());
             }
         }
         max_error

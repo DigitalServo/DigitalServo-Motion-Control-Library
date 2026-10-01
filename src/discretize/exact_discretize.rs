@@ -3,7 +3,7 @@ use std::borrow::Borrow;
 use nalgebra::{ComplexField, DMatrix, DVector, RealField};
 use num_traits::Float;
 
-use crate::{Continuous, Discrete, StateSpace, StateSpaceError, StateSpaceOrder, TransferFunction};
+use crate::{Continuous, Discrete, StateSpace, StateSpaceError, TransferFunction};
 
 pub fn discretize_ssr<T: Float + ComplexField + RealField, S: Borrow<StateSpace<T, Continuous>>>(ssr: S, ts: T) -> Result<StateSpace<T, Discrete>, StateSpaceError> {
     let system = ssr.borrow();
@@ -31,6 +31,25 @@ pub fn discretize_ssr<T: Float + ComplexField + RealField, S: Borrow<StateSpace<
     StateSpace::new(a, b, c, d)
 }
 
+/// Step-invariant (zero-order hold) discretization of a transfer function:
+/// `G(z) = (1 - z^-1) Z[L^-1[G(s) / s]]`, computed through the state space
+/// (controllable canonical realization, `discretize_ssr`, then `C (zI - A_d)^-1 B_d + D`).
+/// A static gain is returned as is.
+pub fn discretize<T, S>(tf: S, ts: T) -> Result<TransferFunction<T, Discrete>, StateSpaceError>
+where
+    T: Float + ComplexField + RealField,
+    S: Borrow<TransferFunction<T, Continuous>>,
+{
+    let tf = tf.borrow();
+    match StateSpace::controllable_canonical(tf) {
+        Ok(ssr) => discretize_ssr(&ssr, ts)?.transfer_function(),
+        Err(StateSpaceError::EmptySystem) => {
+            Ok(TransferFunction::from_polynomials(tf.numerator.clone(), tf.denominator.clone()))
+        }
+        Err(e) => Err(e),
+    }
+}
+
 #[derive(Clone)]
 pub struct DiscretizedSystem<T> {
     /// Continuous-time model the system was discretized from.
@@ -51,53 +70,22 @@ impl<T: Float + ComplexField + RealField> DiscretizedSystem<T> {
         Ok(Self { continuous, ssr, state, output, ts})
     }
 
+    /// Discretized controllable canonical realization of `tf_c` (monic denominator,
+    /// `B = [0, ..., 0, 1]^T`; see `StateSpace::controllable_canonical`). Works for any proper `tf_c`.
     pub fn from_tf<S: Borrow<TransferFunction<T, Continuous>>>(tf_c: S, ts: T) -> Result<Self, StateSpaceError> {
-        let tf_c = tf_c.borrow();
-
-        let order = StateSpaceOrder {
-            system: tf_c.denominator.len() - 1,
-            input: 1,
-            output: 1,
-        };
-
-        let scaler = T::one() / tf_c.denominator[0];
-        let numerator: Vec<T> = tf_c.numerator.iter().map(|x| *x * scaler).collect();
-        let denominator: Vec<T> = tf_c.denominator.iter().map(|x| *x * scaler).collect();
-
-        // Coefficients of the denominator and numerator
-        let ak: Vec<T> = denominator[1..].iter().rev().map(|x| -*x).collect();
-        let bk: Vec<T> = numerator.into_iter().rev().collect();
-
-        let dc_gain = bk.get(0).copied().ok_or(StateSpaceError::EmptySystem)?;
-
-        let mut a = DMatrix::zeros(order.system, order.system);
-        for i in 0..(order.system - 1) {
-            a[(i, i + 1)] = T::one();
-        }
-        for (j, &val) in ak.iter().enumerate() {
-            a[(order.system - 1, j)] = val;
-        }
-
-        let mut b = DMatrix::<T>::zeros(order.system, order.input);
-        b[(order.system - 1, 0)] = dc_gain;
-
-        let mut c = DMatrix::zeros(order.output, order.system);
-        for i in 0..order.system {
-            if let Some(&val) = bk.get(i) {
-                c[(0, i)] = val / dc_gain;
-            }
-        }
-
-        let d = DMatrix::zeros(order.output, order.input);
-
-        let continuous = StateSpace::new(a, b, c, d)?;
-        let ssr = discretize_ssr(&continuous, ts)?;
-        let state = DVector::zeros(ssr.order.system);
-        let output = DVector::zeros(ssr.order.output);
-
-        Ok(Self { continuous, ssr, state, output, ts})
+        Self::from_ssr(StateSpace::controllable_canonical(tf_c.borrow())?, ts)
     }
 
+    /// Discretized controllable canonical realization of `tf_c` whose output equals a state at low
+    /// frequency (`x = u / D(s)`, `y = N(s) x` with `N` normalized; `y = x_1` at DC if `N(0) != 0`,
+    /// and exactly without zeros; see `StateSpace::normalized_controllable_canonical`). These are the
+    /// state coordinates of `TransferFunction::state_reference_from_output`.
+    pub fn from_tf_normalized<S: Borrow<TransferFunction<T, Continuous>>>(tf_c: S, ts: T) -> Result<Self, StateSpaceError> {
+        Self::from_ssr(StateSpace::normalized_controllable_canonical(tf_c.borrow())?, ts)
+    }
+
+    /// One sampling period with input `u[k]`: returns (and stores in `output`) `y[k] = C x[k] + D u[k]`,
+    /// the output at the same instant as the input, then advances the state to `x[k+1] = A x[k] + B u[k]`.
     pub fn update(&mut self, u: &[T]) -> Result<Vec<T>, StateSpaceError> {
         if u.len() != self.ssr.order.input {
             return Err(StateSpaceError::InputVector {
@@ -107,10 +95,9 @@ impl<T: Float + ComplexField + RealField> DiscretizedSystem<T> {
         }
 
         let u: DVector<T> = DVector::from_row_slice(u);
-        self.state = (&self.ssr.a * &self.state) + (&self.ssr.b * &u);
         self.output = (&self.ssr.c * &self.state) + (&self.ssr.d * &u);
+        self.state = (&self.ssr.a * &self.state) + (&self.ssr.b * &u);
 
         Ok(self.output.as_slice().to_vec())
     }
 }
-

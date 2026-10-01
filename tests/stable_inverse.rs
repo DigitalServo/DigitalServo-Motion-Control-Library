@@ -106,7 +106,7 @@ mod state_reference {
     fn without_zeros_reference_is_trajectory() {
         // ξ = y, so the state reference is [s, v] (what tests/ptc.rs passes directly).
         let plant: TransferFunction<f64> = TransferFunction::continuous(&[1.0], &[2.0e-4, 0.05, 0.0]);
-        let reference = plant.state_reference(&trajectory::sin::laplace(1.0, duration(), REST)).unwrap();
+        let reference = plant.state_reference_from_output(&trajectory::sin::laplace(1.0, duration(), REST)).unwrap();
         assert_eq!(reference.order(), 2);
         use dsmc::trajectory::Trajectory as _;
         let samples = trajectory::Sin.generate(1.0, MOVE_SAMPLES);
@@ -122,7 +122,7 @@ mod state_reference {
         // Zero at s = +1000 [rad/s]: y = ξ - ξ' / 1000
         let plant = tf!("(1 - 0.001s) / (0.0002s^2 + 0.05s)");
         let y_d = trajectory::sin::laplace(1.0, duration(), REST);
-        let reference = plant.state_reference(&y_d).unwrap();
+        let reference = plant.state_reference_from_output(&y_d).unwrap();
         let y = y_d.inverse_laplace();
 
         // Output equation holds at all times, and pre-actuation starts before the move.
@@ -137,14 +137,16 @@ mod state_reference {
         // Perfect tracking control on the lifted model: y matches y_d at every frame.
         let total = ((2.0 * REST + duration()) / TS).round() as usize;
         let r = reference.sample(0.0, TS, total);
-        let mut model = DiscretizedSystem::from_tf(&plant, TS).unwrap();
+        // The state reference is in the coordinates of the normalized canonical realization.
+        let mut model = DiscretizedSystem::from_tf_normalized(&plant, TS).unwrap();
         let lifted: LiftedDiscretizedSystem<f64> = model.clone().try_into().unwrap();
         let u = lifted.calculate_ptc_input_for_reference_state(r);
         let mut max_error: f64 = 0.0;
         for (i, &ui) in u.iter().enumerate() {
-            model.update(&[ui]).unwrap();
-            if (i + 1) % reference.order() == 0 {
-                max_error = max_error.max((model.output[0] - y((i + 1) as f64 * TS)).abs());
+            // y[i] at t = i ts; frames start at i = 0, n, 2n, ...
+            let yi = model.update(&[ui]).unwrap()[0];
+            if i % reference.order() == 0 {
+                max_error = max_error.max((yi - y(i as f64 * TS)).abs());
             }
         }
         assert!(max_error < 1e-8, "max tracking error at frames: {max_error:e}");
@@ -155,12 +157,12 @@ mod state_reference {
         let y_d = trajectory::sin::laplace(1.0, duration(), REST);
         // Relative degree 4: ξ''' needs y''' of the sin profile, which has impulses.
         assert!(matches!(
-            tf!("1 / (s + 1)^4").state_reference(&y_d),
+            tf!("1 / (s + 1)^4").state_reference_from_output(&y_d),
             Err(StableInverseError::NotSmoothEnough { state: 3 })
         ));
         // Zero on the imaginary axis
         assert!(matches!(
-            tf!("(s^2 + 4) / (s + 1)^3").state_reference(&y_d),
+            tf!("(s^2 + 4) / (s + 1)^3").state_reference_from_output(&y_d),
             Err(StableInverseError::PoleOnImaginaryAxis { .. })
         ));
     }
@@ -208,7 +210,7 @@ mod polynomial_reference {
         // ξ = y: the state reference is [y, y', y'', y'''] of the trajectory itself.
         let plant = tf!("1 / (s (0.005s + 1) (0.001s + 1) (0.0005s + 1))");
         let y_d = trajectory::polynomial::piecewise(1.0, DURATION, REST, 3);
-        let reference = plant.state_reference(&y_d).unwrap();
+        let reference = plant.state_reference_from_output(&y_d).unwrap();
         for i in 0..1000 {
             let t = i as f64 * TS;
             let x = reference.state(t);
@@ -228,7 +230,7 @@ mod polynomial_reference {
     #[test]
     fn output_equation_holds_long_after_the_move() {
         let y_d = trajectory::polynomial::piecewise(1.0, DURATION, REST, 4);
-        let reference = plant().state_reference(&y_d).unwrap();
+        let reference = plant().state_reference_from_output(&y_d).unwrap();
         for t in [0.0, REST - 0.002, REST, REST + 0.01, REST + DURATION, 0.2, 1.0, 10.0, 100.0] {
             let x = reference.state(t);
             assert_close(x[0] - x[1] / 1000.0, y_d.value(t), 1e-9);
@@ -247,8 +249,8 @@ mod polynomial_reference {
     #[test]
     fn matches_laplace_signal_path_near_the_move() {
         let y_d = trajectory::polynomial::piecewise(1.0, DURATION, REST, 4);
-        let exact = plant().state_reference(&y_d).unwrap();
-        let laplace = plant().state_reference(&y_d.laplace()).unwrap();
+        let exact = plant().state_reference_from_output(&y_d).unwrap();
+        let laplace = plant().state_reference_from_output(&y_d.laplace()).unwrap();
         for i in 0..800 {
             let t = i as f64 * TS;
             for (m, (a, b)) in exact.state(t).iter().zip(laplace.state(t)).enumerate() {
@@ -262,17 +264,19 @@ mod polynomial_reference {
     fn perfect_tracking() {
         let plant = plant();
         let y_d = trajectory::polynomial::piecewise(1.0, DURATION, REST, 4);
-        let reference = plant.state_reference(&y_d).unwrap();
+        let reference = plant.state_reference_from_output(&y_d).unwrap();
         let total = ((2.0 * REST + DURATION) / TS).round() as usize;
         let r = reference.sample(0.0, TS, total);
-        let mut model = DiscretizedSystem::from_tf(&plant, TS).unwrap();
+        // The state reference is in the coordinates of the normalized canonical realization.
+        let mut model = DiscretizedSystem::from_tf_normalized(&plant, TS).unwrap();
         let lifted: LiftedDiscretizedSystem<f64> = model.clone().try_into().unwrap();
         let u = lifted.calculate_ptc_input_for_reference_state(r);
         let mut max_error: f64 = 0.0;
         for (i, &ui) in u.iter().enumerate() {
-            model.update(&[ui]).unwrap();
-            if (i + 1) % reference.order() == 0 {
-                max_error = max_error.max((model.output[0] - y_d.value((i + 1) as f64 * TS)).abs());
+            // y[i] at t = i ts; frames start at i = 0, n, 2n, ...
+            let yi = model.update(&[ui]).unwrap()[0];
+            if i % reference.order() == 0 {
+                max_error = max_error.max((yi - y_d.value(i as f64 * TS)).abs());
             }
         }
         assert!(max_error < 1e-6, "max tracking error at frames: {max_error:e}");
@@ -283,11 +287,11 @@ mod polynomial_reference {
         // ρ = 4 needs k >= 2: with k = 1, ξ'''' would contain impulses (state index 1 + 2 + 1 = 4).
         let y_d = trajectory::polynomial::piecewise(1.0, DURATION, REST, 1);
         assert!(matches!(
-            plant().state_reference(&y_d),
+            plant().state_reference_from_output(&y_d),
             Err(StableInverseError::NotSmoothEnough { state: 4 })
         ));
         let y_d = trajectory::polynomial::piecewise(1.0, DURATION, REST, 2);
-        assert!(plant().state_reference(&y_d).is_ok());
+        assert!(plant().state_reference_from_output(&y_d).is_ok());
         let _: &dyn ReferenceSignal<f64> = &y_d;
     }
 

@@ -1,8 +1,8 @@
 //! State reference for perfect tracking control by stable inversion.
 //!
-//! For `G(s) = N(s) / D(s)` (`n = deg D`) in the controllable canonical realization used by
-//! `DiscretizedSystem::from_tf`, the state is `x = [ξ, ξ', ..., ξ^(n-1)]` with `y = N(s) / N(0) ξ`,
-//! hence for a desired output `y_d`
+//! For `G(s) = N(s) / D(s)` (`n = deg D`) in the controllable canonical realization normalized by
+//! `N(0)` (`StateSpace::normalized_controllable_canonical`, used by `DiscretizedSystem::from_tf_normalized`),
+//! the state is `x = [ξ, ξ', ..., ξ^(n-1)]` with `y = N(s) / N(0) ξ`, hence for a desired output `y_d`
 //!
 //! ```text
 //! ξ_d^(j)(t) = L^-1[ F_j(s) Y_d(s) ](t),    F_j(s) = N(0) s^j / N(s)    (bilateral, j = 0..n-1)
@@ -30,7 +30,7 @@ pub struct StateReference<T> {
     polynomial: Option<(PiecewisePolynomial<T>, Vec<Vec<T>>)>,
 }
 
-/// Reference trajectories accepted by `TransferFunction::state_reference`.
+/// Reference trajectories accepted by `TransferFunction::state_reference_from_output`.
 pub trait ReferenceSignal<T> {
     #[doc(hidden)]
     fn state_reference_for(&self, plant: &TransferFunction<T, Continuous>) -> Result<StateReference<T>, StableInverseError>;
@@ -41,7 +41,7 @@ impl<T: Float + AddAssign> TransferFunction<T, Continuous> {
     /// `LaplaceSignal` (any delayed rationals) or a `PiecewisePolynomial` (evaluated without
     /// cancellation long after the move). Requires that `N(s)` has no zero on the imaginary axis
     /// and that `y_d` is smooth enough that no state reference contains impulses.
-    pub fn state_reference<S: ReferenceSignal<T>>(&self, y_d: &S) -> Result<StateReference<T>, StableInverseError> {
+    pub fn state_reference_from_output<S: ReferenceSignal<T>>(&self, y_d: &S) -> Result<StateReference<T>, StableInverseError> {
         y_d.state_reference_for(self)
     }
 }
@@ -50,8 +50,8 @@ impl<T: Float + AddAssign> TransferFunction<T, Continuous> {
 struct Numerator<T> {
     /// Descending, leading zeros removed.
     coefficients: Vec<T>,
-    /// `N(0)`
-    at_zero: T,
+    /// `N(0)` (`y = N(s) / N(0) ξ`)
+    scale: T,
     zeros: Vec<PoleTerm<T>>,
     /// `n = deg D`
     order: usize,
@@ -61,7 +61,7 @@ impl<T: Float + AddAssign> Numerator<T> {
     fn of(plant: &TransferFunction<T, Continuous>) -> Result<Self, StableInverseError> {
         let coefficients: Vec<T> = plant.numerator.iter().copied().skip_while(|c| c.is_zero()).collect();
         let order = plant.denominator.iter().skip_while(|c| c.is_zero()).count().saturating_sub(1);
-        let Some(&at_zero) = coefficients.last() else {
+        let Some(&scale) = coefficients.last() else {
             return Err(StableInverseError::ZeroSystem);
         };
         let zeros = TransferFunction::<T, Continuous>::from_polynomials(
@@ -73,7 +73,7 @@ impl<T: Float + AddAssign> Numerator<T> {
         if let Some(z) = zeros.iter().find(|z| z.pole.re.is_zero()) {
             return Err(StableInverseError::PoleOnImaginaryAxis { re: to_f64(z.pole.re), im: to_f64(z.pole.im) });
         }
-        Ok(Self { coefficients, at_zero, zeros, order })
+        Ok(Self { coefficients, scale, zeros, order })
     }
 
     fn degree(&self) -> usize {
@@ -81,9 +81,9 @@ impl<T: Float + AddAssign> Numerator<T> {
     }
 
     /// `N(0) s^j` (descending)
-    fn gain_s_j(&self, j: usize) -> Polynomial<T> {
+    fn scaled_s_j(&self, j: usize) -> Polynomial<T> {
         let mut p = Polynomial(vec![T::zero(); j + 1]);
-        p[0] = self.at_zero;
+        p[0] = self.scale;
         p
     }
 }
@@ -116,12 +116,12 @@ impl<T: Float + AddAssign> ReferenceSignal<T> for LaplaceSignal<T> {
         let n_poly = Polynomial(numer.coefficients.clone());
         let states = (0..numer.order)
             .map(|j| {
-                let gain_s_j = numer.gain_s_j(j);
+                let scaled_s_j = numer.scaled_s_j(j);
                 self.components
                     .iter()
                     .map(|c| {
                         let pf = TransferFunction::<T, Continuous>::from_polynomials(
-                            &gain_s_j * &c.rational.numerator,
+                            &scaled_s_j * &c.rational.numerator,
                             &n_poly * &c.rational.denominator,
                         )
                         .partial_fraction();
@@ -160,7 +160,7 @@ impl<T: Float + AddAssign> ReferenceSignal<T> for PiecewisePolynomial<T> {
             .map(|j| {
                 let mut f = vec![T::zero(); count];
                 for k in 0..count {
-                    let mut acc = if k == j { numer.at_zero } else { T::zero() };
+                    let mut acc = if k == j { numer.scale } else { T::zero() };
                     for l in 1..=k.min(numer.degree()) {
                         acc = acc - n_ascending[l] * f[k - l];
                     }
@@ -179,7 +179,7 @@ impl<T: Float + AddAssign> ReferenceSignal<T> for PiecewisePolynomial<T> {
                         // F_j R_i = N(0) s^j r(s) / (N(s) s^M)
                         let rational = jump_rational(jump);
                         let mut num: Vec<Complex<T>> =
-                            rational.numerator.iter().map(|&c| Complex::from(c * numer.at_zero)).collect();
+                            rational.numerator.iter().map(|&c| Complex::from(c * numer.scale)).collect();
                         num.extend(std::iter::repeat_n(Complex::zero(), j));
                         let power_of_s = rational.denominator.len() - 1;
 

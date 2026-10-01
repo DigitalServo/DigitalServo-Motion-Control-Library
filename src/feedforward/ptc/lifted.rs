@@ -14,7 +14,7 @@ use thiserror::Error;
 use super::ReferenceSignal;
 use crate::discretize::exact_discretize::DiscretizedSystem;
 use crate::laplace_transform::StableInverseError;
-use crate::{Continuous, Discrete, Polynomial, StateSpace, StateSpaceError, TransferFunction};
+use crate::{Continuous, Discrete, StateSpace, StateSpaceError};
 
 pub struct LiftedDiscretizedSystem<T> {
     /// Continuous-time model the system was discretized from.
@@ -108,29 +108,29 @@ impl<T: Float + ComplexField + RealField> LiftedDiscretizedSystem<T> {
     }
 
     /// Perfect tracking control input that makes the output follow `y_d`, for `samples` samples
-    /// starting at `t0` (rounded up to whole frames of `n` samples).
+    /// (rounded up to whole frames of `n` samples). `u[k]` is applied at `t = k ts`, on the same
+    /// time axis as `y_d`: place the move on it with the trajectory's start time (rest time).
     ///
     /// The state reference is obtained by stable inversion (bilateral Laplace transform) of the
-    /// continuous-time plant `G(s) = C (sI - A)^-1 B`, see `TransferFunction::state_reference`.
+    /// continuous-time plant `G(s) = C (sI - A)^-1 B`, see `TransferFunction::state_reference_from_output`.
     /// Unstable zeros of `G` make it non-causal: the input starts before the trajectory does
     /// (pre-actuation), so leave enough rest time before the move.
     pub fn calculate_ptc_input_for_reference_output<S: ReferenceSignal<T>>(
         &self,
         y_d: &S,
-        t0: T,
         samples: usize,
     ) -> Result<Vec<T>, PtcError> {
-        let reference = self.reference_state(y_d)?;
+        let reference = self.state_reference_from_output(y_d)?;
         let n = self.order as usize;
         let frame_time = self.ts * T::from(n).unwrap();
         let frames: Vec<DVector<T>> = (0..=samples.div_ceil(n))
-            .map(|k| reference(t0 + frame_time * T::from(k).unwrap()))
+            .map(|k| reference(frame_time * T::from(k).unwrap()))
             .collect();
         Ok(self.inputs_from_frame_states(&frames))
     }
 
     /// State reference `x_d(t)` (in this system's state coordinates) that makes the output follow `y_d`.
-    pub fn reference_state<S: ReferenceSignal<T>>(&self, y_d: &S) -> Result<impl Fn(T) -> DVector<T> + use<T, S>, PtcError> {
+    pub fn state_reference_from_output<S: ReferenceSignal<T>>(&self, y_d: &S) -> Result<impl Fn(T) -> DVector<T> + use<T, S>, PtcError> {
         let sys = &self.continuous;
         if sys.order.input != 1 || sys.order.output != 1 {
             return Err(PtcError::NotSiso { inputs: sys.order.input, outputs: sys.order.output });
@@ -139,12 +139,12 @@ impl<T: Float + ComplexField + RealField> LiftedDiscretizedSystem<T> {
             return Err(PtcError::Feedthrough);
         }
 
-        let plant = transfer_function(&sys.a, &sys.b, &sys.c);
-        let reference = plant.state_reference(y_d)?;
+        let plant = sys.transfer_function().map_err(|_| PtcError::NotSiso { inputs: sys.order.input, outputs: sys.order.output })?;
+        let reference = plant.state_reference_from_output(y_d)?;
 
-        // x = T x_c with the controllable canonical realization (A_c, B_c) of `DiscretizedSystem::from_tf`
-        // (in which `StateReference` is expressed): T = W(A, B) W(A_c, B_c)^-1.
-        let canonical = DiscretizedSystem::from_tf(&plant, T::one()).map_err(|_| PtcError::Uncontrollable)?.continuous;
+        // x = T x_c with the controllable canonical realization (A_c, B_c) (in which `StateReference`
+        // is expressed): T = W(A, B) W(A_c, B_c)^-1.
+        let canonical = StateSpace::normalized_controllable_canonical(&plant).map_err(|_| PtcError::Uncontrollable)?;
         let w = controllability_matrix(&sys.a, &sys.b);
         let w_c = controllability_matrix(&canonical.a, &canonical.b);
         let w_c_inv = w_c.try_inverse().ok_or(PtcError::Uncontrollable)?;
@@ -167,27 +167,4 @@ fn controllability_matrix<T: Float + ComplexField + RealField>(a: &DMatrix<T>, b
         column = a * column;
     }
     w
-}
-
-/// `C (sI - A)^-1 B` (single input / output) by the Faddeev-LeVerrier algorithm:
-/// `adj(sI - A) = Σ_k M_k s^(n-1-k)`, `M_0 = I`, `M_k = A M_(k-1) + c_k I`,
-/// `det(sI - A) = s^n + c_1 s^(n-1) + ... + c_n` with `c_k = -tr(A M_(k-1)) / k`.
-fn transfer_function<T: Float + ComplexField + RealField>(
-    a: &DMatrix<T>,
-    b: &DMatrix<T>,
-    c: &DMatrix<T>,
-) -> TransferFunction<T, Continuous> {
-    let n = a.nrows();
-    let identity = DMatrix::<T>::identity(n, n);
-    let mut m = identity.clone();
-    let mut denominator = vec![T::one()];
-    let mut numerator = Vec::with_capacity(n);
-    for k in 1..=n {
-        numerator.push((c * &m * b)[(0, 0)]);
-        let am = a * &m;
-        let ck = -am.trace() / T::from(k).unwrap();
-        denominator.push(ck);
-        m = am + &identity * ck;
-    }
-    TransferFunction::from_polynomials(Polynomial(numerator), Polynomial(denominator))
 }

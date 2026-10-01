@@ -43,4 +43,10 @@ pub enum StateSpaceError {
 
     #[error("Matrix is singular")]
     SingularMatrix,
+
+    #[error("Only single-input single-output systems are supported, got {inputs} inputs and {outputs} outputs")]
+    NotSiso { inputs: usize, outputs: usize },
+
+    #[error("Improper transfer function (numerator degree {numerator} > denominator degree {denominator}) has no state-space realization")]
+    Improper { numerator: usize, denominator: usize },
 }

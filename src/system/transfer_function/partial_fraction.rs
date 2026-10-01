@@ -57,7 +57,7 @@ impl<T: Float + AddAssign> TransferFunction<T, Continuous> {
 
         let denom_complex = Polynomial(denom.iter().map(|&c| Complex::from(c)).collect());
         let roots = dka_method(&denom_complex).unwrap_or_default();
-        let poles = group_roots(&denom_complex, &roots, rel_tol);
+        let poles = group_roots(&denom_complex, &roots, rel_tol, rel_tol);
 
         let terms = poles
             .iter()
@@ -108,8 +108,14 @@ fn polynomial_division<T: Float>(numer: &[T], denom: &[T]) -> (Polynomial<T>, Ve
 /// Group numerically found roots into `(pole, multiplicity)`. A repeated root of multiplicity m
 /// is found as a small cluster (spread ~ eps^(1/m)), so roots within `rel_tol` are merged.
 /// The cluster mean is then refined by Newton's method on `D^(m-1)(s)`, for which the pole is
-/// a simple root. Poles nearly on the real / imaginary axis are snapped onto it.
-pub(super) fn group_roots<T: Float>(denom: &Polynomial<Complex<T>>, roots: &[Complex<T>], rel_tol: T) -> Vec<(Complex<T>, usize)> {
+/// a simple root. Real / imaginary parts within `snap_tol` (relative to `max(|p|, 1)`) are
+/// snapped to zero, so that poles nearly on the real / imaginary axis lie exactly on it.
+pub(super) fn group_roots<T: Float>(
+    denom: &Polynomial<Complex<T>>,
+    roots: &[Complex<T>],
+    rel_tol: T,
+    snap_tol: T,
+) -> Vec<(Complex<T>, usize)> {
     // (sum of members, count)
     let mut groups: Vec<(Complex<T>, usize)> = Vec::new();
     for &r in roots {
@@ -132,7 +138,7 @@ pub(super) fn group_roots<T: Float>(denom: &Polynomial<Complex<T>>, roots: &[Com
             if m > 1 {
                 p = refine_repeated_root(denom, p, m);
             }
-            let scale = rel_tol * p.norm().max(T::one());
+            let scale = snap_tol * p.norm().max(T::one());
             if p.im.abs() <= scale {
                 p.im = T::zero();
             }

@@ -37,7 +37,7 @@ pub fn normalized_coefficients<T: Float>(k: usize) -> Vec<T> {
 }
 
 /// A move of `distance` in `duration` [s] starting at `start` [s] (0 before, `distance` after),
-/// `C^k` with `k = smoothness`. Use it as the reference of `TransferFunction::state_reference`,
+/// `C^k` with `k = smoothness`. Use it as the reference of `TransferFunction::state_reference_from_output`,
 /// or evaluate it with `value` / `derivatives`.
 pub fn piecewise<T: Float>(distance: T, duration: T, start: T, smoothness: usize) -> PiecewisePolynomial<T> {
     // p(τ) = distance P(τ / duration): coefficient of τ^i is distance P_i / duration^i

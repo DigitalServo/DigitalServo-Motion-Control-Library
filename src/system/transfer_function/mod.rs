@@ -10,6 +10,7 @@ mod parser;
 mod partial_fraction;
 pub use partial_fraction::{PartialFraction, PoleTerm};
 pub(crate) use partial_fraction::{fmt_num, principal_part, push_term};
+
 pub use parser::TransferFunctionParseError;
 #[doc(hidden)]
 pub use parser::{__detect_domain, __DomainTag, __SelectDomain};
@@ -81,9 +82,17 @@ fn trim_leading_zeros<T: Float>(p: &Polynomial<T>) -> Polynomial<T> {
 /// Roots of a descending-order real polynomial as `(root, multiplicity)`. Clusters of a repeated
 /// root (spread ~eps^(1/m)) are merged and refined (see `partial_fraction::group_roots`).
 fn grouped_roots<T: Float>(p: &Polynomial<T>) -> Vec<(Complex<T>, usize)> {
+    let tol = T::from(1e-4).unwrap();
+    roots_with_multiplicity(p, tol, tol)
+}
+
+/// Roots of a descending-order real polynomial as `(root, multiplicity)`: roots within `cluster_tol`
+/// are merged into a refined repeated root, and real / imaginary parts within `snap_tol` are set
+/// to zero (both relative to `max(|root|, 1)`).
+pub(crate) fn roots_with_multiplicity<T: Float>(p: &Polynomial<T>, cluster_tol: T, snap_tol: T) -> Vec<(Complex<T>, usize)> {
     let complex_poly = Polynomial(p.iter().map(|&c| Complex::from(c)).collect());
     let roots = dka_method(&complex_poly).unwrap_or_default();
-    partial_fraction::group_roots(&complex_poly, &roots, T::from(1e-4).unwrap())
+    partial_fraction::group_roots(&complex_poly, &roots, cluster_tol, snap_tol)
 }
 
 /// Divide `p` by `Π (s - c)^k` with synthetic division, discarding the (round-off) remainders.

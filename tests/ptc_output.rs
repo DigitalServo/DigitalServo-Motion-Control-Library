@@ -23,9 +23,10 @@ fn max_frame_error(mut model: DiscretizedSystem<f64>, u: &[f64], order: usize) -
     let y = y_d();
     let mut max_error: f64 = 0.0;
     for (i, &ui) in u.iter().enumerate() {
-        model.update(&[ui]).unwrap();
-        if (i + 1) % order == 0 {
-            max_error = max_error.max((model.output[0] - y.value((i + 1) as f64 * TS)).abs());
+        // y[i] at t = i ts; frames start at i = 0, n, 2n, ...
+        let yi = model.update(&[ui]).unwrap()[0];
+        if i % order == 0 {
+            max_error = max_error.max((yi - y.value(i as f64 * TS)).abs());
         }
     }
     max_error
@@ -37,13 +38,14 @@ fn samples() -> usize {
 
 #[test]
 fn canonical_realization() {
-    let model = DiscretizedSystem::from_tf(plant(), TS).unwrap();
+    // Normalized canonical realization: the coordinates of `state_reference_from_output` (compared below).
+    let model = DiscretizedSystem::from_tf_normalized(plant(), TS).unwrap();
     let lifted: LiftedDiscretizedSystem<f64> = model.clone().try_into().unwrap();
-    let u = lifted.calculate_ptc_input_for_reference_output(&y_d(), 0.0, samples()).unwrap();
+    let u = lifted.calculate_ptc_input_for_reference_output(&y_d(), samples()).unwrap();
     assert_eq!(u.len(), samples().div_ceil(5) * 5);
 
     // Same input as building the state reference by hand.
-    let r = plant().state_reference(&y_d()).unwrap().sample(0.0, TS, u.len() + 1);
+    let r = plant().state_reference_from_output(&y_d()).unwrap().sample(0.0, TS, u.len() + 1);
     let u_state = lifted.calculate_ptc_input_for_reference_state(r);
     // The plant is re-derived from (A, B, C), so the inputs agree up to that round-off
     // (the fast lags filter it out of the output).
@@ -74,13 +76,13 @@ fn arbitrary_realization() {
 
     let model = DiscretizedSystem::from_ssr(&ssr, TS).unwrap();
     let lifted: LiftedDiscretizedSystem<f64> = model.clone().try_into().unwrap();
-    let u = lifted.calculate_ptc_input_for_reference_output(&y_d(), 0.0, samples()).unwrap();
+    let u = lifted.calculate_ptc_input_for_reference_output(&y_d(), samples()).unwrap();
     let error = max_frame_error(model, &u, 5);
     assert!(error < 1e-9, "max tracking error at frames: {error:e}");
 
     // The state reference is in the cascade's coordinates: x1 = ξ (position), x2 = ξ'.
-    let x_d = lifted.reference_state(&y_d()).unwrap();
-    let canonical = plant().state_reference(&y_d()).unwrap();
+    let x_d = lifted.state_reference_from_output(&y_d()).unwrap();
+    let canonical = plant().state_reference_from_output(&y_d()).unwrap();
     for t in [0.0, REST, REST + 0.5 * DURATION, 1.0] {
         let x = x_d(t);
         let xc = canonical.state(t);
@@ -94,7 +96,7 @@ fn errors() {
     let model = DiscretizedSystem::from_tf(tf!("(s^2 + 4) / (s + 1)^3"), TS).unwrap();
     let lifted: LiftedDiscretizedSystem<f64> = model.try_into().unwrap();
     assert!(matches!(
-        lifted.calculate_ptc_input_for_reference_output(&y_d(), 0.0, 100),
+        lifted.calculate_ptc_input_for_reference_output(&y_d(), 100),
         Err(PtcError::StableInverse(StableInverseError::PoleOnImaginaryAxis { .. }))
     ));
 
@@ -108,7 +110,7 @@ fn errors() {
     .unwrap();
     let lifted: LiftedDiscretizedSystem<f64> = DiscretizedSystem::from_ssr(&ssr, TS).unwrap().try_into().unwrap();
     assert_eq!(
-        lifted.calculate_ptc_input_for_reference_output(&y_d(), 0.0, 100).unwrap_err(),
+        lifted.calculate_ptc_input_for_reference_output(&y_d(), 100).unwrap_err(),
         PtcError::Feedthrough
     );
 }
@@ -121,7 +123,8 @@ fn ptc_for_reference_state() {
     let mut storage = DataStorage::new("./out/ptc.csv", ',', false).unwrap();
 
     let plant: TransferFunction<f64> = TransferFunction::<f64>::continuous(&[1.0], &[2.0e-4, 0.05, 0.0]);
-    let mut model: DiscretizedSystem<f64> = DiscretizedSystem::from_tf(plant, TS).unwrap();
+    // Normalized controllable canonical state x = [ξ, ξ'] with y = ξ (no zeros)
+    let mut model: DiscretizedSystem<f64> = DiscretizedSystem::from_tf_normalized(plant, TS).unwrap();
     let model_lifted: LiftedDiscretizedSystem<f64> = model.clone().try_into().unwrap();
 
     let rest_tlen = 0.02;
@@ -131,6 +134,8 @@ fn ptc_for_reference_state() {
     let move_distance = 1.0;
     use dsmc::trajectory::Trajectory as _;
     let trajectory_sin = trajectory::Sin.generate(move_distance, move_samples);
+    // `generate` differentiates with respect to the normalized time 0..1
+    let duration = (move_samples - 1) as f64 * TS;
 
     let mut r = Vec::<Vec<f64>>::with_capacity(rest_samples * 2 + move_samples);
     {
@@ -140,7 +145,7 @@ fn ptc_for_reference_state() {
         }
 
         for i in 0..move_samples {
-            let p = vec![trajectory_sin[i].s, trajectory_sin[i].v];
+            let p = vec![trajectory_sin[i].s, trajectory_sin[i].v / duration];
             r.push(p);
         }
 
@@ -153,8 +158,8 @@ fn ptc_for_reference_state() {
     let u = model_lifted.calculate_ptc_input_for_reference_state(r.clone());
 
     for i in 0..u.len() {
-        storage.add(&[TS * i as f64, r[i][0], model.output[0], (r[i][0] - model.output[0])]).unwrap();
-        model.update(&[u[i]]).unwrap();
+        let y = model.update(&[u[i]]).unwrap()[0];
+        storage.add(&[TS * i as f64, r[i][0], y, (r[i][0] - y)]).unwrap();
     }
 
     storage.close().unwrap();
