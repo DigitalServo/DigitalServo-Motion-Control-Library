@@ -74,7 +74,8 @@ fn smith() {
         r
     };
 
-    let u = model_lifted.calculate_ptc_input(r.clone());
+    let u = model_lifted.calculate_ptc_input_from_reference_state(r.clone());
+
     let mut y = 0.0;
     let mut y_est = 0.0;
     let mut y_pred;

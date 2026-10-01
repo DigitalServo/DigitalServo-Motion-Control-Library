@@ -1,12 +1,22 @@
-use crate::{dka_method, vieta_formula, Continuous, Discrete, Polynomial};
+use crate::{dka_method, Continuous, Discrete, Polynomial};
 use num_complex::Complex;
-use num_traits::Float;
+use num_traits::{Float, Zero};
 use std::marker::PhantomData;
 use std::ops::AddAssign;
 
 mod display;
 mod ops;
 mod parser;
+mod partial_fraction;
+pub use partial_fraction::{PartialFraction, PoleTerm, TimeDomain};
+mod stable_inverse;
+pub use stable_inverse::{StableInverse, StableInverseError, StableInverseTimeDomain};
+mod laplace_signal;
+pub use laplace_signal::{DelayedRational, LaplaceSignal};
+mod piecewise_polynomial;
+pub use piecewise_polynomial::PiecewisePolynomial;
+mod state_reference;
+pub use state_reference::{ReferenceSignal, StateReference};
 pub use parser::TransferFunctionParseError;
 #[doc(hidden)]
 pub use parser::{__detect_domain, __DomainTag, __SelectDomain};
@@ -44,48 +54,66 @@ impl<T: Float + AddAssign, D> TransferFunction<T, D> {
     }
 
     /// Same as `reduced`, but with an explicit relative tolerance for matching roots.
+    /// Common factors are removed by dividing the original coefficients by `(s - c)`
+    /// (synthetic division), rather than rebuilding the polynomials from numerically found roots,
+    /// so the remaining factors keep their coefficients (repeated roots included).
     pub fn reduced_with_tolerance(&self, rel_tol: T) -> Self {
-        let (numer_gain, mut numer_roots) = roots_and_gain(&self.numerator);
-        let (denom_gain, mut denom_roots) = roots_and_gain(&self.denominator);
-        cancel_common_roots(&mut numer_roots, &mut denom_roots, rel_tol);
-        Self::from_polynomials(
-            reconstruct(numer_gain, &numer_roots),
-            reconstruct(denom_gain, &denom_roots),
-        )
+        let numer = trim_leading_zeros(&self.numerator);
+        let denom = trim_leading_zeros(&self.denominator);
+        let numer_roots = grouped_roots(&numer);
+        let denom_roots = grouped_roots(&denom);
+
+        // (common root, how many times it cancels)
+        let mut common: Vec<(Complex<T>, usize)> = Vec::new();
+        for &(z, mz) in &numer_roots {
+            let threshold = rel_tol * z.norm().max(T::one());
+            if let Some(&(p, mp)) = denom_roots.iter().find(|&&(p, _)| (p - z).norm() <= threshold) {
+                common.push(((z + p) / T::from(2.0).unwrap(), mz.min(mp)));
+            }
+        }
+        if common.is_empty() {
+            return Self::from_polynomials(numer, denom);
+        }
+
+        Self::from_polynomials(deflate(&numer, &common), deflate(&denom, &common))
     }
 }
 
-/// Leading coefficient and roots of a descending-order real polynomial (roots found via
-/// a Complex-coefficient embedding, since num-traits::Float has no general polynomial GCD).
-fn roots_and_gain<T: Float + AddAssign>(p: &Polynomial<T>) -> (T, Vec<Complex<T>>) {
-    let coeffs: Vec<T> = p.0.iter().copied().skip_while(|c| c.is_zero()).collect();
-    let Some(&gain) = coeffs.first() else {
-        return (T::zero(), Vec::new());
-    };
-    let complex_poly = Polynomial(coeffs.iter().map(|&c| Complex::new(c, T::zero())).collect());
-    let roots = dka_method(&complex_poly).unwrap_or_default();
-    (gain, roots)
+/// Drop leading zero coefficients; the zero polynomial becomes `[0]`.
+fn trim_leading_zeros<T: Float>(p: &Polynomial<T>) -> Polynomial<T> {
+    let coeffs: Vec<T> = p.iter().copied().skip_while(|c| c.is_zero()).collect();
+    if coeffs.is_empty() { Polynomial(vec![T::zero()]) } else { Polynomial(coeffs) }
 }
 
-/// Remove matching root pairs (within `rel_tol`, relative to root magnitude) from both lists.
-fn cancel_common_roots<T: Float>(a: &mut Vec<Complex<T>>, b: &mut Vec<Complex<T>>, rel_tol: T) {
-    let mut i = 0;
-    while i < a.len() {
-        let threshold = rel_tol * a[i].norm().max(T::one());
-        match b.iter().position(|&r| (r - a[i]).norm() <= threshold) {
-            Some(j) => {
-                a.remove(i);
-                b.remove(j);
+/// Roots of a descending-order real polynomial as `(root, multiplicity)`. Clusters of a repeated
+/// root (spread ~eps^(1/m)) are merged and refined (see `partial_fraction::group_roots`).
+fn grouped_roots<T: Float>(p: &Polynomial<T>) -> Vec<(Complex<T>, usize)> {
+    let complex_poly = Polynomial(p.iter().map(|&c| Complex::from(c)).collect());
+    let roots = dka_method(&complex_poly).unwrap_or_default();
+    partial_fraction::group_roots(&complex_poly, &roots, T::from(1e-4).unwrap())
+}
+
+/// Divide `p` by `Π (s - c)^k` with synthetic division, discarding the (round-off) remainders.
+/// Common roots of a real polynomial come in conjugate pairs, so the result is real up to
+/// round-off and its real part is returned.
+fn deflate<T: Float>(p: &Polynomial<T>, factors: &[(Complex<T>, usize)]) -> Polynomial<T> {
+    let mut work: Vec<Complex<T>> = p.iter().map(|&c| Complex::from(c)).collect();
+    for &(c, k) in factors {
+        for _ in 0..k {
+            if work.len() <= 1 {
+                break;
             }
-            None => i += 1,
+            let mut acc = Complex::zero();
+            let mut quotient = Vec::with_capacity(work.len());
+            for &a in &work {
+                acc = acc * c + a;
+                quotient.push(acc);
+            }
+            quotient.pop();
+            work = quotient;
         }
     }
-}
-
-/// Rebuild a real, descending-order polynomial from a leading coefficient and its roots.
-fn reconstruct<T: Float>(gain: T, roots: &[Complex<T>]) -> Polynomial<T> {
-    let monic = vieta_formula(roots);
-    Polynomial(monic.0.iter().map(|c| c.re * gain).collect())
+    Polynomial(work.iter().map(|c| c.re).collect())
 }
 
 impl<T: Float + AddAssign> TransferFunction<T, Continuous> {

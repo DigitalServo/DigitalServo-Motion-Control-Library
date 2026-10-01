@@ -12,6 +12,7 @@ fn test_trajectory() {
     let trajectory_ms = trajectory::ms::generate(distance, samples);
     let trajectory_mcv20 = trajectory::mcv::generate(50, distance, samples);
     let trajectory_mcv80 = trajectory::mcv::generate(80, distance, samples);
+    let trajectory_poly = trajectory::polynomial::generate(distance, samples, 4);
 
     let mut storage = DataStorage::new("./out/trajectory.csv", ',', false).unwrap();
 
@@ -24,6 +25,7 @@ fn test_trajectory() {
             trajectory_sin[i].s,
             trajectory_cycloid[i].s,
             trajectory_mcv80[i].s,
+            trajectory_poly[i].s
         ]).unwrap();
     }
 
