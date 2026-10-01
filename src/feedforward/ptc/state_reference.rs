@@ -12,8 +12,7 @@
 //! (pre-actuation before the trajectory starts). Everything is evaluated in closed form (no convolution).
 
 use crate::system::principal_part;
-use crate::laplace_transform::{LaplaceSignal, StableInverse, StableInverseError};
-use crate::trajectory::{jump_rational, PiecewisePolynomial};
+use crate::laplace_transform::{jump_rational, DelayedRationalSum, PiecewisePolynomial, StableInverse, StableInverseError};
 use crate::{vieta_formula, Continuous, PartialFraction, PoleTerm, Polynomial, TransferFunction};
 use num_complex::Complex;
 use num_traits::{Float, Zero};
@@ -30,20 +29,14 @@ pub struct StateReference<T> {
     polynomial: Option<(PiecewisePolynomial<T>, Vec<Vec<T>>)>,
 }
 
-/// Reference trajectories accepted by `TransferFunction::state_reference_from_output`.
+/// Desired outputs `y_d` that can be turned into a state reference: `DelayedRationalSum` (any delayed
+/// rationals) and `PiecewisePolynomial` (evaluated without cancellation long after the move).
 pub trait ReferenceSignal<T> {
-    #[doc(hidden)]
-    fn state_reference_for(&self, plant: &TransferFunction<T, Continuous>) -> Result<StateReference<T>, StableInverseError>;
-}
-
-impl<T: Float + AddAssign> TransferFunction<T, Continuous> {
-    /// State reference for perfect tracking control that makes the output follow `y_d`, given as a
-    /// `LaplaceSignal` (any delayed rationals) or a `PiecewisePolynomial` (evaluated without
-    /// cancellation long after the move). Requires that `N(s)` has no zero on the imaginary axis
-    /// and that `y_d` is smooth enough that no state reference contains impulses.
-    pub fn state_reference_from_output<S: ReferenceSignal<T>>(&self, y_d: &S) -> Result<StateReference<T>, StableInverseError> {
-        y_d.state_reference_for(self)
-    }
+    /// State reference for perfect tracking control that makes the output of `plant` follow this
+    /// signal (see the module documentation), e.g. `y_d.to_state_reference(&plant)`.
+    /// Requires that `N(s)` has no zero on the imaginary axis and that this signal is smooth enough
+    /// that no state reference contains impulses.
+    fn to_state_reference(&self, plant: &TransferFunction<T, Continuous>) -> Result<StateReference<T>, StableInverseError>;
 }
 
 /// Numerator of the plant with its zeros (as poles of `1 / N(s)`), checked to be off the imaginary axis.
@@ -88,15 +81,15 @@ impl<T: Float + AddAssign> Numerator<T> {
     }
 }
 
-impl<T: Float + AddAssign> ReferenceSignal<T> for LaplaceSignal<T> {
+impl<T: Float + AddAssign> ReferenceSignal<T> for DelayedRationalSum<T> {
     /// Each `F_j(s) R_i(s)` is expanded into partial fractions as a whole. Poles of `R_i` and stable
     /// zeros of `N` are causal, unstable zeros of `N` anti-causal.
-    fn state_reference_for(&self, plant: &TransferFunction<T, Continuous>) -> Result<StateReference<T>, StableInverseError> {
+    fn to_state_reference(&self, plant: &TransferFunction<T, Continuous>) -> Result<StateReference<T>, StableInverseError> {
         let numer = Numerator::of(plant)?;
 
         // Pick Re s = sigma between the causal poles and the anti-causal ones.
         let causal_re = self
-            .components
+            .terms
             .iter()
             .flat_map(|c| c.rational.partial_fraction().terms)
             .map(|term| term.pole.re)
@@ -117,7 +110,7 @@ impl<T: Float + AddAssign> ReferenceSignal<T> for LaplaceSignal<T> {
         let states = (0..numer.order)
             .map(|j| {
                 let scaled_s_j = numer.scaled_s_j(j);
-                self.components
+                self.terms
                     .iter()
                     .map(|c| {
                         let pf = TransferFunction::<T, Continuous>::from_polynomials(
@@ -141,7 +134,7 @@ impl<T: Float + AddAssign> ReferenceSignal<T> for LaplaceSignal<T> {
 impl<T: Float + AddAssign> ReferenceSignal<T> for PiecewisePolynomial<T> {
     /// Split by the poles of `F_j(s) R_i(s)`: those at `s = 0` (from the jumps) sum up to
     /// `F_j(d/dt) y_d` on the local piece, and only the zeros of `N` need partial fractions.
-    fn state_reference_for(&self, plant: &TransferFunction<T, Continuous>) -> Result<StateReference<T>, StableInverseError> {
+    fn to_state_reference(&self, plant: &TransferFunction<T, Continuous>) -> Result<StateReference<T>, StableInverseError> {
         let numer = Numerator::of(plant)?;
         let jumps = self.jumps();
 

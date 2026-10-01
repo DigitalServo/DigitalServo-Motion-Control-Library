@@ -1,7 +1,7 @@
 use dsmc::discretize::exact_discretize::DiscretizedSystem;
-use dsmc::feedforward::ptc::{LiftedDiscretizedSystem, PtcError};
-use dsmc::trajectory::{self, PiecewisePolynomial};
-use dsmc::laplace_transform::StableInverseError;
+use dsmc::feedforward::ptc::{LiftedDiscretizedSystem, PtcError, ReferenceSignal};
+use dsmc::trajectory;
+use dsmc::laplace_transform::{PiecewisePolynomial, StableInverseError};
 use dsmc::{tf, StateSpace, TransferFunction};
 use nalgebra::DMatrix;
 
@@ -15,7 +15,7 @@ fn plant() -> TransferFunction<f64> {
 }
 
 fn y_d() -> PiecewisePolynomial<f64> {
-    trajectory::polynomial::piecewise(1.0, DURATION, REST, 4)
+    trajectory::smoothstep::piecewise(1.0, DURATION, REST, 4)
 }
 
 /// Simulate `u` on `model` and return the largest |y - y_d| at frame instants.
@@ -36,25 +36,6 @@ fn samples() -> usize {
     ((2.0 * REST + DURATION) / TS).round() as usize
 }
 
-#[test]
-fn canonical_realization() {
-    // Normalized canonical realization: the coordinates of `state_reference_from_output` (compared below).
-    let model = DiscretizedSystem::from_tf_normalized(plant(), TS).unwrap();
-    let lifted: LiftedDiscretizedSystem<f64> = model.clone().try_into().unwrap();
-    let u = lifted.calculate_ptc_input_for_reference_output(&y_d(), samples()).unwrap();
-    assert_eq!(u.len(), samples().div_ceil(5) * 5);
-
-    // Same input as building the state reference by hand.
-    let r = plant().state_reference_from_output(&y_d()).unwrap().sample(0.0, TS, u.len() + 1);
-    let u_state = lifted.calculate_ptc_input_for_reference_state(r);
-    // The plant is re-derived from (A, B, C), so the inputs agree up to that round-off
-    // (the fast lags filter it out of the output).
-    for (a, b) in u.iter().zip(&u_state) {
-        assert!((a - b).abs() <= 1e-5 * b.abs().max(1.0), "{a} != {b}");
-    }
-    let error = max_frame_error(model, &u, 5);
-    assert!(error < 1e-9, "max tracking error at frames: {error:e}");
-}
 
 #[test]
 fn arbitrary_realization() {
@@ -82,7 +63,7 @@ fn arbitrary_realization() {
 
     // The state reference is in the cascade's coordinates: x1 = ξ (position), x2 = ξ'.
     let x_d = lifted.state_reference_from_output(&y_d()).unwrap();
-    let canonical = plant().state_reference_from_output(&y_d()).unwrap();
+    let canonical = y_d().to_state_reference(&plant()).unwrap();
     for t in [0.0, REST, REST + 0.5 * DURATION, 1.0] {
         let x = x_d(t);
         let xc = canonical.state(t);
@@ -113,54 +94,4 @@ fn errors() {
         lifted.calculate_ptc_input_for_reference_output(&y_d(), 100).unwrap_err(),
         PtcError::Feedthrough
     );
-}
-
-
-#[test]
-fn ptc_for_reference_state() {
-    use dsmc::logger::DataStorage;
-
-    let mut storage = DataStorage::new("./out/ptc.csv", ',', false).unwrap();
-
-    let plant: TransferFunction<f64> = TransferFunction::<f64>::continuous(&[1.0], &[2.0e-4, 0.05, 0.0]);
-    // Normalized controllable canonical state x = [ξ, ξ'] with y = ξ (no zeros)
-    let mut model: DiscretizedSystem<f64> = DiscretizedSystem::from_tf_normalized(plant, TS).unwrap();
-    let model_lifted: LiftedDiscretizedSystem<f64> = model.clone().try_into().unwrap();
-
-    let rest_tlen = 0.02;
-    let move_tlen = 0.05;
-    let rest_samples = (rest_tlen / TS).round() as usize;
-    let move_samples = (move_tlen / TS).round() as usize;
-    let move_distance = 1.0;
-    use dsmc::trajectory::Trajectory as _;
-    let trajectory_sin = trajectory::Sin.generate(move_distance, move_samples);
-    // `generate` differentiates with respect to the normalized time 0..1
-    let duration = (move_samples - 1) as f64 * TS;
-
-    let mut r = Vec::<Vec<f64>>::with_capacity(rest_samples * 2 + move_samples);
-    {
-        for _ in 0..rest_samples {
-            let p = vec![0.0, 0.0];
-            r.push(p);
-        }
-
-        for i in 0..move_samples {
-            let p = vec![trajectory_sin[i].s, trajectory_sin[i].v / duration];
-            r.push(p);
-        }
-
-        for _ in 0..rest_samples {
-            let p = vec![move_distance, 0.0];
-            r.push(p);
-        }
-    }
-
-    let u = model_lifted.calculate_ptc_input_for_reference_state(r.clone());
-
-    for i in 0..u.len() {
-        let y = model.update(&[u[i]]).unwrap()[0];
-        storage.add(&[TS * i as f64, r[i][0], y, (r[i][0] - y)]).unwrap();
-    }
-
-    storage.close().unwrap();
 }

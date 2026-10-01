@@ -2,7 +2,7 @@ use std::ops::AddAssign;
 
 use num_traits::{Float, FloatConst};
 
-use crate::laplace_transform::LaplaceSignal;
+use crate::laplace_transform::DelayedRationalSum;
 use crate::trajectory::{ReferenceTrajectory, Trajectory, TrajectoryProfile};
 use crate::{Polynomial, TransferFunction};
 
@@ -29,11 +29,11 @@ impl<T: Float + FloatConst> Trajectory<T> for Sin {
 }
 
 impl<T: Float + FloatConst + AddAssign> ReferenceTrajectory<T> for Sin {
-    type Reference = LaplaceSignal<T>;
+    type Reference = DelayedRationalSum<T>;
 
-    /// Exact Laplace-domain form (see `laplace`).
-    fn reference(&self, distance: T, duration: T, start: T) -> LaplaceSignal<T> {
-        laplace(distance, duration, start)
+    /// Exact Laplace-domain form (see `laplace_transform`).
+    fn reference(&self, distance: T, duration: T, start: T) -> DelayedRationalSum<T> {
+        laplace_transform(distance, duration, start)
     }
 }
 
@@ -45,14 +45,14 @@ impl<T: Float + FloatConst + AddAssign> ReferenceTrajectory<T> for Sin {
 /// ```
 /// (after the move, `1 - cos` restarted at `start + duration` adds up to the constant `distance`).
 /// `Sin.generate(distance, samples)` corresponds to `duration = (samples - 1) ts`.
-pub fn laplace<T: Float + FloatConst + AddAssign>(distance: T, duration: T, start: T) -> LaplaceSignal<T> {
+pub fn laplace_transform<T: Float + FloatConst + AddAssign>(distance: T, duration: T, start: T) -> DelayedRationalSum<T> {
     let omega = T::PI() / duration;
     let half = distance * T::from(0.5).unwrap();
     let rational = TransferFunction::from_polynomials(
         Polynomial(vec![half * omega * omega]),
         Polynomial(vec![T::one(), T::zero(), omega * omega, T::zero()]),
     );
-    let mut signal = LaplaceSignal::new();
+    let mut signal = DelayedRationalSum::new();
     signal.push(start, rational.clone()).push(start + duration, rational);
     signal
 }

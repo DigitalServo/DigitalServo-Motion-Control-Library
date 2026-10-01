@@ -79,7 +79,7 @@ impl<T: Float + ComplexField + RealField> DiscretizedSystem<T> {
     /// Discretized controllable canonical realization of `tf_c` whose output equals a state at low
     /// frequency (`x = u / D(s)`, `y = N(s) x` with `N` normalized; `y = x_1` at DC if `N(0) != 0`,
     /// and exactly without zeros; see `StateSpace::normalized_controllable_canonical`). These are the
-    /// state coordinates of `TransferFunction::state_reference_from_output`.
+    /// state coordinates of `ReferenceSignal::to_state_reference`.
     pub fn from_tf_normalized<S: Borrow<TransferFunction<T, Continuous>>>(tf_c: S, ts: T) -> Result<Self, StateSpaceError> {
         Self::from_ssr(StateSpace::normalized_controllable_canonical(tf_c.borrow())?, ts)
     }

@@ -1,5 +1,7 @@
 //! Smooth rest-to-rest polynomial trajectory of arbitrary smoothness.
 //!
+//! It is called as "Smoothstep" or "Minimum-derivative trajectory"
+//!
 //! ```text
 //! P_k(x) = x^(k+1) Σ_{j=0..k} C(k+j, j) (1 - x)^j      (degree 2k + 1, 0 <= x <= 1)
 //! ```
@@ -10,10 +12,9 @@
 
 use num_traits::Float;
 
-use crate::trajectory::{PiecewisePolynomial, ReferenceTrajectory, Trajectory, TrajectoryProfile};
+use crate::laplace_transform::PiecewisePolynomial;
+use crate::trajectory::{ReferenceTrajectory, Trajectory, TrajectoryProfile};
 use crate::Polynomial;
-
-pub mod piecewise_polynomial;
 
 /// Ascending coefficients of `P_k(x)`.
 pub fn normalized_coefficients<T: Float>(k: usize) -> Vec<T> {
@@ -37,7 +38,7 @@ pub fn normalized_coefficients<T: Float>(k: usize) -> Vec<T> {
 }
 
 /// A move of `distance` in `duration` [s] starting at `start` [s] (0 before, `distance` after),
-/// `C^k` with `k = smoothness`. Use it as the reference of `TransferFunction::state_reference_from_output`,
+/// `C^k` with `k = smoothness`. Use it as the reference of `ReferenceSignal::to_state_reference`,
 /// or evaluate it with `value` / `derivatives`.
 pub fn piecewise<T: Float>(distance: T, duration: T, start: T, smoothness: usize) -> PiecewisePolynomial<T> {
     // p(τ) = distance P(τ / duration): coefficient of τ^i is distance P_i / duration^i

@@ -1,4 +1,4 @@
-//! Piecewise-polynomial signals, e.g. smooth rest-to-rest trajectories.
+//! Piecewise-polynomial signals, e.g. smooth rest-to-rest trajectories (`trajectory::smoothstep`).
 //!
 //! `y(t) = 0` before `start`, then each piece `p_q(τ)` (τ = time since the piece started) for its
 //! duration, then `tail(τ)` forever (τ = time since the last piece ended).
@@ -8,7 +8,7 @@
 //! Evaluating `y` as that sum would subtract large, growing polynomials (∝ (t/T)^deg) long after
 //! the move, so values and derivatives are always evaluated from the local piece instead.
 
-use crate::laplace_transform::LaplaceSignal;
+use crate::laplace_transform::DelayedRationalSum;
 use crate::{Continuous, Polynomial, TransferFunction};
 use num_traits::Float;
 
@@ -139,10 +139,10 @@ impl<T: Float> PiecewisePolynomial<T> {
 
 impl<T: Float + std::ops::AddAssign> PiecewisePolynomial<T> {
     /// Exact Laplace transform `Σ_q e^(-s t_q) Σ_m c_m m! / s^(m+1)` (jump decomposition).
-    /// Note that `LaplaceSignal::inverse_laplace` of it loses accuracy long after the
+    /// Note that `DelayedRationalSum::inverse_laplace` of it loses accuracy long after the
     /// breakpoints; use `value` / `derivatives` to evaluate `y`.
-    pub fn laplace(&self) -> LaplaceSignal<T> {
-        let mut signal = LaplaceSignal::new();
+    pub fn laplace_transform(&self) -> DelayedRationalSum<T> {
+        let mut signal = DelayedRationalSum::new();
         for jump in self.jumps() {
             signal.push(jump.time, jump_rational(&jump));
         }

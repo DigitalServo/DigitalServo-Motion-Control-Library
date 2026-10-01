@@ -2,17 +2,14 @@ pub mod mt;
 pub mod ms;
 pub mod mcv;
 pub mod sin;
-pub mod polynomial;
+pub mod smoothstep;
 pub mod cycloid;
-
-pub use polynomial::piecewise_polynomial::PiecewisePolynomial;
-pub(crate) use polynomial::piecewise_polynomial::jump_rational;
 
 pub use cycloid::Cycloid;
 pub use mcv::ModifiedConstantVelocity;
 pub use ms::ModifiedSine;
 pub use mt::ModifiedTrapezoid;
-pub use polynomial::SmoothPolynomial;
+pub use smoothstep::SmoothPolynomial;
 pub use sin::Sin;
 
 use num_traits::{Float, FloatConst};
@@ -124,7 +121,7 @@ impl From<SmoothPolynomial> for TrajectoryKind {
 }
 
 /// Profiles usable as a reference: they have an exact continuous-time representation on the time
-/// axis (`LaplaceSignal`, `PiecewisePolynomial`), as needed e.g. for the output reference of
+/// axis (`DelayedRationalSum`, `PiecewisePolynomial`), as needed e.g. for the output reference of
 /// perfect tracking control by stable inversion (`Reference: feedforward::ptc::ReferenceSignal`).
 pub trait ReferenceTrajectory<T: Float> {
     type Reference;

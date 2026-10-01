@@ -85,17 +85,6 @@ pub enum PtcError {
 }
 
 impl<T: Float + ComplexField + RealField> LiftedDiscretizedSystem<T> {
-    /// Perfect tracking control input from a state reference given at every sample:
-    /// `u[k] = B_lifted^-1 (r[(k+1)n] - A^n r[kn])` for each frame of `n` samples
-    /// (only every `n`-th element of `r` is used).
-    pub fn calculate_ptc_input_for_reference_state(&self, r: Vec<Vec<T>>) -> Vec<T> {
-        let frames: Vec<DVector<T>> = r
-            .chunks(self.order as usize)
-            .map(|x| DVector::from(x[0].clone()))
-            .collect();
-        self.inputs_from_frame_states(&frames)
-    }
-
     /// `B_lifted^-1 (x[k+1] - A^n x[k])` for consecutive frame states.
     fn inputs_from_frame_states(&self, frames: &[DVector<T>]) -> Vec<T> {
         let mut u = Vec::<T>::with_capacity(frames.len() * self.order as usize);
@@ -140,7 +129,7 @@ impl<T: Float + ComplexField + RealField> LiftedDiscretizedSystem<T> {
         }
 
         let plant = sys.transfer_function().map_err(|_| PtcError::NotSiso { inputs: sys.order.input, outputs: sys.order.output })?;
-        let reference = plant.state_reference_from_output(y_d)?;
+        let reference = y_d.to_state_reference(&plant)?;
 
         // x = T x_c with the controllable canonical realization (A_c, B_c) (in which `StateReference`
         // is expressed): T = W(A, B) W(A_c, B_c)^-1.

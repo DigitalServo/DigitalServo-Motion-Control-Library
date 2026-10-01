@@ -16,29 +16,29 @@ pub struct DelayedRational<T> {
 
 /// `Y(s) = Σ_i e^(-s τ_i) R_i(s)`.
 #[derive(Clone, Debug)]
-pub struct LaplaceSignal<T> {
-    pub components: Vec<DelayedRational<T>>,
+pub struct DelayedRationalSum<T> {
+    pub terms: Vec<DelayedRational<T>>,
 }
 
-impl<T> LaplaceSignal<T> {
+impl<T> DelayedRationalSum<T> {
     pub fn new() -> Self {
-        Self { components: Vec::new() }
+        Self { terms: Vec::new() }
     }
 
     /// Add `e^(-s delay) rational(s)`.
     pub fn push(&mut self, delay: T, rational: TransferFunction<T, Continuous>) -> &mut Self {
-        self.components.push(DelayedRational { delay, rational });
+        self.terms.push(DelayedRational { delay, rational });
         self
     }
 }
 
-impl<T> Default for LaplaceSignal<T> {
+impl<T> Default for DelayedRationalSum<T> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T: Float + AddAssign> LaplaceSignal<T> {
+impl<T: Float + AddAssign> DelayedRationalSum<T> {
     /// `y(t)` as a closure (causal inverse Laplace transform of each component, shifted by its delay).
     /// Impulse terms are not included, as in `PartialFraction::time_response`.
     pub fn inverse_laplace(&self) -> impl Fn(T) -> T + use<T>
@@ -46,7 +46,7 @@ impl<T: Float + AddAssign> LaplaceSignal<T> {
         T: 'static,
     {
         let parts: Vec<_> = self
-            .components
+            .terms
             .iter()
             .map(|c| (c.delay, c.rational.partial_fraction()))
             .collect();
