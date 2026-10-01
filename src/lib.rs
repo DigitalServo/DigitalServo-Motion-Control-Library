@@ -11,7 +11,11 @@ pub use system::*;
 mod math;
 pub use math::*;
 
+pub mod laplace_transform;
+
 pub mod trajectory;
+
+pub mod feedforward;
 
 pub mod signal;
 

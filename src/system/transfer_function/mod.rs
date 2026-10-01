@@ -8,15 +8,8 @@ mod display;
 mod ops;
 mod parser;
 mod partial_fraction;
-pub use partial_fraction::{PartialFraction, PoleTerm, TimeDomain};
-mod stable_inverse;
-pub use stable_inverse::{StableInverse, StableInverseError, StableInverseTimeDomain};
-mod laplace_signal;
-pub use laplace_signal::{DelayedRational, LaplaceSignal};
-mod piecewise_polynomial;
-pub use piecewise_polynomial::PiecewisePolynomial;
-mod state_reference;
-pub use state_reference::{ReferenceSignal, StateReference};
+pub use partial_fraction::{PartialFraction, PoleTerm};
+pub(crate) use partial_fraction::{fmt_num, principal_part, push_term};
 pub use parser::TransferFunctionParseError;
 #[doc(hidden)]
 pub use parser::{__detect_domain, __DomainTag, __SelectDomain};

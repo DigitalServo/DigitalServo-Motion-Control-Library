@@ -13,9 +13,8 @@
 //! at the cost of being non-causal. The polynomial part `Q(s)` gives impulses `δ^(n)(t)`.
 //! No ROC contains the imaginary axis when `G^-1(s)` has a pole on it (`G(s)` has a zero on it).
 
-use super::partial_fraction::{eval_terms, format_time_terms};
-use super::{PartialFraction, PoleTerm, TransferFunction};
-use crate::{Continuous, Polynomial};
+use super::inverse_laplace::{eval_terms, format_time_terms};
+use crate::{Continuous, PartialFraction, PoleTerm, Polynomial, TransferFunction};
 use num_traits::Float;
 use std::ops::AddAssign;
 use thiserror::Error;
@@ -130,7 +129,7 @@ impl<T: Float> StableInverse<T> {
     }
 }
 
-pub(super) fn to_f64<T: Float>(x: T) -> f64 {
+fn to_f64<T: Float>(x: T) -> f64 {
     x.to_f64().unwrap_or(f64::NAN)
 }
 

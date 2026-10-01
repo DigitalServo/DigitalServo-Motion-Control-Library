@@ -1,54 +1,54 @@
-use std::ops::AddAssign;
-
 use num_traits::{Float, FloatConst};
 
-use crate::trajectory::TrajectoryProfile;
+use crate::trajectory::{Trajectory, TrajectoryProfile};
 
-pub fn generate<T: Float + FloatConst + AddAssign>(distance: T, samples: usize) -> Vec<TrajectoryProfile<T>> {
+/// Modified trapezoid profile.
+#[derive(Clone, Copy, Debug)]
+pub struct ModifiedTrapezoid;
 
-    let mut t = T::zero();
-    let dt = T::one() / T::from(samples - 1).unwrap();
-    let pi = FloatConst::PI();
+impl<T: Float + FloatConst> Trajectory<T> for ModifiedTrapezoid {
+    fn profile(&self, distance: T, x: T) -> TrajectoryProfile<T> {
+        if x < T::zero() {
+            return TrajectoryProfile::rest(T::zero());
+        }
+        let t = x;
+        let pi = FloatConst::PI();
 
-    let t0 = T::zero();
-    let t1 = T::one() / T::from(8.0).unwrap();
-    let t2 = T::from(3.0).unwrap() / T::from(8.0).unwrap();
-    let t3 = T::one() - t2;
-    let t4 = T::one() - t1;
-    let t5 = T::one();
+        let t0 = T::zero();
+        let t1 = T::one() / T::from(8.0).unwrap();
+        let t2 = T::from(3.0).unwrap() / T::from(8.0).unwrap();
+        let t3 = T::one() - t2;
+        let t4 = T::one() - t1;
+        let t5 = T::one();
 
-    let ts1 = t1 - t0;
-    let ts2 = t2 - t1;
-    let ts3 = t3 - t2;
-    let ts5 = t5 - t4;
+        let ts1 = t1 - t0;
+        let ts2 = t2 - t1;
+        let ts3 = t3 - t2;
+        let ts5 = t5 - t4;
 
-    let am = distance * (T::from(8.0).unwrap() * pi) / (pi + T::from(2.0).unwrap());
+        let am = distance * (T::from(8.0).unwrap() * pi) / (pi + T::from(2.0).unwrap());
 
-    let c1 = ts1 * FloatConst::FRAC_2_PI();
-    let c2 = am * T::from(0.5).unwrap();
-    let c3 = ts3 / pi;
-    let c4 = am * T::from(0.5).unwrap();
-    let c5 = ts5 * FloatConst::FRAC_2_PI();
+        let c1 = ts1 * FloatConst::FRAC_2_PI();
+        let c2 = am * T::from(0.5).unwrap();
+        let c3 = ts3 / pi;
+        let c4 = am * T::from(0.5).unwrap();
+        let c5 = ts5 * FloatConst::FRAC_2_PI();
 
-    let v1 = c1 * am;
-    let s1 = c1 * am * (t1 - c1);
+        let v1 = c1 * am;
+        let s1 = c1 * am * (t1 - c1);
 
-    let v2 = am * ts2 + v1;
-    let s2 = c2 * ts2 * ts2 + v1 * ts2 + s1;
+        let v2 = am * ts2 + v1;
+        let s2 = c2 * ts2 * ts2 + v1 * ts2 + s1;
 
-    let v3 = v2;
-    let s3 = distance - s2;
+        let v3 = v2;
+        let s3 = distance - s2;
 
-    let v4 = v1;
-    let s4 = distance - s1;
+        let v4 = v1;
+        let s4 = distance - s1;
 
-    let s5 = distance;
+        let s5 = distance;
 
-    let mut trajectory = Vec::<TrajectoryProfile<T>>::with_capacity(samples);
-
-    for _ in 0..samples {
-
-        let data = if t < t1 {
+        if t < t1 {
             let tl = t - t0;
             TrajectoryProfile {
                 s: c1 * am * (tl - c1 * (tl / c1).sin()),
@@ -94,11 +94,6 @@ pub fn generate<T: Float + FloatConst + AddAssign>(distance: T, samples: usize) 
                 v: T::zero(),
                 a: T::zero(),
             }
-        };
-
-        trajectory.push(data);
-        t += dt;
+        }
     }
-
-    trajectory
 }

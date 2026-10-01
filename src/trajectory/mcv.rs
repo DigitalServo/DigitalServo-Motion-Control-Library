@@ -1,56 +1,58 @@
-use std::ops::AddAssign;
+use num_traits::{Float, FloatConst};
 
-use num_traits::{Float, FloatConst, ToPrimitive};
+use crate::trajectory::{Trajectory, TrajectoryProfile};
 
-use crate::trajectory::TrajectoryProfile;
+/// Modified constant velocity profile. `constant_velocity_percent` [%] of the move is at constant velocity.
+#[derive(Clone, Copy, Debug)]
+pub struct ModifiedConstantVelocity {
+    pub constant_velocity_percent: f64,
+}
 
-pub fn generate<S: ToPrimitive, T: Float + FloatConst + AddAssign>(percent: S, distance: T, samples: usize) -> Vec<TrajectoryProfile<T>> {
+impl<T: Float + FloatConst> Trajectory<T> for ModifiedConstantVelocity {
+    fn profile(&self, distance: T, x: T) -> TrajectoryProfile<T> {
+        if x < T::zero() {
+            return TrajectoryProfile::rest(T::zero());
+        }
+        let t = x;
+        let pi = FloatConst::PI();
 
-    let mut t = T::zero();
-    let dt = T::one() / T::from(samples - 1).unwrap();
-    let pi = FloatConst::PI();
+        let proportion = T::from(self.constant_velocity_percent).unwrap() / T::from(100.0).unwrap();
 
-    let proportion = T::from(percent).unwrap() / T::from(100.0).unwrap();
+        let t0 = T::zero();
+        let t1 = (T::one() - proportion) / T::from(8.0).unwrap();
+        let t2 = t1 * T::from(4.0).unwrap();
+        let t3 = T::one() - t2;
+        let t4 = T::one() - t1;
+        let t5 = T::one();
 
-    let t0 = T::zero();
-    let t1 = (T::one() - proportion) / T::from(8.0).unwrap();
-    let t2 = t1 * T::from(4.0).unwrap();
-    let t3 = T::one() - t2;
-    let t4 = T::one() - t1;
-    let t5 = T::one();
+        let ts1 = t1 - t0;
+        let ts2 = t2 - t1;
+        let ts3 = t3 - t2;
+        let ts4 = t4 - t3;
+        let ts5 = t5 - t4;
 
-    let ts1 = t1 - t0;
-    let ts2 = t2 - t1;
-    let ts3 = t3 - t2;
-    let ts4 = t4 - t3;
-    let ts5 = t5 - t4;
+        let am = distance * (pi * pi) / (T::from(8.0).unwrap() * t1 * (((T::from(8.0).unwrap() - T::from(6.0).unwrap() * pi) * t1) + pi));
 
-    let am = distance * (pi * pi) / (T::from(8.0).unwrap() * t1 * (((T::from(8.0).unwrap() - T::from(6.0).unwrap() * pi) * t1) + pi));
+        let c1 = ts1 * FloatConst::FRAC_2_PI();
+        let c2 = ts2 * FloatConst::FRAC_2_PI();
+        let c4 = ts4 * FloatConst::FRAC_2_PI();
+        let c5 = ts5 * FloatConst::FRAC_2_PI();
 
-    let c1 = ts1 * FloatConst::FRAC_2_PI();
-    let c2 = ts2 * FloatConst::FRAC_2_PI();
-    let c4 = ts4 * FloatConst::FRAC_2_PI();
-    let c5 = ts5 * FloatConst::FRAC_2_PI();
+        let v1 = c1 * am;
+        let s1 = c1 * am * (t1 - c1);
 
-    let v1 = c1 * am;
-    let s1 = c1 * am * (t1 - c1);
+        let v2 = c2 * am + v1;
+        let s2 = (c2).powi(2) * am + v1 * ts2 + s1;
 
-    let v2 = c2 * am + v1;
-    let s2 = (c2).powi(2) * am + v1 * ts2 + s1;
+        let v3 = v2;
+        let s3 = v2 * ts3 + s2;
 
-    let v3 = v2;
-    let s3 = v2 * ts3 + s2;
+        let v4 = v1;
+        let s4 = distance - s1;
 
-    let v4 = v1;
-    let s4 = distance - s1;
+        let s5 = distance;
 
-    let s5 = distance;
-
-    let mut trajectory = Vec::<TrajectoryProfile<T>>::with_capacity(samples);
-
-    for _ in 0..samples {
-
-        let data = if t < t1 {
+        if t < t1 {
             let tl = t - t0;
             TrajectoryProfile {
                 s: c1 * am * (tl - c1 * (tl / c1).sin()),
@@ -96,11 +98,6 @@ pub fn generate<S: ToPrimitive, T: Float + FloatConst + AddAssign>(percent: S, d
                 v: T::zero(),
                 a: T::zero(),
             }
-        };
-
-        trajectory.push(data);
-        t += dt;
+        }
     }
-
-    trajectory
 }

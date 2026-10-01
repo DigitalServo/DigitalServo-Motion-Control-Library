@@ -5,8 +5,130 @@ pub mod sin;
 pub mod polynomial;
 pub mod cycloid;
 
+pub use polynomial::piecewise_polynomial::PiecewisePolynomial;
+pub(crate) use polynomial::piecewise_polynomial::jump_rational;
+
+pub use cycloid::Cycloid;
+pub use mcv::ModifiedConstantVelocity;
+pub use ms::ModifiedSine;
+pub use mt::ModifiedTrapezoid;
+pub use polynomial::SmoothPolynomial;
+pub use sin::Sin;
+
+use num_traits::{Float, FloatConst};
+
 pub struct TrajectoryProfile<T> {
     pub s: T,
     pub v: T,
     pub a: T
+}
+
+impl<T: Float> TrajectoryProfile<T> {
+    /// At rest at position `s`.
+    pub fn rest(s: T) -> Self {
+        Self { s, v: T::zero(), a: T::zero() }
+    }
+}
+
+/// Rest-to-rest motion profile from 0 to `distance` over the normalized time `x = 0..1`.
+/// Parameters specific to a profile (e.g. the constant-velocity share of `ModifiedConstantVelocity`)
+/// are fields of the implementing type, so every profile is used the same way.
+pub trait Trajectory<T: Float> {
+    /// Position, velocity and acceleration at normalized time `x` (derivatives with respect to `x`;
+    /// divide by `duration` / `duration^2` for physical units). At rest for `x < 0` and `x > 1`;
+    /// `x = 1` is evaluated on the move (left-hand value where the acceleration jumps).
+    fn profile(&self, distance: T, x: T) -> TrajectoryProfile<T>;
+
+    /// `profile` at `x = i / (samples - 1)` for `i = 0..samples`.
+    fn generate(&self, distance: T, samples: usize) -> Vec<TrajectoryProfile<T>> {
+        let last = T::from(samples.saturating_sub(1).max(1)).unwrap();
+        (0..samples)
+            .map(|i| self.profile(distance, T::from(i).unwrap() / last))
+            .collect()
+    }
+}
+
+/// Any of the profiles of this module, selected by value (e.g. at runtime or in a list) without
+/// boxing. For bounds on what a profile can do (e.g. `SignalTrajectory` for the reference of
+/// perfect tracking control), use the individual types instead.
+///
+/// ```ignore
+/// let profiles = [
+///     TrajectoryKind::Sin,
+///     TrajectoryKind::ModifiedConstantVelocity { constant_velocity_percent: 30.0 },
+///     TrajectoryKind::SmoothPolynomial { smoothness: 4 },
+/// ];
+/// for p in &profiles {
+///     let samples = p.generate(1.0, 500);
+/// }
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TrajectoryKind {
+    Sin,
+    Cycloid,
+    ModifiedTrapezoid,
+    ModifiedSine,
+    ModifiedConstantVelocity { constant_velocity_percent: f64 },
+    SmoothPolynomial { smoothness: usize },
+}
+
+impl<T: Float + FloatConst> Trajectory<T> for TrajectoryKind {
+    fn profile(&self, distance: T, x: T) -> TrajectoryProfile<T> {
+        match *self {
+            Self::Sin => Sin.profile(distance, x),
+            Self::Cycloid => Cycloid.profile(distance, x),
+            Self::ModifiedTrapezoid => ModifiedTrapezoid.profile(distance, x),
+            Self::ModifiedSine => ModifiedSine.profile(distance, x),
+            Self::ModifiedConstantVelocity { constant_velocity_percent } => {
+                ModifiedConstantVelocity { constant_velocity_percent }.profile(distance, x)
+            }
+            Self::SmoothPolynomial { smoothness } => SmoothPolynomial { smoothness }.profile(distance, x),
+        }
+    }
+}
+
+impl From<Sin> for TrajectoryKind {
+    fn from(_: Sin) -> Self {
+        Self::Sin
+    }
+}
+
+impl From<Cycloid> for TrajectoryKind {
+    fn from(_: Cycloid) -> Self {
+        Self::Cycloid
+    }
+}
+
+impl From<ModifiedTrapezoid> for TrajectoryKind {
+    fn from(_: ModifiedTrapezoid) -> Self {
+        Self::ModifiedTrapezoid
+    }
+}
+
+impl From<ModifiedSine> for TrajectoryKind {
+    fn from(_: ModifiedSine) -> Self {
+        Self::ModifiedSine
+    }
+}
+
+impl From<ModifiedConstantVelocity> for TrajectoryKind {
+    fn from(p: ModifiedConstantVelocity) -> Self {
+        Self::ModifiedConstantVelocity { constant_velocity_percent: p.constant_velocity_percent }
+    }
+}
+
+impl From<SmoothPolynomial> for TrajectoryKind {
+    fn from(p: SmoothPolynomial) -> Self {
+        Self::SmoothPolynomial { smoothness: p.smoothness }
+    }
+}
+
+/// Profiles with an exact continuous-time representation on the time axis, e.g. for the reference
+/// of perfect tracking control by stable inversion
+/// (`Signal: feedforward::ptc::ReferenceSignal`).
+pub trait SignalTrajectory<T: Float> {
+    type Signal;
+
+    /// A move of `distance` in `duration` [s] starting at `start` [s] (0 before, `distance` after).
+    fn signal(&self, distance: T, duration: T, start: T) -> Self::Signal;
 }

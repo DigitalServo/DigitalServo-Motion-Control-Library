@@ -8,8 +8,8 @@
 //! Evaluating `y` as that sum would subtract large, growing polynomials (∝ (t/T)^deg) long after
 //! the move, so values and derivatives are always evaluated from the local piece instead.
 
-use super::{LaplaceSignal, TransferFunction};
-use crate::{Continuous, Polynomial};
+use crate::laplace_transform::LaplaceSignal;
+use crate::{Continuous, Polynomial, TransferFunction};
 use num_traits::Float;
 
 /// Jump coefficients smaller than this (relative to the natural size of the adjacent pieces) are
@@ -29,7 +29,7 @@ pub struct PiecewisePolynomial<T> {
 
 /// One breakpoint of the jump decomposition.
 #[derive(Clone, Debug)]
-pub(super) struct Jump<T> {
+pub(crate) struct Jump<T> {
     pub time: T,
     /// Ascending coefficients of `Δ(τ)` (trailing zeros removed, lowest ones may be exactly zero).
     pub coefficients: Vec<T>,
@@ -94,7 +94,7 @@ impl<T: Float> PiecewisePolynomial<T> {
     }
 
     /// Breakpoints and their jumps `Δ_q` (see the module documentation).
-    pub(super) fn jumps(&self) -> Vec<Jump<T>> {
+    pub(crate) fn jumps(&self) -> Vec<Jump<T>> {
         let mut jumps = Vec::with_capacity(self.pieces.len() + 1);
         let mut time = self.start;
         // (previous piece in ascending order, its duration)
@@ -151,7 +151,7 @@ impl<T: Float + std::ops::AddAssign> PiecewisePolynomial<T> {
 }
 
 /// `L[Σ c_m τ^m] = Σ c_m m! / s^(m+1) = (Σ c_m m! s^(M-1-m)) / s^M`, `M = len`.
-pub(super) fn jump_rational<T: Float>(jump: &Jump<T>) -> TransferFunction<T, Continuous> {
+pub(crate) fn jump_rational<T: Float>(jump: &Jump<T>) -> TransferFunction<T, Continuous> {
     let len = jump.coefficients.len();
     let mut factorial = T::one();
     let mut numerator = vec![T::zero(); len];

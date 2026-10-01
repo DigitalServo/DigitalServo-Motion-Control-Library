@@ -2,7 +2,8 @@ use std::f64::consts::PI;
 
 use dsmc::{
     TransferFunction,
-    discretize::{bilinear_transform, exact_discretize::{DiscretizedSystem, LiftedDiscretizedSystem}},
+    discretize::{bilinear_transform, exact_discretize::DiscretizedSystem},
+    feedforward::ptc::LiftedDiscretizedSystem,
     logger::DataStorage,
     signal::Delayer,
     trajectory,
@@ -52,7 +53,8 @@ fn smith() {
     let rest_samples = (rest_tlen / ts).round() as usize;
     let move_samples = (move_tlen / ts).round() as usize;
     let move_distance = 1.0;
-    let trajectory_sin = trajectory::sin::generate(move_distance, move_samples);
+    use dsmc::trajectory::Trajectory as _;
+    let trajectory_sin = trajectory::Sin.generate(move_distance, move_samples);
 
     let r = {
         let mut r = Vec::<Vec<f64>>::with_capacity(rest_samples * 2 + move_samples);
@@ -74,7 +76,7 @@ fn smith() {
         r
     };
 
-    let u = model_lifted.calculate_ptc_input_from_reference_state(r.clone());
+    let u = model_lifted.calculate_ptc_input_for_reference_state(r.clone());
 
     let mut y = 0.0;
     let mut y_est = 0.0;

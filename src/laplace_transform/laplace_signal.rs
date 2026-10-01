@@ -3,8 +3,7 @@
 //! Piecewise trajectories (polynomial, sinusoidal, ...) are written this way by starting
 //! each piece at its own delay.
 
-use super::TransferFunction;
-use crate::Continuous;
+use crate::{Continuous, TransferFunction};
 use num_traits::Float;
 use std::ops::AddAssign;
 

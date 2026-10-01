@@ -2,28 +2,39 @@ use std::ops::AddAssign;
 
 use num_traits::{Float, FloatConst};
 
-use crate::trajectory::TrajectoryProfile;
-use crate::{LaplaceSignal, Polynomial, TransferFunction};
+use crate::laplace_transform::LaplaceSignal;
+use crate::trajectory::{SignalTrajectory, Trajectory, TrajectoryProfile};
+use crate::{Polynomial, TransferFunction};
 
-pub fn generate<T: Float + FloatConst + AddAssign>(distance: T, samples: usize) -> Vec<TrajectoryProfile<T>> {
+/// Half-cosine (harmonic) profile: `s = distance / 2 (1 - cos(π x))`.
+#[derive(Clone, Copy, Debug)]
+pub struct Sin;
 
-    let mut t = T::zero();
-    let dt: T = T::one() / T::from(samples - 1).unwrap();
-    let pi: T = FloatConst::PI();
-
-    let gain = distance * T::from(0.5).unwrap();
-
-    let mut trajectory = Vec::<TrajectoryProfile<T>>::with_capacity(samples);
-
-    for _ in 0..samples {
-        let s = gain * (T::one() - (pi * t).cos());
-        let v = gain * pi * (pi * t).sin();
-        let a = gain * pi * pi * (pi * t).cos();
-        trajectory.push(TrajectoryProfile { s, v, a });
-        t += dt;
+impl<T: Float + FloatConst> Trajectory<T> for Sin {
+    fn profile(&self, distance: T, x: T) -> TrajectoryProfile<T> {
+        if x < T::zero() {
+            return TrajectoryProfile::rest(T::zero());
+        }
+        if x > T::one() {
+            return TrajectoryProfile::rest(distance);
+        }
+        let pi: T = FloatConst::PI();
+        let gain = distance * T::from(0.5).unwrap();
+        TrajectoryProfile {
+            s: gain * (T::one() - (pi * x).cos()),
+            v: gain * pi * (pi * x).sin(),
+            a: gain * pi * pi * (pi * x).cos(),
+        }
     }
+}
 
-    trajectory
+impl<T: Float + FloatConst + AddAssign> SignalTrajectory<T> for Sin {
+    type Signal = LaplaceSignal<T>;
+
+    /// Exact Laplace-domain form (see `laplace`).
+    fn signal(&self, distance: T, duration: T, start: T) -> LaplaceSignal<T> {
+        laplace(distance, duration, start)
+    }
 }
 
 /// Laplace-domain form of the same profile: a move of `distance` in `duration` [s] starting at
@@ -33,7 +44,7 @@ pub fn generate<T: Float + FloatConst + AddAssign>(distance: T, samples: usize) 
 /// Y(s) = distance / 2 · ω² / (s (s² + ω²)) · (e^(-s start) + e^(-s (start + duration)))
 /// ```
 /// (after the move, `1 - cos` restarted at `start + duration` adds up to the constant `distance`).
-/// `generate(distance, samples)` corresponds to `duration = (samples - 1) ts`.
+/// `Sin.generate(distance, samples)` corresponds to `duration = (samples - 1) ts`.
 pub fn laplace<T: Float + FloatConst + AddAssign>(distance: T, duration: T, start: T) -> LaplaceSignal<T> {
     let omega = T::PI() / duration;
     let half = distance * T::from(0.5).unwrap();

@@ -1,5 +1,8 @@
-use dsmc::discretize::exact_discretize::{DiscretizedSystem, LiftedDiscretizedSystem, PtcError};
-use dsmc::{tf, trajectory, PiecewisePolynomial, StableInverseError, StateSpace, TransferFunction};
+use dsmc::discretize::exact_discretize::DiscretizedSystem;
+use dsmc::feedforward::ptc::{LiftedDiscretizedSystem, PtcError};
+use dsmc::trajectory::{self, PiecewisePolynomial};
+use dsmc::laplace_transform::StableInverseError;
+use dsmc::{tf, StateSpace, TransferFunction};
 use nalgebra::DMatrix;
 
 const TS: f64 = 1e-4;
@@ -36,12 +39,12 @@ fn samples() -> usize {
 fn canonical_realization() {
     let model = DiscretizedSystem::from_tf(plant(), TS).unwrap();
     let lifted: LiftedDiscretizedSystem<f64> = model.clone().try_into().unwrap();
-    let u = lifted.calculate_ptc_input_from_reference_output(&y_d(), 0.0, samples()).unwrap();
+    let u = lifted.calculate_ptc_input_for_reference_output(&y_d(), 0.0, samples()).unwrap();
     assert_eq!(u.len(), samples().div_ceil(5) * 5);
 
     // Same input as building the state reference by hand.
     let r = plant().state_reference(&y_d()).unwrap().sample(0.0, TS, u.len() + 1);
-    let u_state = lifted.calculate_ptc_input_from_reference_state(r);
+    let u_state = lifted.calculate_ptc_input_for_reference_state(r);
     // The plant is re-derived from (A, B, C), so the inputs agree up to that round-off
     // (the fast lags filter it out of the output).
     for (a, b) in u.iter().zip(&u_state) {
@@ -71,7 +74,7 @@ fn arbitrary_realization() {
 
     let model = DiscretizedSystem::from_ssr(&ssr, TS).unwrap();
     let lifted: LiftedDiscretizedSystem<f64> = model.clone().try_into().unwrap();
-    let u = lifted.calculate_ptc_input_from_reference_output(&y_d(), 0.0, samples()).unwrap();
+    let u = lifted.calculate_ptc_input_for_reference_output(&y_d(), 0.0, samples()).unwrap();
     let error = max_frame_error(model, &u, 5);
     assert!(error < 1e-9, "max tracking error at frames: {error:e}");
 
@@ -91,7 +94,7 @@ fn errors() {
     let model = DiscretizedSystem::from_tf(tf!("(s^2 + 4) / (s + 1)^3"), TS).unwrap();
     let lifted: LiftedDiscretizedSystem<f64> = model.try_into().unwrap();
     assert!(matches!(
-        lifted.calculate_ptc_input_from_reference_output(&y_d(), 0.0, 100),
+        lifted.calculate_ptc_input_for_reference_output(&y_d(), 0.0, 100),
         Err(PtcError::StableInverse(StableInverseError::PoleOnImaginaryAxis { .. }))
     ));
 
@@ -105,7 +108,7 @@ fn errors() {
     .unwrap();
     let lifted: LiftedDiscretizedSystem<f64> = DiscretizedSystem::from_ssr(&ssr, TS).unwrap().try_into().unwrap();
     assert_eq!(
-        lifted.calculate_ptc_input_from_reference_output(&y_d(), 0.0, 100).unwrap_err(),
+        lifted.calculate_ptc_input_for_reference_output(&y_d(), 0.0, 100).unwrap_err(),
         PtcError::Feedthrough
     );
 }
@@ -126,7 +129,8 @@ fn ptc_for_reference_state() {
     let rest_samples = (rest_tlen / TS).round() as usize;
     let move_samples = (move_tlen / TS).round() as usize;
     let move_distance = 1.0;
-    let trajectory_sin = trajectory::sin::generate(move_distance, move_samples);
+    use dsmc::trajectory::Trajectory as _;
+    let trajectory_sin = trajectory::Sin.generate(move_distance, move_samples);
 
     let mut r = Vec::<Vec<f64>>::with_capacity(rest_samples * 2 + move_samples);
     {
@@ -146,7 +150,7 @@ fn ptc_for_reference_state() {
         }
     }
 
-    let u = model_lifted.calculate_ptc_input_from_reference_state(r.clone());
+    let u = model_lifted.calculate_ptc_input_for_reference_state(r.clone());
 
     for i in 0..u.len() {
         storage.add(&[TS * i as f64, r[i][0], model.output[0], (r[i][0] - model.output[0])]).unwrap();

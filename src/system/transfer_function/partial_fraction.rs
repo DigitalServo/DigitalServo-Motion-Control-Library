@@ -1,13 +1,13 @@
-//! Partial-fraction expansion of `X(s) = N(s) / D(s)` by the Heaviside expansion theorem,
-//! and the inverse Laplace transform `x(t)` (right-sided / causal signal) built from it.
+//! Partial-fraction expansion of a rational function `X(s) = N(s) / D(s)` by the Heaviside
+//! expansion theorem (repeated poles supported):
 //!
 //! ```text
 //! X(s) = Q(s) + Σ_p Σ_{k=1..m_p} r_{p,k} / (s - p)^k
-//! x(t) = Σ_n q_n δ^(n)(t) + Σ_p Σ_{k=1..m_p} r_{p,k} t^(k-1) / (k-1)! e^(p t)      (t >= 0)
 //! ```
 //! For a pole `p` of multiplicity `m`, `r_{p,k} = G^(m-k)(p) / (m-k)!` with `G(s) = (s - p)^m X(s)`.
 //! The derivatives are obtained exactly as Taylor coefficients of `G` around `p`
 //! (synthetic division + power-series division), not by numerical differentiation.
+//! The time-domain counterpart (inverse Laplace transform) is in `laplace_transform`.
 
 use super::TransferFunction;
 use crate::{dka_method, vieta_formula, Continuous, Polynomial};
@@ -44,15 +44,6 @@ impl<T: Float + AddAssign> TransferFunction<T, Continuous> {
         self.partial_fraction_with_tolerance(T::from(1e-4).unwrap())
     }
 
-    /// Inverse Laplace transform `x(t)` as a closure (see `PartialFraction::time_function`),
-    /// e.g. `let x = tf!("1 / (s + 1)").inverse_laplace(); x(0.5)`.
-    pub fn inverse_laplace(&self) -> impl Fn(T) -> T + use<T>
-    where
-        T: 'static,
-    {
-        self.partial_fraction().time_function()
-    }
-
     /// Same as `partial_fraction`, but with an explicit relative tolerance for grouping
     /// numerically found roots into repeated poles.
     pub fn partial_fraction_with_tolerance(&self, rel_tol: T) -> PartialFraction<T> {
@@ -86,52 +77,6 @@ impl<T: Float + AddAssign> TransferFunction<T, Continuous> {
 
         PartialFraction { direct, terms }
     }
-}
-
-impl<T: Float> PartialFraction<T> {
-    /// `x(t)` for the right-sided signal: 0 for `t < 0`. Impulse terms `δ^(n)(t)` coming from
-    /// the polynomial part `direct` are not included (they vanish for `t != 0`).
-    pub fn time_response(&self, t: T) -> T {
-        if t < T::zero() {
-            return T::zero();
-        }
-        eval_terms(&self.terms, t)
-    }
-
-    /// `x(t)` as a closure, e.g. `let x = pf.time_function(); x(0.5)`. Same as `time_response`
-    /// (impulse terms excluded); the closure owns a copy of the expansion, so it may outlive `self`.
-    pub fn time_function(&self) -> impl Fn(T) -> T + use<T>
-    where
-        T: 'static,
-    {
-        let pf = self.clone();
-        move |t| pf.time_response(t)
-    }
-
-    /// Displayable `x(t)`, e.g. `println!("{:.3}", pf.time_domain())`.
-    pub fn time_domain(&self) -> TimeDomain<'_, T> {
-        TimeDomain(self)
-    }
-}
-
-/// `Display` wrapper for the time-domain expression of a `PartialFraction`.
-pub struct TimeDomain<'a, T>(&'a PartialFraction<T>);
-
-/// `Σ_p Σ_k r_{p,k} t^(k-1) / (k-1)! e^(p t)` for any `t` (no step function applied).
-pub(super) fn eval_terms<T: Float>(terms: &[PoleTerm<T>], t: T) -> T {
-    let mut sum = Complex::zero();
-    for term in terms {
-        let exp_pt = (term.pole * t).exp();
-        // t^k / k!
-        let mut basis = T::one();
-        for (k, &r) in term.residues.iter().enumerate() {
-            if k > 0 {
-                basis = basis * t / T::from(k).unwrap();
-            }
-            sum = sum + r * exp_pt * basis;
-        }
-    }
-    sum.re
 }
 
 fn trim_leading_zeros<T: Float>(p: &Polynomial<T>) -> Vec<T> {
@@ -220,7 +165,7 @@ fn refine_repeated_root<T: Float>(denom: &Polynomial<Complex<T>>, mut p: Complex
 /// Residues of `R(s) / ((s - p)^m B(s))` at `p` (`B(p) != 0`, descending `numer` / `rest`):
 /// element k is the coefficient of `1 / (s - p)^(k + 1)`. With `G = R / B`, these are
 /// `G^(m-1-k)(p) / (m-1-k)!`, obtained by power-series division of Taylor coefficients.
-pub(super) fn principal_part<T: Float>(
+pub(crate) fn principal_part<T: Float>(
     numer: &[Complex<T>],
     rest: &[Complex<T>],
     p: Complex<T>,
@@ -261,7 +206,7 @@ pub(super) fn taylor_coefficients<T: Float>(coeffs: &[Complex<T>], x0: Complex<T
     out
 }
 
-fn fmt_num<T: Float + std::fmt::Display>(c: T, precision: Option<usize>) -> String {
+pub(crate) fn fmt_num<T: Float + std::fmt::Display>(c: T, precision: Option<usize>) -> String {
     match precision {
         Some(p) => format!("{:.*}", p, c),
         None => c.to_string(),
@@ -277,7 +222,7 @@ fn fmt_complex<T: Float + std::fmt::Display>(c: Complex<T>, precision: Option<us
 }
 
 /// Append `coef * body` to a sum, folding the sign of `coef` into the separator.
-fn push_term<T: Float + std::fmt::Display>(out: &mut String, coef: T, body: &str, precision: Option<usize>) {
+pub(crate) fn push_term<T: Float + std::fmt::Display>(out: &mut String, coef: T, body: &str, precision: Option<usize>) {
     push_term_with(out, coef, " * ", body, precision);
 }
 
@@ -351,71 +296,4 @@ impl<T: Float + std::fmt::Display> std::fmt::Display for PartialFraction<T> {
         }
         write!(f, "{}", out)
     }
-}
-
-impl<T: Float + std::fmt::Display> std::fmt::Display for TimeDomain<'_, T> {
-    /// e.g. `x(t) = 2 * exp(-1t) + 3 * t * exp(-1t) + exp(-1t) * (2 * cos(2t) - 1 * sin(2t))`.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "x(t) = {}", format_time_terms(self.0, f.precision()))
-    }
-}
-
-/// Time-domain expression of `pf` (impulses `δ^(n)(t)` for `direct`, exponentials for `terms`).
-/// A conjugate pole pair is merged into `exp(σt) * (A cos(ωt) + B sin(ωt))`
-/// (the pole with negative imaginary part is skipped, since X(s) has real coefficients).
-pub(super) fn format_time_terms<T: Float + std::fmt::Display>(pf: &PartialFraction<T>, prec: Option<usize>) -> String {
-    let mut out = String::new();
-
-    // Polynomial part q_n s^n  <->  q_n δ^(n)(t)
-    let degree = pf.direct.len().saturating_sub(1);
-    for (i, &c) in pf.direct.iter().enumerate() {
-        let body = match degree - i {
-            0 => "δ(t)".to_string(),
-            n => format!("δ^({})(t)", n),
-        };
-        push_term(&mut out, c, &body, prec);
-    }
-
-    for term in &pf.terms {
-        let p = term.pole;
-        if p.im < T::zero() {
-            continue;
-        }
-        let exp = if p.re.is_zero() { None } else { Some(format!("exp({}t)", fmt_num(p.re, prec))) };
-        let mut factorial = T::one();
-        for (k, &r) in term.residues.iter().enumerate() {
-            if k > 0 {
-                factorial = factorial * T::from(k).unwrap();
-            }
-            let r = r / factorial;
-            let mut factors: Vec<String> = Vec::new();
-            match k {
-                0 => {}
-                1 => factors.push("t".to_string()),
-                _ => factors.push(format!("t^{}", k)),
-            }
-            factors.extend(exp.clone());
-
-            if p.im.is_zero() {
-                push_term(&mut out, r.re, &factors.join(" * "), prec);
-            } else {
-                // r e^{pt} + conj(r) e^{conj(p)t} = e^{σt} (2Re(r) cos(ωt) - 2Im(r) sin(ωt))
-                let two = T::from(2.0).unwrap();
-                let (a, b) = (two * r.re, -two * r.im);
-                if a.is_zero() && b.is_zero() {
-                    continue;
-                }
-                let w = fmt_num(p.im, prec);
-                let mut trig = String::new();
-                push_term(&mut trig, a, &format!("cos({}t)", w), prec);
-                push_term(&mut trig, b, &format!("sin({}t)", w), prec);
-                factors.push(format!("({})", trig));
-                push_term(&mut out, T::one(), &factors.join(" * "), prec);
-            }
-        }
-    }
-    if out.is_empty() {
-        out = fmt_num(T::zero(), prec);
-    }
-    out
 }

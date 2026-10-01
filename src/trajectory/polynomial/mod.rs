@@ -8,12 +8,12 @@
 //! `k = 1`: cubic, `k = 2`: quintic (minimum jerk), `k = 3`: septic, ...
 //! With stable inversion, a plant of relative degree `ρ` needs `k >= ρ - 2`.
 
-use std::ops::AddAssign;
-
 use num_traits::Float;
 
-use crate::trajectory::TrajectoryProfile;
-use crate::{PiecewisePolynomial, Polynomial};
+use crate::trajectory::{PiecewisePolynomial, SignalTrajectory, Trajectory, TrajectoryProfile};
+use crate::Polynomial;
+
+pub mod piecewise_polynomial;
 
 /// Ascending coefficients of `P_k(x)`.
 pub fn normalized_coefficients<T: Float>(k: usize) -> Vec<T> {
@@ -56,18 +56,38 @@ pub fn piecewise<T: Float>(distance: T, duration: T, start: T, smoothness: usize
     PiecewisePolynomial::new(start, vec![(duration, Polynomial(descending))], Polynomial(vec![distance]))
 }
 
-/// Samples like `sin::generate`: normalized time `x = 0..1` over `samples` points, with `v` and `a`
-/// the derivatives with respect to `x` (divide by `duration` / `duration^2` for physical units).
-/// `k = smoothness` means that the trajectory is `C^k` smooth.
-pub fn generate<T: Float + AddAssign>(distance: T, samples: usize, smoothness: usize) -> Vec<TrajectoryProfile<T>> {
-    let p = piecewise(distance, T::one(), T::zero(), smoothness);
-    let dx = T::one() / T::from(samples - 1).unwrap();
-    (0..samples)
-        .map(|i| {
-            // Evaluate the last sample on the piece itself (x = 1), not on the tail.
-            let x = (T::from(i).unwrap() * dx).min(T::one() - T::epsilon());
-            let d = p.derivatives(x, 3);
-            TrajectoryProfile { s: d[0], v: d[1], a: d[2] }
-        })
-        .collect()
+/// Smooth rest-to-rest polynomial `distance P_k(x)`, `C^k` with `k = smoothness`
+/// (see the module documentation).
+#[derive(Clone, Copy, Debug)]
+pub struct SmoothPolynomial {
+    pub smoothness: usize,
+}
+
+impl<T: Float> Trajectory<T> for SmoothPolynomial {
+    fn profile(&self, distance: T, x: T) -> TrajectoryProfile<T> {
+        if x < T::zero() {
+            return TrajectoryProfile::rest(T::zero());
+        }
+        if x > T::one() {
+            return TrajectoryProfile::rest(distance);
+        }
+        // Horner on ascending coefficients for P, P', P''
+        let coeffs = normalized_coefficients::<T>(self.smoothness);
+        let (mut p, mut dp, mut ddp) = (T::zero(), T::zero(), T::zero());
+        for &c in coeffs.iter().rev() {
+            ddp = ddp * x + dp + dp;
+            dp = dp * x + p;
+            p = p * x + c;
+        }
+        TrajectoryProfile { s: distance * p, v: distance * dp, a: distance * ddp }
+    }
+}
+
+impl<T: Float> SignalTrajectory<T> for SmoothPolynomial {
+    type Signal = PiecewisePolynomial<T>;
+
+    /// Exact piecewise-polynomial form (see `piecewise`).
+    fn signal(&self, distance: T, duration: T, start: T) -> PiecewisePolynomial<T> {
+        piecewise(distance, duration, start, self.smoothness)
+    }
 }

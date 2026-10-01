@@ -1,4 +1,5 @@
-use dsmc::{tf, StableInverseError};
+use dsmc::laplace_transform::StableInverseError;
+use dsmc::tf;
 
 fn assert_close(actual: f64, expected: f64, tol: f64) {
     assert!((actual - expected).abs() <= tol, "{actual} != {expected}");
@@ -76,8 +77,10 @@ fn errors() {
 
 mod state_reference {
     use super::assert_close;
-    use dsmc::discretize::exact_discretize::{DiscretizedSystem, LiftedDiscretizedSystem};
-    use dsmc::{tf, trajectory, StableInverseError, TransferFunction};
+    use dsmc::discretize::exact_discretize::DiscretizedSystem;
+    use dsmc::feedforward::ptc::LiftedDiscretizedSystem;
+    use dsmc::laplace_transform::StableInverseError;
+    use dsmc::{tf, trajectory, TransferFunction};
 
     const TS: f64 = 1e-4;
     const REST: f64 = 0.02;
@@ -89,7 +92,8 @@ mod state_reference {
 
     #[test]
     fn sin_laplace_matches_generate() {
-        let samples = trajectory::sin::generate(1.0, MOVE_SAMPLES);
+        use dsmc::trajectory::Trajectory as _;
+        let samples = trajectory::Sin.generate(1.0, MOVE_SAMPLES);
         let y = trajectory::sin::laplace(1.0, duration(), REST).inverse_laplace();
         for (i, p) in samples.iter().enumerate() {
             assert_close(y(REST + i as f64 * TS), p.s, 1e-9);
@@ -104,7 +108,8 @@ mod state_reference {
         let plant: TransferFunction<f64> = TransferFunction::continuous(&[1.0], &[2.0e-4, 0.05, 0.0]);
         let reference = plant.state_reference(&trajectory::sin::laplace(1.0, duration(), REST)).unwrap();
         assert_eq!(reference.order(), 2);
-        let samples = trajectory::sin::generate(1.0, MOVE_SAMPLES);
+        use dsmc::trajectory::Trajectory as _;
+        let samples = trajectory::Sin.generate(1.0, MOVE_SAMPLES);
         for (i, p) in samples.iter().enumerate() {
             let x = reference.state(REST + i as f64 * TS);
             assert_close(x[0], p.s, 1e-9);
@@ -134,7 +139,7 @@ mod state_reference {
         let r = reference.sample(0.0, TS, total);
         let mut model = DiscretizedSystem::from_tf(&plant, TS).unwrap();
         let lifted: LiftedDiscretizedSystem<f64> = model.clone().try_into().unwrap();
-        let u = lifted.calculate_ptc_input_from_reference_state(r);
+        let u = lifted.calculate_ptc_input_for_reference_state(r);
         let mut max_error: f64 = 0.0;
         for (i, &ui) in u.iter().enumerate() {
             model.update(&[ui]).unwrap();
@@ -163,8 +168,11 @@ mod state_reference {
 
 mod polynomial_reference {
     use super::assert_close;
-    use dsmc::discretize::exact_discretize::{DiscretizedSystem, LiftedDiscretizedSystem};
-    use dsmc::{tf, trajectory, ReferenceSignal, StableInverseError};
+    use dsmc::discretize::exact_discretize::DiscretizedSystem;
+    use dsmc::feedforward::ptc::LiftedDiscretizedSystem;
+    use dsmc::feedforward::ptc::ReferenceSignal;
+    use dsmc::laplace_transform::StableInverseError;
+    use dsmc::{tf, trajectory};
 
     const TS: f64 = 1e-4;
     const REST: f64 = 0.02;
@@ -259,7 +267,7 @@ mod polynomial_reference {
         let r = reference.sample(0.0, TS, total);
         let mut model = DiscretizedSystem::from_tf(&plant, TS).unwrap();
         let lifted: LiftedDiscretizedSystem<f64> = model.clone().try_into().unwrap();
-        let u = lifted.calculate_ptc_input_from_reference_state(r);
+        let u = lifted.calculate_ptc_input_for_reference_state(r);
         let mut max_error: f64 = 0.0;
         for (i, &ui) in u.iter().enumerate() {
             model.update(&[ui]).unwrap();
@@ -285,7 +293,8 @@ mod polynomial_reference {
 
     #[test]
     fn generate_matches_piecewise() {
-        let samples = trajectory::polynomial::generate(1.0, 101, 3);
+        use dsmc::trajectory::Trajectory as _;
+        let samples = trajectory::SmoothPolynomial { smoothness: 3 }.generate(1.0, 101);
         let y = trajectory::polynomial::piecewise(1.0, 1.0, 0.0, 3);
         for (i, p) in samples.iter().enumerate() {
             let d = y.derivatives(i as f64 / 100.0, 3);

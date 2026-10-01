@@ -1,26 +1,25 @@
-use std::ops::AddAssign;
-
 use num_traits::{Float, FloatConst};
 
-use crate::trajectory::TrajectoryProfile;
+use crate::trajectory::{Trajectory, TrajectoryProfile};
 
-pub fn generate<T: Float + FloatConst + AddAssign>(distance: T, samples: usize) -> Vec<TrajectoryProfile<T>> {
+/// Cycloid profile: `s = distance (x - sin(2π x) / (2π))`.
+#[derive(Clone, Copy, Debug)]
+pub struct Cycloid;
 
-    let mut t = T::zero();
-    let dt = T::one() / T::from(samples - 1).unwrap();
-
-    let omega: T = T::from(2.0).unwrap() * FloatConst::PI();
-    let r: T = T::one() / omega;
-
-    let mut trajectory = Vec::<TrajectoryProfile<T>>::with_capacity(samples);
-
-    for _ in 0..samples {
-        let s = distance * (t - r * (omega * t).sin());
-        let v = distance * (T::one() - r * omega * (omega * t).cos());
-        let a = distance * r * omega * omega * (omega * t).sin();
-        trajectory.push(TrajectoryProfile { s, v, a });
-        t += dt;
+impl<T: Float + FloatConst> Trajectory<T> for Cycloid {
+    fn profile(&self, distance: T, x: T) -> TrajectoryProfile<T> {
+        if x < T::zero() {
+            return TrajectoryProfile::rest(T::zero());
+        }
+        if x > T::one() {
+            return TrajectoryProfile::rest(distance);
+        }
+        let omega: T = T::from(2.0).unwrap() * FloatConst::PI();
+        let r: T = T::one() / omega;
+        TrajectoryProfile {
+            s: distance * (x - r * (omega * x).sin()),
+            v: distance * (T::one() - r * omega * (omega * x).cos()),
+            a: distance * r * omega * omega * (omega * x).sin(),
+        }
     }
-
-    trajectory
 }

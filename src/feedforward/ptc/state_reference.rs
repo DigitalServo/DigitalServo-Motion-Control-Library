@@ -11,11 +11,10 @@
 //! Only `N(s)` is inverted: its stable zeros give causal terms, its unstable zeros anti-causal ones
 //! (pre-actuation before the trajectory starts). Everything is evaluated in closed form (no convolution).
 
-use super::partial_fraction::principal_part;
-use super::piecewise_polynomial::jump_rational;
-use super::stable_inverse::to_f64;
-use super::{LaplaceSignal, PartialFraction, PiecewisePolynomial, PoleTerm, StableInverse, StableInverseError, TransferFunction};
-use crate::{vieta_formula, Continuous, Polynomial};
+use crate::system::principal_part;
+use crate::laplace_transform::{LaplaceSignal, StableInverse, StableInverseError};
+use crate::trajectory::{jump_rational, PiecewisePolynomial};
+use crate::{vieta_formula, Continuous, PartialFraction, PoleTerm, Polynomial, TransferFunction};
 use num_complex::Complex;
 use num_traits::{Float, Zero};
 use std::ops::AddAssign;
@@ -241,8 +240,12 @@ impl<T: Float> StateReference<T> {
         x
     }
 
-    /// `x_d(t0 + k ts)` for k = 0..samples, e.g. as the reference of `calculate_ptc_input_from_reference_state`.
+    /// `x_d(t0 + k ts)` for k = 0..samples, e.g. as the reference of `LiftedDiscretizedSystem::calculate_ptc_input_for_reference_state`.
     pub fn sample(&self, t0: T, ts: T, samples: usize) -> Vec<Vec<T>> {
         (0..samples).map(|k| self.state(t0 + ts * T::from(k).unwrap())).collect()
     }
+}
+
+fn to_f64<T: Float>(x: T) -> f64 {
+    x.to_f64().unwrap_or(f64::NAN)
 }
