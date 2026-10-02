@@ -1,3 +1,5 @@
+//! Exact (zero-order hold, step-invariant) discretization.
+
 use std::borrow::Borrow;
 
 use nalgebra::{ComplexField, DMatrix, DVector, RealField};
@@ -5,6 +7,8 @@ use num_traits::Float;
 
 use crate::{Continuous, Discrete, StateSpace, StateSpaceError, TransferFunction};
 
+/// Zero-order hold discretization `A_d = e^(A ts)`, `B_d = ∫_0^ts e^(A τ) dτ B` (computed as one matrix
+/// exponential of the augmented matrix `[[A, B], [0, 0]] ts`); `C` and `D` are unchanged.
 pub fn discretize_ssr<T: Float + ComplexField + RealField, S: Borrow<StateSpace<T, Continuous>>>(ssr: S, ts: T) -> Result<StateSpace<T, Discrete>, StateSpaceError> {
     let system = ssr.borrow();
 
@@ -35,6 +39,15 @@ pub fn discretize_ssr<T: Float + ComplexField + RealField, S: Borrow<StateSpace<
 /// `G(z) = (1 - z^-1) Z[L^-1[G(s) / s]]`, computed through the state space
 /// (controllable canonical realization, `discretize_ssr`, then `C (zI - A_d)^-1 B_d + D`).
 /// A static gain is returned as is.
+///
+/// The result is exact at the sampling instants when the input is held constant between samples
+/// (the usual situation of a digital controller driving a plant through a D/A converter).
+///
+/// ```
+/// use dsmc::{tf, discretize::exact_discretize};
+///
+/// let g_z = exact_discretize::discretize(&tf!("100 / (s + 100)"), 1e-3).unwrap();
+/// ```
 pub fn discretize<T, S>(tf: S, ts: T) -> Result<TransferFunction<T, Discrete>, StateSpaceError>
 where
     T: Float + ComplexField + RealField,
@@ -67,6 +80,7 @@ pub struct DiscretizedSystem<T> {
 }
 
 impl<T: Float + ComplexField + RealField> DiscretizedSystem<T> {
+    /// Discretize `ssr` with sampling period `ts` (`discretize_ssr`), starting at rest.
     pub fn from_ssr<S: Borrow<StateSpace<T, Continuous>>>(ssr: S, ts: T) -> Result<Self, StateSpaceError> {
         let continuous = ssr.borrow().clone();
         let ssr = discretize_ssr(&continuous, ts)?;

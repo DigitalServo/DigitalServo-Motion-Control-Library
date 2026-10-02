@@ -1,3 +1,5 @@
+//! Tools for mathematical operations.
+
 mod polynomial;
 pub use polynomial::{Polynomial, dka_method, vieta_formula};
 

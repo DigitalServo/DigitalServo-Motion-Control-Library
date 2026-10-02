@@ -1,7 +1,4 @@
-//! Signals given exactly in the Laplace domain as a sum of delayed rational functions,
-//! `Y(s) = Σ_i e^(-s τ_i) R_i(s)`, i.e. `y(t) = Σ_i r_i(t - τ_i)` with causal `r_i`.
-//! Piecewise trajectories (polynomial, sinusoidal, ...) are written this way by starting
-//! each piece at its own delay.
+//! Signals given exactly in the Laplace domain as a sum of delayed rational functions.
 
 use crate::{Continuous, TransferFunction};
 use num_traits::Float;
@@ -10,17 +7,23 @@ use std::ops::AddAssign;
 /// `e^(-s delay) rational(s)`.
 #[derive(Clone, Debug)]
 pub struct DelayedRational<T> {
+    /// Delay `τ` \[s\].
     pub delay: T,
+    /// Rational part `R(s)`.
     pub rational: TransferFunction<T, Continuous>,
 }
 
-/// `Y(s) = Σ_i e^(-s τ_i) R_i(s)`.
+/// `Y(s) = Σ_i e^(-s τ_i) R_i(s)`, i.e. `y(t) = Σ_i r_i(t - τ_i)` with causal `r_i`.
+/// Piecewise trajectories (polynomial, sinusoidal, ...) are written this way by starting
+/// each piece at its own delay.
 #[derive(Clone, Debug)]
 pub struct DelayedRationalSum<T> {
+    /// The terms `e^(-s τ_i) R_i(s)`.
     pub terms: Vec<DelayedRational<T>>,
 }
 
 impl<T> DelayedRationalSum<T> {
+    /// Empty sum (`Y(s) = 0`).
     pub fn new() -> Self {
         Self { terms: Vec::new() }
     }

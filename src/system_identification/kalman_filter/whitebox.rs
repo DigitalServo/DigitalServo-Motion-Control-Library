@@ -1,9 +1,13 @@
+//! Recursive (Kalman filter) estimation of a linear regression `y = φ^T θ` (white-box identification).
+
 use std::ops::{AddAssign, DivAssign, MulAssign, SubAssign};
 use nalgebra::{DMatrix, DVector, Scalar};
 use num_traits::Float;
 
 /// Recursive estimation of `θ` in the linear regression `y = φ^T θ` by a Kalman filter,
-/// modeling `θ` as a random walk (process noise variance `sigma_v`, measurement noise variance `sigma_w`).
+/// modeling `θ` as a random walk (process noise variance `sigma_v`, measurement noise variance `sigma_w`),
+/// so the estimate can follow slowly varying parameters. The regressor `φ` is built from a physical
+/// model, e.g. `φ = [acceleration, velocity, sign(velocity)]`.
 pub struct KalmanFilter<T> {
     /// Current estimate of `θ`.
     pub parameter: DVector<T>,
@@ -13,6 +17,8 @@ pub struct KalmanFilter<T> {
 }
 
 impl<T: Float + Default + AddAssign + SubAssign + MulAssign + DivAssign + Scalar> KalmanFilter<T> {
+    /// `order`: number of parameters (length of `φ`). `sigma_v`: variance of the parameter random walk,
+    /// `sigma_w`: variance of the measurement noise, `cov_0`: initial covariance of the parameters.
     pub fn new(order: usize, sigma_v: T, sigma_w: T, cov_0: T) -> Self {
         Self {
             parameter: DVector::zeros(order),
@@ -22,6 +28,7 @@ impl<T: Float + Default + AddAssign + SubAssign + MulAssign + DivAssign + Scalar
         }
     }
 
+    /// Update with regressor `phi` and output `y`.
     pub fn update(&mut self, phi: &[T], y: T) {
         let phi: DVector<T> = DVector::from_column_slice(phi);
 

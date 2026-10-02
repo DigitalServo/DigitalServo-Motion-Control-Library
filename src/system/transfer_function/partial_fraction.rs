@@ -1,13 +1,4 @@
-//! Partial-fraction expansion of a rational function `X(s) = N(s) / D(s)` by the Heaviside
-//! expansion theorem (repeated poles supported):
-//!
-//! ```text
-//! X(s) = Q(s) + Σ_p Σ_{k=1..m_p} r_{p,k} / (s - p)^k
-//! ```
-//! For a pole `p` of multiplicity `m`, `r_{p,k} = G^(m-k)(p) / (m-k)!` with `G(s) = (s - p)^m X(s)`.
-//! The derivatives are obtained exactly as Taylor coefficients of `G` around `p`
-//! (synthetic division + power-series division), not by numerical differentiation.
-//! The time-domain counterpart (inverse Laplace transform) is in `laplace_transform`.
+//! Partial-fraction expansion of a rational function by the Heaviside expansion theorem.
 
 use super::TransferFunction;
 use crate::{dka_method, vieta_formula, Continuous, Polynomial};
@@ -18,12 +9,14 @@ use std::ops::AddAssign;
 /// Terms of one (possibly repeated) pole.
 #[derive(Clone, Debug)]
 pub struct PoleTerm<T> {
+    /// The pole `p`.
     pub pole: Complex<T>,
     /// `residues[k]` is the coefficient of `1 / (s - pole)^(k + 1)`; its length is the multiplicity.
     pub residues: Vec<Complex<T>>,
 }
 
 impl<T> PoleTerm<T> {
+    /// Multiplicity of the pole.
     pub fn multiplicity(&self) -> usize {
         self.residues.len()
     }
@@ -34,12 +27,21 @@ impl<T> PoleTerm<T> {
 pub struct PartialFraction<T> {
     /// Polynomial part `Q(s)` (descending order). Empty when `X(s)` is strictly proper.
     pub direct: Polynomial<T>,
+    /// Terms of each distinct pole.
     pub terms: Vec<PoleTerm<T>>,
 }
 
 impl<T: Float + AddAssign> TransferFunction<T, Continuous> {
     /// Partial-fraction expansion by the Heaviside expansion theorem (repeated poles supported).
     /// Poles closer than a relative distance of 1e-4 are treated as one repeated pole.
+    ///
+    /// ```text
+    /// X(s) = Q(s) + Σ_p Σ_{k=1..m_p} r_{p,k} / (s - p)^k
+    /// ```
+    /// For a pole `p` of multiplicity `m`, `r_{p,k} = G^(m-k)(p) / (m-k)!` with `G(s) = (s - p)^m X(s)`.
+    /// The derivatives are obtained exactly as Taylor coefficients of `G` around `p`
+    /// (synthetic division + power-series division), not by numerical differentiation.
+    /// The time-domain counterpart (inverse Laplace transform) is in `laplace_transform`.
     pub fn partial_fraction(&self) -> PartialFraction<T> {
         self.partial_fraction_with_tolerance(T::from(1e-4).unwrap())
     }

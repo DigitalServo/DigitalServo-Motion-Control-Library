@@ -1,3 +1,5 @@
+//! Least-squares polynomial fit.
+
 use std::ops::{AddAssign, MulAssign};
 use nalgebra::{ComplexField, DMatrix, DVector};
 use num_traits::Float;
@@ -12,6 +14,7 @@ pub struct DataBuffer<T> {
 
 impl<T: Float + AddAssign + MulAssign + ComplexField> DataBuffer<T>
 {
+    /// Polynomial of degree `order`.
     pub fn new(order: usize) -> Self {
         Self {
             psi_sum: DVector::zeros(order + 1),
@@ -20,6 +23,7 @@ impl<T: Float + AddAssign + MulAssign + ComplexField> DataBuffer<T>
         }
     }
 
+    /// Add a sample `y = f(x)`.
     pub fn add(&mut self, x: T, y: T) {
         let mut phi = DVector::zeros(self.order + 1);
         for i in 0..(self.order + 1) {
@@ -30,6 +34,7 @@ impl<T: Float + AddAssign + MulAssign + ComplexField> DataBuffer<T>
         self.phi_sum += &phi * &phi.transpose();
     }
 
+    /// Descending-order coefficients; `None` if the data do not determine them.
     pub fn identify(&self) -> Option<Vec<T>> {
         match self.phi_sum.clone().try_inverse() {
             Some(res) => {

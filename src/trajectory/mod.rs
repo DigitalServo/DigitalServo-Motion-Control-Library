@@ -1,3 +1,5 @@
+//! Rest-to-rest motion profiles (trajectories).
+
 pub mod mt;
 pub mod ms;
 pub mod mcv;
@@ -34,6 +36,15 @@ impl<T: Float> TrajectoryProfile<T> {
 /// Rest-to-rest motion profile from 0 to `distance` over the normalized time `x = 0..1`.
 /// Parameters specific to a profile (e.g. the constant-velocity share of `ModifiedConstantVelocity`)
 /// are fields of the implementing type, so every profile is used the same way.
+///
+/// ```
+/// use dsmc::trajectory::{ModifiedSine, Trajectory};
+///
+/// let duration = 0.1;
+/// let samples = ModifiedSine.generate(1.0_f64, 101);
+/// // Physical velocity at the middle of the move
+/// let v = samples[50].v / duration;
+/// ```
 pub trait Trajectory<T: Float> {
     /// Position, velocity and acceleration at normalized time `x` (derivatives with respect to `x`;
     /// divide by `duration` / `duration^2` for physical units). At rest for `x < 0` and `x > 1`;
@@ -65,12 +76,24 @@ pub trait Trajectory<T: Float> {
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TrajectoryKind {
+    /// [`Sin`].
     Sin,
+    /// [`Cycloid`].
     Cycloid,
+    /// [`ModifiedTrapezoid`].
     ModifiedTrapezoid,
+    /// [`ModifiedSine`].
     ModifiedSine,
-    ModifiedConstantVelocity { constant_velocity_percent: f64 },
-    SmoothPolynomial { smoothness: usize },
+    /// [`ModifiedConstantVelocity`].
+    ModifiedConstantVelocity {
+        /// Share of the move at constant velocity \[%\].
+        constant_velocity_percent: f64,
+    },
+    /// [`SmoothPolynomial`].
+    SmoothPolynomial {
+        /// Number of derivatives that vanish at both ends (`k`).
+        smoothness: usize,
+    },
 }
 
 impl<T: Float + FloatConst> Trajectory<T> for TrajectoryKind {
@@ -128,8 +151,9 @@ impl From<SmoothPolynomial> for TrajectoryKind {
 /// axis (`DelayedRationalSum`, `PiecewisePolynomial`), as needed e.g. for the output reference of
 /// perfect tracking control by stable inversion (`Reference: feedforward::ptc::ReferenceSignal`).
 pub trait ReferenceTrajectory<T: Float> {
+    /// Exact continuous-time representation of the reference.
     type Reference;
 
-    /// A move of `distance` in `duration` [s] starting at `start` [s] (0 before, `distance` after).
+    /// A move of `distance` in `duration` \[s\] starting at `start` \[s\] (0 before, `distance` after).
     fn reference(&self, distance: T, duration: T, start: T) -> Self::Reference;
 }

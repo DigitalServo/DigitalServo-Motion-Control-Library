@@ -1,3 +1,5 @@
+//! System analysis tools.
+
 use std::marker::PhantomData;
 
 use nalgebra::Complex;
@@ -41,14 +43,18 @@ impl<T: Serialize> Serialize for FrequencyResponse<T> {
 /// Gain and phase \[rad\] at `frequency`, whose unit is `U` (`Hz` or `RadPerSec`).
 #[derive(Copy, Clone, Serialize)]
 pub struct FrequencyCharacteristics<T, U = Hz>{
+    /// Frequency, in `U`.
     pub frequency: T,
+    /// Gain, in dB or as the magnitude depending on how it was computed (`log_scale`).
     pub gain: T,
+    /// Phase \[rad\], in `(-π, π]`.
     pub phase: T,
     #[serde(skip)]
     _unit: PhantomData<U>,
 }
 
 impl<T: Float, U> FrequencyCharacteristics<T, U> {
+    /// All zeros.
     pub fn new() -> Self {
         Self { frequency: T::zero(), gain: T::zero(), phase: T::zero(), _unit: PhantomData }
     }

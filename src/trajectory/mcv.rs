@@ -1,10 +1,14 @@
+//! Modified constant velocity profile.
+
 use num_traits::{Float, FloatConst};
 
 use crate::trajectory::{Trajectory, TrajectoryProfile};
 
-/// Modified constant velocity profile. `constant_velocity_percent` [%] of the move is at constant velocity.
+/// Modified constant velocity profile: sinusoidal acceleration and deceleration around a
+/// constant-velocity section. `constant_velocity_percent` [%] of the move is at constant velocity.
 #[derive(Clone, Copy, Debug)]
 pub struct ModifiedConstantVelocity {
+    /// Share of the move at constant velocity \[%\].
     pub constant_velocity_percent: f64,
 }
 

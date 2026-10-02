@@ -5,6 +5,9 @@ use std::f64::consts::PI;
 
 use crate::Polynomial;
 
+/// All roots of a descending-order complex polynomial, by the Durand-Kerner-Aberth method (Aberth
+/// iteration from initial values on circles given by the Newton polygon).
+/// Leading zero coefficients are ignored; returns `None` for a constant polynomial.
 pub fn dka_method<T: Float + Zero + One>(coefficients: &Polynomial<Complex<T>>) -> Option<Vec<Complex<T>>> {
 
     let mut coeffs = coefficients.0.clone();

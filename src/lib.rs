@@ -1,3 +1,5 @@
+//! Digitalservo Motion Control Library: building blocks for the design and analysis of motion control systems.
+
 mod analysis;
 pub use analysis::*;
 

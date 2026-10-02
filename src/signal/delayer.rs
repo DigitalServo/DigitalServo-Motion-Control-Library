@@ -6,6 +6,7 @@ pub struct Delayer<T> {
 }
 
 impl<T: Sized + Default + Copy> Delayer<T> {
+    /// Delay of `delay_sample` samples (at least 1).
     pub fn new(delay_sample: usize) -> Self {
         Self {
             buffer: vec![T::default(); delay_sample],
@@ -14,6 +15,7 @@ impl<T: Sized + Default + Copy> Delayer<T> {
         }
     }
 
+    /// Push `u[k]` and return `u[k - delay_sample]`.
     pub fn output(&mut self, u: T) -> T {
         let out: T = self.buffer[self.index];
         self.buffer[self.index] = u;
@@ -26,6 +28,7 @@ impl<T: Sized + Default + Copy> Delayer<T> {
         out
     }
 
+    /// Clear the buffer to `T::default()`.
     pub fn reset(&mut self) {
         self.buffer = vec![T::default(); self.delay_sample];
         self.index = 0;

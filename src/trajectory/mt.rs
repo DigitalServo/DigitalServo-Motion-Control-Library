@@ -1,8 +1,10 @@
+//! Modified trapezoid profile.
+
 use num_traits::{Float, FloatConst};
 
 use crate::trajectory::{Trajectory, TrajectoryProfile};
 
-/// Modified trapezoid profile.
+/// Modified trapezoid profile: trapezoidal acceleration with sinusoidal ramps, giving a low peak acceleration.
 #[derive(Clone, Copy, Debug)]
 pub struct ModifiedTrapezoid;
 

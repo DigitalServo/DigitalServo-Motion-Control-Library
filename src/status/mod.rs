@@ -1,7 +1,9 @@
+//! Motion state of an axis.
+
 use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign};
 use num_traits::Float;
 
-/// Motion state of an axis. Arithmetic operators act element-wise.
+/// Motion state of an axis. Arithmetic operators act element-wise (`+`, `-`, `*` / `/` by a scalar).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Motion<T> {
     /// Position.
@@ -15,6 +17,7 @@ pub struct Motion<T> {
 }
 
 impl<T: Float> Motion<T> {
+    /// All zeros.
     pub fn new() -> Self {
         Self { x: T::zero(), v: T::zero(), a: T::zero(), f: T::zero() }
     }

@@ -22,15 +22,21 @@ pub struct StateSpaceOrder {
 /// or a discrete-time one (`x[k+1] = Ax[k] + Bu[k]`, `Discrete`).
 #[derive(Clone, Debug)]
 pub struct StateSpace<T, D = Continuous> {
+    /// System matrix (`n × n`).
     pub a: DMatrix<T>,
+    /// Input matrix (`n × m`).
     pub b: DMatrix<T>,
+    /// Output matrix (`p × n`).
     pub c: DMatrix<T>,
+    /// Feedthrough matrix (`p × m`).
     pub d: DMatrix<T>,
+    /// Dimensions `n`, `m`, `p`.
     pub order: StateSpaceOrder,
     _domain: PhantomData<D>,
 }
 
 impl<T, D> StateSpace<T, D> {
+    /// From the four matrices; the dimensions are checked against each other.
     pub fn new(a: DMatrix<T>, b: DMatrix<T>, c: DMatrix<T>, d: DMatrix<T>) -> Result<Self, StateSpaceError> {
 
         let state_order = a.nrows();

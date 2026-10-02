@@ -1,9 +1,12 @@
+//! Gaussian process regression of a scalar function `y = f(x)`.
+
 use std::ops::{AddAssign, MulAssign};
 
 use num_traits::Float;
 
 /// Gaussian process regression of a scalar function `y = f(x)` with a user-given kernel.
 /// Samples are added with `add`; the inverse covariance matrix is recomputed lazily in `predict`.
+/// A typical kernel is the Gaussian kernel `k(x1, x2) = a exp(-(x1 - x2)^2 / (2 l^2))`.
 pub struct GaussianProcessRegression<T> {
     /// Sampled inputs.
     pub x_sample: Vec<T>,
@@ -29,6 +32,7 @@ pub struct PredictedValue<T> {
 }
 
 impl<T: Float + AddAssign + MulAssign> GaussianProcessRegression<T> {
+    /// `kernel(x1, x2)`: covariance function, `sigma`: variance of the measurement noise.
     pub fn new(kernel: fn(T, T) -> T, sigma: T) -> Self {
         Self {
             x_sample: vec![],
@@ -42,6 +46,7 @@ impl<T: Float + AddAssign + MulAssign> GaussianProcessRegression<T> {
         }
     }
 
+    /// Add a sample `y = f(x)`.
     pub fn add(&mut self, x: T, y: T) {
         self.x_sample.push(x);
         self.y_sample.push(y);
@@ -61,6 +66,7 @@ impl<T: Float + AddAssign + MulAssign> GaussianProcessRegression<T> {
         self.sample += 1;
     }
 
+    /// Posterior mean and standard deviation of `f(x)`.
     pub fn predict(&mut self, x: T) -> PredictedValue<T> {
         if self.inv_cov.len() != self.sample {
             let mut buffer: Vec<Vec<T>> = vec![vec![T::zero(); self.sample]; self.sample];

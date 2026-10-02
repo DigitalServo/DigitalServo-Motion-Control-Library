@@ -21,6 +21,8 @@ where
     T: Float + FloatConst + ToPrimitive + 'static,
     U: FrequencyUnit,
 {
+    /// `data_len = ceil((freq_to - freq_from) / dfreq)` points starting at `freq_from`, in `U`.
+    /// Gain in dB if `log_scale`, otherwise the magnitude.
     pub fn new(freq_from: T, freq_to: T, dfreq: T, log_scale: bool) -> Self {
         Self {
             freq_from,

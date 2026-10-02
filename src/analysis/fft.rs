@@ -1,3 +1,5 @@
+//! Spectrum analysis by FFT.
+
 use std::{iter::Sum, ops::{AddAssign, DivAssign, MulAssign, RemAssign, SubAssign}};
 
 use num_traits::{Float, ToPrimitive};
@@ -7,6 +9,8 @@ use crate::analysis::FrequencyResponse;
 
 use std::f64::consts::PI;
 
+/// Single-sided spectrum of `data` sampled with period `ts`: the first `N / 2` FFT bins, scaled by `1 / N`,
+/// at `omega = 2π k / (N ts)` \[rad/s\].
 pub fn fft<T: FftNum + Float>(data: &[T], ts: T) -> Vec<FrequencyResponse<T>> {
 
     let data_len: usize = data.len();
@@ -41,6 +45,13 @@ pub fn fft<T: FftNum + Float>(data: &[T], ts: T) -> Vec<FrequencyResponse<T>> {
 }
 
 
+/// Frequency response `G = P_yu / P_uu` from input `u` and output `y` (sampled with period `ts`) by
+/// Welch's method: Hann-windowed segments of about `len / n_segments` samples (rounded up to a power
+/// of two) with 50% overlap, mean removed per segment.
+///
+/// Returns the response at `omega` \[rad/s\] (zero where the input has no power) and the coherence
+/// `|P_yu|^2 / (P_uu P_yy)` per frequency. The response can be passed to the identification methods
+/// in [`system_identification::frequency_response`](crate::system_identification::frequency_response).
 pub fn welch<T: FftNum + Float + Sum + AddAssign + SubAssign + DivAssign + MulAssign + RemAssign + ToPrimitive>(
     u: &[T],
     y: &[T],

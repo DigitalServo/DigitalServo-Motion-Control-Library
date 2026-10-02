@@ -1,15 +1,4 @@
 //! State reference for perfect tracking control by stable inversion.
-//!
-//! For `G(s) = N(s) / D(s)` (`n = deg D`) in the controllable canonical realization normalized by
-//! `N(0)` (`StateSpace::normalized_controllable_canonical`, used by `DiscretizedSystem::from_tf_normalized`),
-//! the state is `x = [ξ, ξ', ..., ξ^(n-1)]` with `y = N(s) / N(0) ξ`, hence for a desired output `y_d`
-//!
-//! ```text
-//! ξ_d^(j)(t) = L^-1[ F_j(s) Y_d(s) ](t),    F_j(s) = N(0) s^j / N(s)    (bilateral, j = 0..n-1)
-//! ```
-//!
-//! Only `N(s)` is inverted: its stable zeros give causal terms, its unstable zeros anti-causal ones
-//! (pre-actuation before the trajectory starts). Everything is evaluated in closed form (no convolution).
 
 use crate::system::principal_part;
 use crate::laplace_transform::{jump_rational, DelayedRationalSum, PiecewisePolynomial, StableInverse, StableInverseError};
@@ -18,7 +7,18 @@ use num_complex::Complex;
 use num_traits::{Float, Zero};
 use std::ops::AddAssign;
 
-/// `x_d(t) = [ξ_d, ξ_d', ..., ξ_d^(n-1)]` (see the module documentation).
+/// State reference `x_d(t) = [ξ_d, ξ_d', ..., ξ_d^(n-1)]` for perfect tracking control by stable inversion.
+///
+/// For `G(s) = N(s) / D(s)` (`n = deg D`) in the controllable canonical realization normalized by
+/// `N(0)` (`StateSpace::normalized_controllable_canonical`, used by `DiscretizedSystem::from_tf_normalized`),
+/// the state is `x = [ξ, ξ', ..., ξ^(n-1)]` with `y = N(s) / N(0) ξ`, hence for a desired output `y_d`
+///
+/// ```text
+/// ξ_d^(j)(t) = L^-1[ F_j(s) Y_d(s) ](t),    F_j(s) = N(0) s^j / N(s)    (bilateral, j = 0..n-1)
+/// ```
+///
+/// Only `N(s)` is inverted: its stable zeros give causal terms, its unstable zeros anti-causal ones
+/// (pre-actuation before the trajectory starts). Everything is evaluated in closed form (no convolution).
 #[derive(Clone, Debug)]
 pub struct StateReference<T> {
     /// `states[j]` = `[(τ_i, bilateral inverse of F_j(s) R_i(s))]` for `Y_d = Σ e^(-s τ_i) R_i(s)`.
@@ -33,7 +33,7 @@ pub struct StateReference<T> {
 /// rationals) and `PiecewisePolynomial` (evaluated without cancellation long after the move).
 pub trait ReferenceSignal<T> {
     /// State reference for perfect tracking control that makes the output of `plant` follow this
-    /// signal (see the module documentation), e.g. `y_d.to_state_reference(&plant)`.
+    /// signal (see [`StateReference`]), e.g. `y_d.to_state_reference(&plant)`.
     /// Requires that `N(s)` has no zero on the imaginary axis and that this signal is smooth enough
     /// that no state reference contains impulses.
     fn to_state_reference(&self, plant: &TransferFunction<T, Continuous>) -> Result<StateReference<T>, StableInverseError>;

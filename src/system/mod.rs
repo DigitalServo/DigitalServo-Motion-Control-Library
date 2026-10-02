@@ -1,3 +1,5 @@
+//! System descriptor: transfer function and state-space-representation.
+
 mod domain;
 mod transfer_function;
 mod state_space_representation;

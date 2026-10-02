@@ -12,6 +12,20 @@ use super::{FrequencyCharacteristics, FrequencyUnit};
 /// Frequency transfer function `ω [rad/s] -> G(jω)`.
 /// Built from a `TransferFunction` (`s = jω` / `z = e^{jωTs}`) or from any closure,
 /// so that elements without a rational form (e.g. dead time `e^{-jωL}`) can also be handled.
+///
+/// ```
+/// use dsmc::{tf, BodeDiagramPlotter, NyquistPlotter};
+///
+/// // Second-order low-pass filter, 10 Hz
+/// let wn = 2.0 * std::f64::consts::PI * 10.0;
+/// let g = tf!("{} / (s^2 + {} s + {})", wn * wn, 1.4 * wn, wn * wn);
+/// let g_jw = g.frequency_transfer_function();
+///
+/// // Bode diagram from 1 Hz to 100 Hz (gain in dB) and Nyquist plot
+/// let bode = BodeDiagramPlotter::<f64>::new(1.0, 100.0, 1.0, true).plot(&g_jw);
+/// let nyquist = NyquistPlotter::<f64>::new(1.0, 100.0, 1.0).plot(&g_jw);
+/// assert_eq!(bode.len(), nyquist.len());
+/// ```
 pub struct FrequencyTransferFunction<T> {
     response: Rc<dyn Fn(T) -> Complex<T>>,
 }
@@ -23,6 +37,7 @@ impl<T> Clone for FrequencyTransferFunction<T> {
 }
 
 impl<T: Float + FloatConst + 'static> FrequencyTransferFunction<T> {
+    /// From any `omega [rad/s] -> G(jω)` closure, e.g. a dead time `|w| Complex::new(0.0, -w * l).exp()`.
     pub fn new(response: impl Fn(T) -> Complex<T> + 'static) -> Self {
         Self { response: Rc::new(response) }
     }

@@ -1,8 +1,10 @@
+//! Cycloid profile.
+
 use num_traits::{Float, FloatConst};
 
 use crate::trajectory::{Trajectory, TrajectoryProfile};
 
-/// Cycloid profile: `s = distance (x - sin(2π x) / (2π))`.
+/// Cycloid profile: `s = distance (x - sin(2π x) / (2π))`, with zero acceleration at both ends.
 #[derive(Clone, Copy, Debug)]
 pub struct Cycloid;
 

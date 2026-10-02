@@ -17,6 +17,7 @@ where
     T: Float + FloatConst + ToPrimitive + 'static,
     U: FrequencyUnit,
 {
+    /// `data_len = ceil((freq_to - freq_from) / dfreq)` points starting at `freq_from`, in `U`.
     pub fn new(freq_from: T, freq_to: T, dfreq: T) -> Self {
         Self {
             freq_from,

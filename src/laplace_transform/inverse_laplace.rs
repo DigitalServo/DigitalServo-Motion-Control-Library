@@ -1,9 +1,4 @@
-//! Inverse Laplace transform of a partial-fraction expansion (right-sided / causal signal):
-//!
-//! ```text
-//! X(s) = Q(s) + Σ_p Σ_{k=1..m_p} r_{p,k} / (s - p)^k
-//! x(t) = Σ_n q_n δ^(n)(t) + Σ_p Σ_{k=1..m_p} r_{p,k} t^(k-1) / (k-1)! e^(p t)      (t >= 0)
-//! ```
+//! Inverse Laplace transform of a partial-fraction expansion (right-sided / causal signal).
 
 use crate::system::{fmt_num, push_term};
 use crate::{Continuous, PartialFraction, PoleTerm, TransferFunction};
@@ -14,6 +9,11 @@ use std::ops::AddAssign;
 impl<T: Float + AddAssign> TransferFunction<T, Continuous> {
     /// Inverse Laplace transform `x(t)` as a closure (see `PartialFraction::time_function`),
     /// e.g. `let x = tf!("1 / (s + 1)").inverse_laplace(); x(0.5)`.
+    ///
+    /// ```text
+    /// X(s) = Q(s) + Σ_p Σ_{k=1..m_p} r_{p,k} / (s - p)^k
+    /// x(t) = Σ_n q_n δ^(n)(t) + Σ_p Σ_{k=1..m_p} r_{p,k} t^(k-1) / (k-1)! e^(p t)      (t >= 0)
+    /// ```
     pub fn inverse_laplace(&self) -> impl Fn(T) -> T + use<T>
     where
         T: 'static,

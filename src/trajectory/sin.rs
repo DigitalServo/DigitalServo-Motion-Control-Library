@@ -1,3 +1,5 @@
+//! Half-cosine (harmonic) profile.
+
 use std::ops::AddAssign;
 
 use num_traits::{Float, FloatConst};
@@ -6,7 +8,8 @@ use crate::laplace_transform::DelayedRationalSum;
 use crate::trajectory::{ReferenceTrajectory, Trajectory, TrajectoryProfile};
 use crate::{Polynomial, TransferFunction};
 
-/// Half-cosine (harmonic) profile: `s = distance / 2 (1 - cos(π x))`.
+/// Half-cosine (harmonic) profile: `s = distance / 2 (1 - cos(π x))`. Besides the normalized profile
+/// ([`Trajectory`]), it has an exact Laplace-domain form on the time axis ([`ReferenceTrajectory`]).
 #[derive(Clone, Copy, Debug)]
 pub struct Sin;
 
@@ -37,8 +40,8 @@ impl<T: Float + FloatConst + AddAssign> ReferenceTrajectory<T> for Sin {
     }
 }
 
-/// Laplace-domain form of the same profile: a move of `distance` in `duration` [s] starting at
-/// `start` [s] (0 before, `distance` after). With `ω = π / duration`,
+/// Laplace-domain form of the same profile: a move of `distance` in `duration` \[s\] starting at
+/// `start` \[s\] (0 before, `distance` after). With `ω = π / duration`,
 /// ```text
 /// y(t) = distance / 2 (1 - cos(ω (t - start)))      (start <= t <= start + duration)
 /// Y(s) = distance / 2 · ω² / (s (s² + ω²)) · (e^(-s start) + e^(-s (start + duration)))

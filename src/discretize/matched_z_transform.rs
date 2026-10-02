@@ -1,27 +1,4 @@
-//! Matched z-transform (pole-zero matching) between continuous-time `G(s)` and discrete-time
-//! `G(z)` with sampling period `ts`, in both directions.
-//!
-//! ```text
-//! s -> z :  poles / zeros  p  ->  e^(p ts),   zeros at s = ∞  ->  z = -1 (see `ZerosAtInfinity`)
-//! z -> s :  poles / zeros  q  ->  ln(q) / ts, zeros at z = -1 and z = ∞  ->  s = ∞
-//! ```
-//!
-//! The gain is matched at low frequency. With `k` = (poles at the origin) - (zeros at the origin)
-//! (integrators, `s = 0` <-> `z = 1`):
-//!
-//! ```text
-//! lim_{s->0} s^k G(s) = lim_{z->1} ((z - 1) / ts)^k G(z)
-//! ```
-//!
-//! which is the DC gain for `k = 0` and the gain of the integrators' asymptote otherwise.
-//!
-//! In `z -> s`, the factors `(z - 1)` and `(z + 1)` are divided out of the coefficients exactly
-//! (synthetic division while the remainder vanishes) rather than detected among numerically found
-//! roots, since with fast sampling all poles crowd around `z = 1`. The remaining roots are mapped
-//! with the principal logarithm (`|Im s| < π / ts`). Roots at `z = 0` and on the negative real axis
-//! have no rational continuous-time counterpart: such zeros are dropped (taken as zeros at `s = ∞`,
-//! the low-frequency gain is still matched), such poles are an error. Roots at `z = 0` are time
-//! shifts, `z^-d <-> e^(-d ts s)`, and are kept as a delay by `to_continuous_with_delay`.
+//! Matched z-transform (pole-zero matching) between `G(s)` and `G(z)`, in both directions.
 
 use std::borrow::Borrow;
 use std::ops::AddAssign;
@@ -46,27 +23,40 @@ pub enum ZerosAtInfinity {
 /// Errors of the matched z-transform (`to_discrete`) and of its inverse.
 #[derive(Clone, Debug, Error, PartialEq)]
 pub enum MatchedZError {
+    /// The transfer function is zero.
     #[error("The transfer function is zero")]
     ZeroSystem,
 
+    /// More zeros than poles.
     #[error("Improper continuous-time transfer function (more zeros than poles) cannot be matched")]
     Improper,
 
+    /// A pole at `z = 0` (pure delay) in the discrete-to-continuous direction.
     #[error("Pole at z = 0 (pure delay) has no rational continuous-time counterpart; see `to_continuous_with_delay`")]
     PoleAtOrigin,
 
+    /// A pole on the negative real axis in the discrete-to-continuous direction.
     #[error("Pole at z = {re} on the negative real axis has no real continuous-time counterpart")]
-    NegativeRealPole { re: f64 },
+    NegativeRealPole {
+        /// Location of the pole.
+        re: f64,
+    },
 
+    /// The dead time is not a multiple of the sampling period.
     #[error("Delay {delay} is not a whole number of sampling periods")]
-    FractionalDelay { delay: f64 },
+    FractionalDelay {
+        /// The dead time.
+        delay: f64,
+    },
 }
 
 /// `G(s) = e^(-delay s) tf(s)`: a rational transfer function with a time shift (dead time for
 /// `delay > 0`, time advance for `delay < 0`).
 #[derive(Clone, Debug)]
 pub struct ContinuousWithDelay<T> {
+    /// Rational part.
     pub tf: TransferFunction<T, Continuous>,
+    /// Dead time (negative for a time advance).
     pub delay: T,
 }
 
@@ -98,6 +88,20 @@ const SNAP_TOLERANCE: f64 = 1e-12;
 const FACTOR_TOLERANCE: f64 = 1e-10;
 
 /// Continuous-time `G(s)` to discrete-time `G(z)` by pole-zero matching.
+///
+/// ```text
+/// s -> z :  poles / zeros  p  ->  e^(p ts),   zeros at s = ∞  ->  z = -1 (see `ZerosAtInfinity`)
+/// z -> s :  poles / zeros  q  ->  ln(q) / ts, zeros at z = -1 and z = ∞  ->  s = ∞
+/// ```
+///
+/// The gain is matched at low frequency. With `k` = (poles at the origin) - (zeros at the origin)
+/// (integrators, `s = 0` <-> `z = 1`):
+///
+/// ```text
+/// lim_{s->0} s^k G(s) = lim_{z->1} ((z - 1) / ts)^k G(z)
+/// ```
+///
+/// which is the DC gain for `k = 0` and the gain of the integrators' asymptote otherwise.
 pub fn to_discrete<T, S>(tf: S, ts: T, zeros_at_infinity: ZerosAtInfinity) -> Result<TransferFunction<T, Discrete>, MatchedZError>
 where
     T: Float + FloatConst + AddAssign,
@@ -165,6 +169,12 @@ impl<T: Float> Default for ToContinuousOptions<T> {
 /// at low frequency). The low-frequency gain is still matched, but the phase they contribute
 /// (about `ωT` for a zero at `z = 0`, a time advance) is lost; `to_continuous_with_delay` keeps the
 /// roots at `z = 0` as a time shift instead.
+///
+/// The factors `(z - 1)` and `(z + 1)` are divided out of the coefficients exactly (synthetic
+/// division while the remainder vanishes) rather than detected among numerically found roots,
+/// since with fast sampling all poles crowd around `z = 1`. The remaining roots are mapped with the
+/// principal logarithm (`|Im s| < π / ts`); the gain is matched as in [`to_discrete`]. Poles at
+/// `z = 0` or on the negative real axis are an error.
 pub fn to_continuous<T, S>(tf: S, ts: T) -> Result<TransferFunction<T, Continuous>, MatchedZError>
 where
     T: Float + FloatConst + AddAssign,

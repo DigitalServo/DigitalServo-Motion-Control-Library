@@ -1,3 +1,5 @@
+//! Least-squares identification of an ARX model.
+
 use std::ops::{AddAssign, MulAssign};
 use nalgebra::{ComplexField, DMatrix, DVector};
 use num_traits::Float;
@@ -7,9 +9,11 @@ use crate::{Discrete, TransferFunction};
 /// Least-squares identification of the ARX model
 /// `y[k] = Σ_{i=1..na} a_i y[k-i] + Σ_{i=0..nb} b_i u[k-nk-i]` from sequential data
 /// (`na = state_order`, `nb = input_order`, `nk = input_delay`, 0 unless set by `with_input_delay`).
+/// Call `add` every sample with `u[k]`, `y[k-1]` and `y[k]`, then `identify`.
 pub struct DataBuffer<T> {
     /// Input history `u[k], u[k-1], ..., u[k-nk-nb]`.
     pub u: DVector<T>,
+    /// Output history `y[k-1], ..., y[k-na]`.
     pub x: DVector<T>,
     psi_sum: DVector<T>,
     phi_sum: DMatrix<T>,
@@ -21,6 +25,7 @@ pub struct DataBuffer<T> {
 }
 
 impl<T: Float + AddAssign + MulAssign + ComplexField> DataBuffer<T> {
+    /// `input_order`: `nb`, `state_order`: `na`.
     pub fn new(input_order: usize, state_order: usize) -> Self {
         Self {
             u: DVector::zeros(input_order + 1),
@@ -35,7 +40,7 @@ impl<T: Float + AddAssign + MulAssign + ComplexField> DataBuffer<T> {
         }
     }
 
-    /// Input delay `nk` [samples]: the model uses `u[k-nk] .. u[k-nk-nb]`, and `identify` gives
+    /// Input delay `nk` \[samples\]: the model uses `u[k-nk] .. u[k-nk-nb]`, and `identify` gives
     /// `z^-nk B(z) / A(z)`. Set it before adding data.
     pub fn with_input_delay(mut self, input_delay: usize) -> Self {
         self.input_delay = input_delay;
@@ -43,6 +48,7 @@ impl<T: Float + AddAssign + MulAssign + ComplexField> DataBuffer<T> {
         self
     }
 
+    /// Add one sample: input `u = u[k]`, previous output `x = y[k-1]`, and output `y = y[k]`.
     pub fn add(&mut self, u: T, x: T, y: T) {
         //FIFO for input u
         for i in (1..self.u.len()).rev() {
@@ -81,6 +87,7 @@ impl<T: Float + AddAssign + MulAssign + ComplexField> DataBuffer<T> {
         Some(((self.y2_sum - theta.dot(&self.psi_sum)) / count).max(T::zero()))
     }
 
+    /// Identified `G(z)`; `None` if the data do not determine the parameters (singular normal equations).
     pub fn identify(&self) -> Option<TransferFunction<T, Discrete>> {
         let theta = self.parameters()?;
         let (a, b) = theta.as_slice().split_at(self.state_order);
@@ -91,7 +98,7 @@ impl<T: Float + AddAssign + MulAssign + ComplexField> DataBuffer<T> {
 /// Result of `estimate_input_delay`.
 #[derive(Clone, Debug)]
 pub struct DelayEstimate<T> {
-    /// Estimated input delay `nk` [samples].
+    /// Estimated input delay `nk` \[samples\].
     pub input_delay: usize,
     /// ARX model identified with that delay, `z^-nk B(z) / A(z)`.
     pub model: TransferFunction<T, Discrete>,

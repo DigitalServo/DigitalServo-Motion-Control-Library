@@ -1,3 +1,5 @@
+//! Recursive (Kalman filter) polynomial fit.
+
 use std::ops::{AddAssign, DivAssign, MulAssign, SubAssign};
 use nalgebra::{DMatrix, DVector, Scalar};
 use num_traits::Float;
@@ -15,6 +17,8 @@ pub struct KalmanFilter<T> {
 
 impl<T: Float + AddAssign + SubAssign + MulAssign + DivAssign + Scalar> KalmanFilter<T>
 {
+    /// Polynomial of degree `order`. `sigma_v`: variance of the parameter random walk,
+    /// `sigma_w`: variance of the measurement noise, `cov_0`: initial covariance of the parameters.
     pub fn new(order: usize, sigma_v: T, sigma_w: T, cov_0: T) -> Self {
         Self {
             parameter: DVector::zeros(order + 1),
@@ -25,6 +29,7 @@ impl<T: Float + AddAssign + SubAssign + MulAssign + DivAssign + Scalar> KalmanFi
         }
     }
 
+    /// Update with a sample `y = f(x)`.
     pub fn update(&mut self, x: T, y: T) {
         let mut phi: DVector<T> = DVector::zeros(self.order + 1);
         for i in 0..(self.order + 1) {
@@ -47,6 +52,7 @@ impl<T: Float + AddAssign + SubAssign + MulAssign + DivAssign + Scalar> KalmanFi
         self.covariance -= (&x * &x.transpose()) / uncertainty_observe;
     }
 
+    /// Descending-order coefficients of the current estimate.
     pub fn identify(&self) -> Vec<T> {
         self.parameter.as_slice().to_vec()
     }

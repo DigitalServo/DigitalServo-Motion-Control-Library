@@ -1,12 +1,4 @@
 //! Piecewise-polynomial signals, e.g. smooth rest-to-rest trajectories (`trajectory::smoothstep`).
-//!
-//! `y(t) = 0` before `start`, then each piece `p_q(τ)` (τ = time since the piece started) for its
-//! duration, then `tail(τ)` forever (τ = time since the last piece ended).
-//!
-//! The exact Laplace transform is a sum of delayed rationals (`laplace`): at each breakpoint the
-//! jump `Δ_q(τ) = p_q(τ) - p_{q-1}(τ + T_{q-1}) = Σ c_m τ^m` starts, with `L[Δ_q] = Σ c_m m! / s^(m+1)`.
-//! Evaluating `y` as that sum would subtract large, growing polynomials (∝ (t/T)^deg) long after
-//! the move, so values and derivatives are always evaluated from the local piece instead.
 
 use crate::laplace_transform::DelayedRationalSum;
 use crate::{Continuous, Polynomial, TransferFunction};
@@ -16,8 +8,12 @@ use num_traits::Float;
 /// round-off from the Taylor shift and are set to zero, so that continuity is detected exactly.
 const JUMP_RELATIVE_TOLERANCE: f64 = 1e-9;
 
-/// Signal made of polynomial pieces in time: zero before `start`, then `pieces` in order,
-/// then `tail` (see the module documentation).
+/// Signal made of polynomial pieces in time: `y(t) = 0` before `start`, then each piece `p_q(τ)`
+/// (τ = time since the piece started) for its duration, then `tail(τ)` forever (τ = time since the
+/// last piece ended).
+///
+/// Values and derivatives are always evaluated from the local piece; see `laplace_transform` for the
+/// exact Laplace transform.
 #[derive(Clone, Debug)]
 pub struct PiecewisePolynomial<T> {
     /// Time at which the first piece starts (`y(t) = 0` before).
@@ -45,6 +41,7 @@ impl<T: Float> Jump<T> {
 }
 
 impl<T: Float> PiecewisePolynomial<T> {
+    /// From its fields (see the field documentation).
     pub fn new(start: T, pieces: Vec<(T, Polynomial<T>)>, tail: Polynomial<T>) -> Self {
         Self { start, pieces, tail }
     }
@@ -95,7 +92,7 @@ impl<T: Float> PiecewisePolynomial<T> {
         out
     }
 
-    /// Breakpoints and their jumps `Δ_q` (see the module documentation).
+    /// Breakpoints and their jumps `Δ_q` (see `laplace_transform`).
     pub(crate) fn jumps(&self) -> Vec<Jump<T>> {
         let mut jumps = Vec::with_capacity(self.pieces.len() + 1);
         let mut time = self.start;
@@ -140,7 +137,9 @@ impl<T: Float> PiecewisePolynomial<T> {
 }
 
 impl<T: Float + std::ops::AddAssign> PiecewisePolynomial<T> {
-    /// Exact Laplace transform `Σ_q e^(-s t_q) Σ_m c_m m! / s^(m+1)` (jump decomposition).
+    /// Exact Laplace transform `Σ_q e^(-s t_q) Σ_m c_m m! / s^(m+1)` (jump decomposition): at each
+    /// breakpoint `t_q` the jump `Δ_q(τ) = p_q(τ) - p_{q-1}(τ + T_{q-1}) = Σ c_m τ^m` starts, with
+    /// `L[Δ_q] = Σ c_m m! / s^(m+1)`.
     /// Note that `DelayedRationalSum::inverse_laplace` of it loses accuracy long after the
     /// breakpoints; use `value` / `derivatives` to evaluate `y`.
     pub fn laplace_transform(&self) -> DelayedRationalSum<T> {

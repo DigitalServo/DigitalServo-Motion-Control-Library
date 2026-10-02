@@ -1,8 +1,11 @@
+//! Modified sine profile.
+
 use num_traits::{Float, FloatConst};
 
 use crate::trajectory::{Trajectory, TrajectoryProfile};
 
-/// Modified sine profile.
+/// Modified sine profile: sinusoidal acceleration with a low peak velocity, a balance of the peak
+/// velocity and the peak acceleration.
 #[derive(Clone, Copy, Debug)]
 pub struct ModifiedSine;
 

@@ -1,21 +1,4 @@
-// Vector Fitting (VF) method
-//
-// Reference: B. Gustavsen and A. Semlyen,
-//   "Rational approximation of frequency domain responses by Vector Fitting"
-//   IEEE Trans. Power Delivery, vol. 14, no. 3, pp. 1052-1061, July 1999.
-//
-// Model:
-//   H(s) ≈ Σ_k [ c_k / (s - a_k) ] + d + s*e
-//
-// Algorithm:
-//   1. Set initial poles {a_k} (logarithmic spacing on the imaginary axis)
-//   2. Solve weighted least-squares problem
-//      σ(s)・H(s) ≈ Σ c̃_k/(s-a_k) + d̃  (lhs)
-//      σ(s)       ≈ Σ ĉ_k/(s-a_k) + 1    (rhs constraint)
-//   3. Find zeros of σ(s) to find new poles {a_k}
-//      → set it to {a_k}
-//   4. Repeat 2-3 until convergence
-//   5. After convergence, solve for the final residues {c_k}, d using least squares
+//! Vector Fitting (VF) method.
 
 use std::{iter::Sum, ops::{AddAssign, DivAssign, MulAssign, RemAssign, SubAssign}};
 
@@ -29,14 +12,19 @@ use crate::{Continuous, FrequencyResponse, Polynomial, TransferFunction};
 /// Errors of vector fitting.
 #[derive(Error, Debug)]
 pub enum VectorFittingError {
+    /// No samples.
     #[error("No sampled data provided")]
     EmptyData,
+    /// A least-squares problem is singular.
     #[error("Matrix is singular or numerically unstable (check order and data)")]
     SingularMatrix,
+    /// No poles to fit with.
     #[error("Poles not set")]
     PolesNotSet,
+    /// The zeros of `σ(s)` (new poles) could not be computed.
     #[error("Failed to find zeros")]
     ZerosNotFound,
+    /// The iteration failed.
     #[error("Failed to iterate (check data and iterations)")]
     IterationError,
 }
@@ -184,6 +172,30 @@ impl<T: Float + RealField> Into<TransferFunction<T, Continuous>> for VectorFitti
     }
 }
 
+/// Fit `n_poles` poles to the samples (`omega` in rad/s) by vector fitting; robust for high orders
+/// and resonant systems.
+///
+/// Reference: B. Gustavsen and A. Semlyen,
+/// "Rational approximation of frequency domain responses by Vector Fitting",
+/// IEEE Trans. Power Delivery, vol. 14, no. 3, pp. 1052-1061, July 1999.
+///
+/// Model:
+///
+/// ```text
+/// H(s) ≈ Σ_k [ c_k / (s - a_k) ] + d + s*e
+/// ```
+///
+/// Algorithm:
+///
+/// 1. Set initial poles `{a_k}` (logarithmic spacing on the imaginary axis)
+/// 2. Solve the weighted least-squares problem
+///    ```text
+///    σ(s)・H(s) ≈ Σ c̃_k/(s-a_k) + d̃  (lhs)
+///    σ(s)       ≈ Σ ĉ_k/(s-a_k) + 1    (rhs constraint)
+///    ```
+/// 3. Find the zeros of `σ(s)` and set them as the new poles `{a_k}`
+/// 4. Repeat 2-3 until convergence
+/// 5. After convergence, solve for the final residues `{c_k}`, `d` by least squares
 pub fn identify<T: Float + RealField + Sum>(
     samples: &[FrequencyResponse<T>],
     n_poles: usize,

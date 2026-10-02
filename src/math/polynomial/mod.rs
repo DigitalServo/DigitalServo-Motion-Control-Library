@@ -12,10 +12,12 @@ pub use vieta_formula::vieta_formula;
 pub struct Polynomial<T>(pub Vec<T>);
 
 impl<T: Float> Polynomial<T> {
+    /// Empty polynomial (no coefficients).
     pub fn new() -> Self {
         Polynomial(vec![])
     }
 
+    /// Zero polynomial with `degree + 1` coefficients.
     pub fn zeros(degree: usize) -> Self {
         Polynomial(vec![T::zero(); degree + 1])
     }

@@ -1,3 +1,5 @@
+//! Levy's method and the Sanathanan-Koerner iteration.
+
 use std::ops::{AddAssign, MulAssign};
 
 use nalgebra::{Complex, ComplexField, DMatrix, DVector};
@@ -9,16 +11,23 @@ use crate::{Continuous, FrequencyResponse, Polynomial, TransferFunction};
 /// Errors of Levy's method and the Sanathanan-Koerner iteration.
 #[derive(Error, Debug)]
 pub enum LevyIdentificationError {
+    /// No samples.
     #[error("No sampled data provided")]
     EmptyData,
+    /// The normal equations are singular.
     #[error("Matrix is singular or numerically unstable (check order and data)")]
     SingularMatrix,
+    /// No iteration was run (`iterations == 0`).
     #[error("Failed to iterate (check data and iterations)")]
     IterationError,
+    /// The previous estimate has a different denominator order.
     #[error("Order of previous result does not match current order")]
     OrderMismatch,
 }
 
+/// Levy's method (linear least squares on `B(jω) - G(jω) A(jω)` for `G(s) = B(s) / A(s)`):
+/// `G(s)` with numerator degree `numer_order` and denominator degree `denom_order`.
+/// `omega` of the samples is in rad/s.
 pub fn identify<T: Float + ComplexField + AddAssign + MulAssign>(
     samples: &[FrequencyResponse<T>],
     numer_order: usize,
@@ -27,6 +36,8 @@ pub fn identify<T: Float + ComplexField + AddAssign + MulAssign>(
     levy_step(samples, numer_order, denom_order, None)
 }
 
+/// Levy's method followed by Sanathanan-Koerner reweighting, `iterations` steps in total
+/// (`iterations = 1` is Levy's method).
 pub fn sanathanan_koerner_identification<T: Float + ComplexField + AddAssign + MulAssign>(
     samples: &[FrequencyResponse<T>],
     numer_order: usize,

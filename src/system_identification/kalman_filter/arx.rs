@@ -1,3 +1,5 @@
+//! Recursive (Kalman filter) identification of an ARX model.
+
 use std::ops::{AddAssign, DivAssign, MulAssign, SubAssign};
 use nalgebra::{DMatrix, DVector, Scalar};
 use num_traits::Float;
@@ -7,11 +9,14 @@ use crate::{Discrete, TransferFunction};
 /// Recursive identification of the ARX model
 /// `y[k] = Σ_{i=1..na} a_i y[k-i] + Σ_{i=0..nb} b_i u[k-nk-i]`
 /// (`na = state_order`, `nb = input_order`, `nk = input_delay`, 0 unless set by `with_input_delay`).
+/// Call `update` every sample with `u[k]`, `y[k-1]` and `y[k]`, then `identify`.
 pub struct KalmanFilter<T>
 {
     /// Input history `u[k], u[k-1], ..., u[k-nk-nb]`.
     pub u: DVector<T>,
+    /// Output history `y[k-1], ..., y[k-na]`.
     pub x: DVector<T>,
+    /// Current estimate `[a_1, ..., a_na, b_0, ..., b_nb]`.
     pub parameter: DVector<T>,
     covariance: DMatrix<T>,
     sigma_v: DMatrix<T>,
@@ -23,6 +28,8 @@ pub struct KalmanFilter<T>
 
 impl<T: Float + AddAssign + SubAssign + MulAssign + DivAssign + Scalar> KalmanFilter<T>
 {
+    /// `input_order`: `nb`, `state_order`: `na`, `sigma_v`: variance of the parameter random walk,
+    /// `sigma_w`: variance of the measurement noise, `cov_0`: initial covariance of the parameters.
     pub fn new(input_order: usize, state_order: usize, sigma_v: T, sigma_w: T, cov_0: T) -> Self {
         Self {
             u: DVector::zeros(input_order + 1),
@@ -37,7 +44,7 @@ impl<T: Float + AddAssign + SubAssign + MulAssign + DivAssign + Scalar> KalmanFi
         }
     }
 
-    /// Input delay `nk` [samples]: the model uses `u[k-nk] .. u[k-nk-nb]`, and `identify` gives
+    /// Input delay `nk` \[samples\]: the model uses `u[k-nk] .. u[k-nk-nb]`, and `identify` gives
     /// `z^-nk B(z) / A(z)`. Set it before updating.
     pub fn with_input_delay(mut self, input_delay: usize) -> Self {
         self.input_delay = input_delay;
@@ -45,6 +52,7 @@ impl<T: Float + AddAssign + SubAssign + MulAssign + DivAssign + Scalar> KalmanFi
         self
     }
 
+    /// Update with input `u = u[k]`, previous output `x = y[k-1]`, and output `y = y[k]`.
     pub fn update(&mut self, u: T, x: T, y: T) {
         //FIFO for input u
         for i in (1..self.u.len()).rev() {
@@ -82,6 +90,7 @@ impl<T: Float + AddAssign + SubAssign + MulAssign + DivAssign + Scalar> KalmanFi
         self.covariance -= (&x * &x.transpose()) / uncertainty_observe;
     }
 
+    /// `G(z)` of the current estimate.
     pub fn identify(&self) -> TransferFunction<T, Discrete> {
         let (a, b) = self.parameter.as_slice().split_at(self.state_order);
         crate::system_identification::arx::transfer_function(a, b, self.input_delay)

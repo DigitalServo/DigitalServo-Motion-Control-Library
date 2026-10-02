@@ -1,3 +1,5 @@
+//! System identification from time-domain or frequency-domain data.
+
 pub mod gpr;
 pub mod lsm;
 pub mod kalman_filter;

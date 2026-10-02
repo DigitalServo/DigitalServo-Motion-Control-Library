@@ -1,17 +1,4 @@
 //! Stable inverse of a continuous-time system by the bilateral (two-sided) Laplace transform.
-//!
-//! A system `G(s)` with zeros in the right half-plane (nonminimum phase) has an inverse
-//! `G^-1(s)` with unstable poles. Choosing the region of convergence that contains the
-//! imaginary axis, the inverse Laplace transform of each partial fraction becomes
-//!
-//! ```text
-//! r / (s - p)^k  <->   r t^(k-1) / (k-1)! e^(p t) 1(t)     (Re p < 0, causal)
-//!                 <->  -r t^(k-1) / (k-1)! e^(p t) 1(-t)    (Re p > 0, anti-causal)
-//! ```
-//!
-//! so the impulse response `h(t)` is bounded (it decays for both `t -> ∞` and `t -> -∞`)
-//! at the cost of being non-causal. The polynomial part `Q(s)` gives impulses `δ^(n)(t)`.
-//! No ROC contains the imaginary axis when `G^-1(s)` has a pole on it (`G(s)` has a zero on it).
 
 use super::inverse_laplace::{eval_terms, format_time_terms};
 use crate::{Continuous, PartialFraction, PoleTerm, Polynomial, TransferFunction};
@@ -22,6 +9,7 @@ use thiserror::Error;
 /// Errors of `stable_inverse` and of the reference generation built on it.
 #[derive(Clone, Debug, Error, PartialEq)]
 pub enum StableInverseError {
+    /// The system is identically zero.
     #[error("The system is identically zero, so it has no inverse")]
     ZeroSystem,
 
@@ -29,22 +17,46 @@ pub enum StableInverseError {
         "Pole on the imaginary axis at {re} + j{im} (a zero of the original system, for `stable_inverse`): \
          no region of convergence contains the imaginary axis"
     )]
-    PoleOnImaginaryAxis { re: f64, im: f64 },
+    /// A pole of the inverse (zero of the system) on the imaginary axis.
+    PoleOnImaginaryAxis {
+        /// Real part of the pole.
+        re: f64,
+        /// Imaginary part of the pole.
+        im: f64,
+    },
 
     #[error("Pole at {re} + j{im} lies on the line Re s = {sigma} that must be inside the region of convergence")]
-    PoleOnAbscissa { re: f64, im: f64, sigma: f64 },
+    /// A pole on the line `Re s = sigma` that must lie inside the region of convergence.
+    PoleOnAbscissa {
+        /// Real part of the pole.
+        re: f64,
+        /// Imaginary part of the pole.
+        im: f64,
+        /// The line `Re s = sigma`.
+        sigma: f64,
+    },
 
     #[error(
         "No region of convergence: a causal pole (Re = {causal_re}) lies to the right of \
          an anti-causal pole (Re = {anticausal_re})"
     )]
-    NoRegionOfConvergence { causal_re: f64, anticausal_re: f64 },
+    /// The requested causal / anti-causal split leaves no region of convergence.
+    NoRegionOfConvergence {
+        /// Real part of the rightmost causal pole.
+        causal_re: f64,
+        /// Real part of the leftmost anti-causal pole.
+        anticausal_re: f64,
+    },
 
     #[error(
         "Reference trajectory is not smooth enough: state x{state} of the reference contains impulses \
          (the trajectory needs more continuous derivatives for this plant's relative degree)"
     )]
-    NotSmoothEnough { state: usize },
+    /// The reference is not smooth enough for the relative degree of the plant.
+    NotSmoothEnough {
+        /// Index of the state reference that contains impulses.
+        state: usize,
+    },
 }
 
 /// `h(t)` split by the sign of `t`. `causal + anticausal` is the partial-fraction expansion of
@@ -61,6 +73,19 @@ pub struct StableInverse<T> {
 impl<T: Float + AddAssign> TransferFunction<T, Continuous> {
     /// Stable (non-causal) inverse of `G(s)`: the bilateral inverse Laplace transform of
     /// `1 / G(s)` whose region of convergence contains the imaginary axis.
+    ///
+    /// A system `G(s)` with zeros in the right half-plane (nonminimum phase) has an inverse
+    /// `G^-1(s)` with unstable poles. Choosing the region of convergence that contains the
+    /// imaginary axis, the inverse Laplace transform of each partial fraction becomes
+    ///
+    /// ```text
+    /// r / (s - p)^k  <->   r t^(k-1) / (k-1)! e^(p t) 1(t)     (Re p < 0, causal)
+    ///                 <->  -r t^(k-1) / (k-1)! e^(p t) 1(-t)    (Re p > 0, anti-causal)
+    /// ```
+    ///
+    /// so the impulse response `h(t)` is bounded (it decays for both `t -> ∞` and `t -> -∞`)
+    /// at the cost of being non-causal. The polynomial part `Q(s)` gives impulses `δ^(n)(t)`.
+    /// No ROC contains the imaginary axis when `G^-1(s)` has a pole on it (`G(s)` has a zero on it).
     pub fn stable_inverse(&self) -> Result<StableInverse<T>, StableInverseError> {
         if self.numerator.iter().all(|c| c.is_zero()) {
             return Err(StableInverseError::ZeroSystem);

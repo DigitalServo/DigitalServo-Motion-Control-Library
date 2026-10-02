@@ -9,12 +9,15 @@ pub struct Statistics<T> {
     offset: T,
     sum: T,
     sum_of_square: T,
+    /// Mean.
     pub mean: T,
     /// Population variance (divided by the number of samples).
     pub variance: T,
     /// Standard deviation, `sqrt(variance)`.
     pub sigma: T,
+    /// Largest value.
     pub max: T,
+    /// Smallest value.
     pub min: T,
     /// `max - min`.
     pub range: T,
@@ -24,6 +27,7 @@ impl<T> Statistics<T>
 where
     T: num_traits::Float + std::ops::AddAssign,
 {
+    /// Empty statistics. `offset` should be close to the data (e.g. the first sample); it only affects round-off.
     pub fn new(offset: T) -> Self {
         Self {
             offset,
@@ -39,6 +43,7 @@ where
         }
     }
 
+    /// Add a sample and update all statistics.
     pub fn add(&mut self, data: T) {
         self.len += 1;
 

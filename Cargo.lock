@@ -46,7 +46,7 @@ dependencies = [
 
 [[package]]
 name = "dsmc"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "csv",
  "nalgebra",

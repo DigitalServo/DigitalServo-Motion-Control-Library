@@ -1,15 +1,4 @@
-//! Parse a transfer function from a rational expression in `s` (continuous) or `z` (discrete),
-//! e.g. `"(s^2 + 10*s + 10) / (s^2 + 20*s + 100)"`. The variable must match the `Domain`
-//! (`tf!` picks the `Domain` from the variable at compile time, see `__detect_domain`).
-//!
-//! Grammar (`^` binds tighter than unary minus, so `-s^2` is `-(s^2)`):
-//! ```text
-//! expr    := term (('+' | '-') term)*
-//! term    := unary (('*' | '/') unary | primary)*   // juxtaposition = implicit '*', e.g. 10s, (s+1)(s+2)
-//! unary   := ('+' | '-') unary | power
-//! power   := primary ('^' ['+' | '-'] integer)?
-//! primary := number | variable | '(' expr ')'
-//! ```
+//! Parse a transfer function from a rational expression in `s` (continuous) or `z` (discrete).
 
 use super::TransferFunction;
 use crate::{Continuous, Discrete, Domain};
@@ -22,29 +11,67 @@ use thiserror::Error;
 /// Errors of parsing a transfer function from a string (`FromStr`, `tf!`).
 #[derive(Clone, Debug, Error, PartialEq)]
 pub enum TransferFunctionParseError {
+    /// A character that is not part of the grammar.
     #[error("Unexpected character '{ch}' at position {pos}")]
-    UnexpectedChar { ch: char, pos: usize },
+    UnexpectedChar {
+        /// The character.
+        ch: char,
+        /// Position in the input.
+        pos: usize,
+    },
 
+    /// A number that cannot be parsed.
     #[error("Invalid number '{text}' at position {pos}")]
-    InvalidNumber { text: String, pos: usize },
+    InvalidNumber {
+        /// The text of the number.
+        text: String,
+        /// Position in the input.
+        pos: usize,
+    },
 
+    /// A token in the wrong place.
     #[error("Unexpected token at position {pos}: expected {expected}")]
-    UnexpectedToken { pos: usize, expected: &'static str },
+    UnexpectedToken {
+        /// Position in the input.
+        pos: usize,
+        /// What was expected instead.
+        expected: &'static str,
+    },
 
+    /// The input ended in the middle of an expression.
     #[error("Unexpected end of input: expected {expected}")]
-    UnexpectedEnd { expected: &'static str },
+    UnexpectedEnd {
+        /// What was expected.
+        expected: &'static str,
+    },
 
+    /// A non-integer power, e.g. `s^1.5`.
     #[error("Exponent must be an integer, got {value} at position {pos}")]
-    NonIntegerExponent { value: f64, pos: usize },
+    NonIntegerExponent {
+        /// The exponent.
+        value: f64,
+        /// Position in the input.
+        pos: usize,
+    },
 
+    /// Division by a zero polynomial.
     #[error("Division by zero")]
     DivisionByZero,
 
+    /// Both `s` and `z` appear.
     #[error("Expression mixes 's' and 'z'")]
     MixedVariables,
 
+    /// The variable does not match the domain (e.g. `z` when parsing a continuous-time system).
     #[error("Variable '{found}' at position {pos} does not match the time domain (expected '{expected}')")]
-    WrongVariable { expected: char, found: char, pos: usize },
+    WrongVariable {
+        /// Variable of the domain.
+        expected: char,
+        /// Variable in the input.
+        found: char,
+        /// Position in the input.
+        pos: usize,
+    },
 }
 
 type ParseResult<T> = Result<T, TransferFunctionParseError>;
@@ -422,6 +449,15 @@ impl __SelectDomain for __DomainTag<1> {
 /// ```
 /// In that form the tokens are stringified before parsing, so `^` means power (not XOR).
 /// Panics if the expression is invalid; use `str::parse` (`FromStr`) to handle errors.
+///
+/// Grammar (`^` binds tighter than unary minus, so `-s^2` is `-(s^2)`):
+/// ```text
+/// expr    := term (('+' | '-') term)*
+/// term    := unary (('*' | '/') unary | primary)*   // juxtaposition = implicit '*', e.g. 10s, (s+1)(s+2)
+/// unary   := ('+' | '-') unary | power
+/// power   := primary ('^' ['+' | '-'] integer)?
+/// primary := number | variable | '(' expr ')'
+/// ```
 #[macro_export]
 macro_rules! tf {
     ($fmt:literal $(, $arg:expr)* $(,)?) => {

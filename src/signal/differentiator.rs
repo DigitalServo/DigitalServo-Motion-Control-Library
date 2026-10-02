@@ -16,10 +16,13 @@ pub struct Differentiator<T>
     py: DVector<T>,
     py_z1: DVector<T>,
     derivative_order: usize,
+    /// Estimated derivatives of the last `update`: `output[i]` is the `(i + 1)`-th derivative.
     pub output: Vec<T>
 }
 
 impl<T: Float + RealField> Differentiator<T> {
+    /// `ts`: sampling period, `bandwidth`: observer pole magnitude \[rad/s\], `derivative_order`: derivative
+    /// returned by `update` (at least 1), `filter_order`: extra low-pass order.
     pub fn new(ts: T, bandwidth: T, derivative_order: usize, filter_order: usize) -> Self {
 
         let state_order = derivative_order + filter_order;
@@ -57,6 +60,7 @@ impl<T: Float + RealField> Differentiator<T> {
         Self {ts, g, ty, tz, py, py_z1, output, derivative_order}
     }
 
+    /// One sample of the signal `x`; returns its `derivative_order`-th derivative.
     pub fn update(&mut self, x: T) -> T {
         let u: DVector<T> = (&self.tz * &self.g + &self.ty) * x;
         self.py += (u + &self.tz * &self.py) * self.ts;

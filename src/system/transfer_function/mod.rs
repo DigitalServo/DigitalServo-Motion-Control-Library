@@ -19,7 +19,9 @@ pub use parser::{__detect_domain, __DomainTag, __SelectDomain};
 /// (`Continuous`, the default) or in `z` (`Discrete`), so the two cannot be mixed up.
 #[derive(Clone, Debug)]
 pub struct TransferFunction<T, D = Continuous> {
+    /// Numerator coefficients, descending order.
     pub numerator: Polynomial<T>,
+    /// Denominator coefficients, descending order.
     pub denominator: Polynomial<T>,
     _domain: PhantomData<D>,
 }
@@ -138,6 +140,7 @@ impl<T: Float + AddAssign> TransferFunction<T, Discrete> {
 }
 
 impl<T: Float + AddAssign, D> TransferFunction<T, D> {
+    /// Poles and zeros, after pole-zero cancellation (`reduced`).
     pub fn pz_map(&self) -> PzMap<T, D> {
         let tf = self.reduced();
 

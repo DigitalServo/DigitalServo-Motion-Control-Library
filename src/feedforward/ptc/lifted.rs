@@ -1,9 +1,4 @@
 //! Multirate perfect tracking control (PTC) on the lifted model.
-//!
-//! The discretized plant `x[k+1] = A x[k] + B u[k]` is lifted over a frame of `n` samples
-//! (`n` = number of states): `x[(i+1)n] = A^n x[in] + B_lifted [u[in], ..., u[in+n-1]]`, so the
-//! `n` inputs of a frame that bring the state exactly onto a reference are
-//! `B_lifted^-1 (x_d[(i+1)n] - A^n x_d[in])`.
 
 use std::borrow::Borrow;
 
@@ -17,7 +12,12 @@ use crate::laplace_transform::StableInverseError;
 use crate::{Continuous, Discrete, StateSpace, StateSpaceError};
 
 /// `DiscretizedSystem` lifted over a frame of `order` samples, for multirate perfect tracking
-/// control (see the module documentation). Built with `DiscretizedSystem::try_into`.
+/// control. Built with `DiscretizedSystem::try_into`.
+///
+/// The discretized plant `x[k+1] = A x[k] + B u[k]` is lifted over a frame of `n` samples
+/// (`n` = number of states): `x[(i+1)n] = A^n x[in] + B_lifted [u[in], ..., u[in+n-1]]`, so the
+/// `n` inputs of a frame that bring the state exactly onto a reference are
+/// `B_lifted^-1 (x_d[(i+1)n] - A^n x_d[in])`.
 pub struct LiftedDiscretizedSystem<T> {
     /// Continuous-time model the system was discretized from.
     pub continuous: StateSpace<T, Continuous>,
@@ -77,15 +77,24 @@ impl<T: Float + ComplexField + RealField> TryInto<LiftedDiscretizedSystem<T>> fo
 /// Errors of perfect tracking control.
 #[derive(Clone, Debug, Error, PartialEq)]
 pub enum PtcError {
+    /// Output references are supported for SISO systems only.
     #[error("Perfect tracking from an output reference supports SISO systems only, got {inputs} inputs and {outputs} outputs")]
-    NotSiso { inputs: usize, outputs: usize },
+    NotSiso {
+        /// Number of inputs.
+        inputs: usize,
+        /// Number of outputs.
+        outputs: usize,
+    },
 
+    /// The system has a direct feedthrough term.
     #[error("The system has a direct feedthrough term (D != 0)")]
     Feedthrough,
 
+    /// `(A, B)` is not controllable.
     #[error("(A, B) is not controllable")]
     Uncontrollable,
 
+    /// The state reference could not be computed by stable inversion.
     #[error(transparent)]
     StableInverse(#[from] StableInverseError),
 }

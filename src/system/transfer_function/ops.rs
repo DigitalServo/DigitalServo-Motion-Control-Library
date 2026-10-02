@@ -1,6 +1,4 @@
-//! Arithmetic on `TransferFunction`: `G1 * G2`, `G1 + G2`, and constant gains
-//! (`G * k`, `k * G`, `G / k`, `G *= k`, `G /= k`).
-//! Both operands must share the same domain `D`, so `s` and `z` cannot be mixed.
+//! Arithmetic on `TransferFunction`: `G1 * G2`, `G1 + G2`, and constant gains (`G * k`, `G / k`, ...).
 
 use super::TransferFunction;
 use num_traits::Float;

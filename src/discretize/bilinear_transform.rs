@@ -1,3 +1,5 @@
+//! Bilinear (Tustin) transform `s = 2/ts (z - 1)/(z + 1)`.
+
 use std::borrow::Borrow;
 use std::collections::VecDeque;
 use std::ops::{AddAssign, MulAssign};
@@ -24,7 +26,17 @@ fn binom_one_minus_x<T: Float>(n: usize) -> Polynomial<T> {
     poly
 }
 
-/// Receive two descending-order polynomialnomial slices and bilinear transform them.
+/// Bilinear (Tustin) transform `s = 2/ts (z - 1)/(z + 1)` of a proper `G(s)`; the result is normalized so that
+/// the leading denominator coefficient is 1.
+///
+/// The stable region maps onto the stable region and the gain is kept, while the frequency axis is
+/// warped (`ω_d = 2/ts atan(ω ts / 2)`).
+///
+/// ```
+/// use dsmc::{tf, discretize::bilinear_transform};
+///
+/// let g_z = bilinear_transform::discretize(&tf!("100 / (s + 100)"), 1e-3);
+/// ```
 ///
 /// Numerator: bm*s^m + bm-1*s^m-1 + ...+ b0 => \[bm, bm-1, ..., b0\]
 ///
@@ -70,16 +82,20 @@ where
     TransferFunction::from_polynomials(numer_z, denom_z)
 }
 
+/// Simulator of a discrete-time transfer function as a difference equation:
+///
 /// y\[k\] = (bn\[0\] * x\[k\] + bn\[1\] * x\[k-1\] + ... + bn\[N\] * x\[k-N\]) - (an\[0\] * y\[k-1\] + an\[1\] * y\[k-2\] - ... + an\[N\] * y\[k-N-1\])
 pub struct DiscretizedSystem<T> {
     an: Vec<T>,
     bn: Vec<T>,
     xz: VecDeque<T>,
     yz: VecDeque<T>,
+    /// Output of the last `update`.
     pub output: T,
 }
 
 impl <T:Float + AddAssign + MulAssign> DiscretizedSystem<T> {
+    /// Bilinear transform of `tf` with sampling period `ts` (see `discretize`), at rest.
     pub fn new<S: Borrow<TransferFunction<T, Continuous>>>(tf: S, ts: T) -> Self {
 
         let tf_z = discretize(tf, ts);
@@ -97,6 +113,7 @@ impl <T:Float + AddAssign + MulAssign> DiscretizedSystem<T> {
         Self { an, bn, xz, yz, output: T::zero() }
     }
 
+    /// From a discrete-time transfer function whose leading denominator coefficient is 1, at rest.
     pub fn from_tf_z<S: Borrow<TransferFunction<T, Discrete>>>(tf: S) -> Self {
 
         let tf_z = tf.borrow();
@@ -114,6 +131,7 @@ impl <T:Float + AddAssign + MulAssign> DiscretizedSystem<T> {
         Self { an, bn, xz, yz, output: T::zero() }
     }
 
+    /// One sample with input `x[k]`; returns `y[k]`.
     pub fn update(&mut self, x: T) -> T {
         // FIFO for xz
         self.xz.pop_back();
