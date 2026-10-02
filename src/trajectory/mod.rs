@@ -11,12 +11,14 @@ pub use cycloid::Cycloid;
 pub use mcv::ModifiedConstantVelocity;
 pub use ms::ModifiedSine;
 pub use mt::ModifiedTrapezoid;
+use serde::Serialize;
 pub use smoothstep::SmoothPolynomial;
 pub use sin::Sin;
 
 use num_traits::{Float, FloatConst};
 
 /// Position, velocity and acceleration of a trajectory at one instant (see `Trajectory::profile`).
+#[derive(Debug, Clone, Serialize)]
 pub struct TrajectoryProfile<T> {
     /// Position.
     pub s: T,
@@ -74,7 +76,7 @@ pub trait Trajectory<T: Float> {
 ///     let samples = p.generate(1.0, 500);
 /// }
 /// ```
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub enum TrajectoryKind {
     /// [`Sin`].
     Sin,

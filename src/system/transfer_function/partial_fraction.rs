@@ -4,10 +4,11 @@ use super::TransferFunction;
 use crate::{dka_method, vieta_formula, Continuous, Polynomial};
 use num_complex::Complex;
 use num_traits::{Float, Zero};
+use serde::Serialize;
 use std::ops::AddAssign;
 
 /// Terms of one (possibly repeated) pole.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct PoleTerm<T> {
     /// The pole `p`.
     pub pole: Complex<T>,
@@ -23,7 +24,7 @@ impl<T> PoleTerm<T> {
 }
 
 /// `X(s) = direct(s) + Σ terms`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct PartialFraction<T> {
     /// Polynomial part `Q(s)` (descending order). Empty when `X(s)` is strictly proper.
     pub direct: Polynomial<T>,

@@ -1,6 +1,6 @@
 [package]
 name = "dsmc"
-version = "0.1.9"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 authors = ["Digitalservo"]
@@ -13,7 +13,7 @@ repository = "https://github.com/DigitalServo/DigitalServo-Motion-Control-Librar
 [dependencies]
 csv = "1.4.0"
 nalgebra = "0.35.0"
-num-complex = "0.4.6"
+num-complex = { version = "0.4.6", features = ["serde"] }
 num-traits = "0.2.19"
 rustfft = "6.4.1"
 serde = { version = "1.0.228", features = ["derive"] }

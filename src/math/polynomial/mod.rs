@@ -5,10 +5,11 @@ mod dka_method;
 pub use dka_method::dka_method;
 
 mod vieta_formula;
+use serde::Serialize;
 pub use vieta_formula::vieta_formula;
 
 /// Coefficients of a decending polynomial
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Polynomial<T>(pub Vec<T>);
 
 impl<T: Float> Polynomial<T> {

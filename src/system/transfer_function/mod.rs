@@ -1,6 +1,7 @@
 use crate::{dka_method, Continuous, Discrete, Polynomial};
 use num_complex::Complex;
 use num_traits::{Float, Zero};
+use serde::Serialize;
 use std::marker::PhantomData;
 use std::ops::AddAssign;
 
@@ -17,22 +18,24 @@ pub use parser::{__detect_domain, __DomainTag, __SelectDomain};
 
 /// Descending-order numerator / denominator polynomials. `D` tells whether they are in `s`
 /// (`Continuous`, the default) or in `z` (`Discrete`), so the two cannot be mixed up.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct TransferFunction<T, D = Continuous> {
     /// Numerator coefficients, descending order.
     pub numerator: Polynomial<T>,
     /// Denominator coefficients, descending order.
     pub denominator: Polynomial<T>,
+    #[serde(skip)]
     _domain: PhantomData<D>,
 }
 
 /// Poles and zeros of a `TransferFunction` (see `TransferFunction::pz_map`).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct PzMap<T, D = Continuous> {
     /// Roots of the denominator.
     pub poles: Vec<Complex<T>>,
     /// Roots of the numerator.
     pub zeros: Vec<Complex<T>>,
+    #[serde(skip)]
     _domain: PhantomData<D>,
 }
 
