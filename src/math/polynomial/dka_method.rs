@@ -32,7 +32,46 @@ pub fn dka_method<T: Float + Zero + One>(coefficients: &Polynomial<Complex<T>>) 
     let z = adaptive_initial_values(&monic_coeffs);
     let z = aberth(&monic_coeffs, z);
 
-    Some(z)
+    if monic_coeffs.iter().all(|c| c.im.is_zero()) {
+        Some(conjugate_symmetrize(z))
+    } else {
+        Some(z)
+    }
+}
+
+/// Roots of a real polynomial come in conjugate pairs, but members of a multiple-root cluster
+/// are only determined up to round-off and need not be. Pair each root with the root nearest to
+/// its conjugate (itself for a real root) and replace them by their average.
+fn conjugate_symmetrize<T: Float>(mut z: Vec<Complex<T>>) -> Vec<Complex<T>> {
+    // Roots far from the real axis first, so that pairs are formed before real roots claim them.
+    let mut order: Vec<usize> = (0..z.len()).collect();
+    order.sort_by(|&a, &b| z[b].im.abs().partial_cmp(&z[a].im.abs()).unwrap_or(std::cmp::Ordering::Equal));
+    let mut done = vec![false; z.len()];
+    for &i in &order {
+        if done[i] {
+            continue;
+        }
+        let target = z[i].conj();
+        let j = (0..z.len())
+            .filter(|&k| !done[k])
+            .min_by(|&a, &b| {
+                let da = (z[a] - target).norm();
+                let db = (z[b] - target).norm();
+                da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .unwrap();
+        if j == i {
+            z[i].im = T::zero();
+        } else {
+            let two = T::one() + T::one();
+            let avg = (z[i] + z[j].conj()) / two;
+            z[i] = avg;
+            z[j] = avg.conj();
+            done[j] = true;
+        }
+        done[i] = true;
+    }
+    z
 }
 
 
@@ -182,15 +221,33 @@ fn aberth<T: Float>(monic_coeffs: &[Complex<T>], mut z: Vec<Complex<T>>) -> Vec<
         (p, dp)
     }
 
+    /// Rounding-error bound of p(x): a few ulps of Σ|c_k||x|^k. Below it, p(x) is pure noise.
+    fn noise_bound<T: Float>(desc: &[Complex<T>], x: Complex<T>) -> T {
+        let r = x.norm();
+        let sum = desc.iter().fold(T::zero(), |acc, c| acc * r + c.norm());
+        T::from(4 * desc.len()).unwrap() * T::epsilon() * sum
+    }
+
     let degree = z.len();
     const MAX_ITER: usize = 10000;
     let tol = T::from(1e-12).unwrap();
+    // Roots that have not converged after FREEZE_AFTER iterations are frozen once |p(z)| is at
+    // the rounding-error level: near a high-order multiple root the Newton step p/p' is dominated
+    // by noise and would otherwise wander without converging. (Not applied from the start, so
+    // that iterations which converge normally, e.g. keeping conjugate symmetry, are unaffected.)
+    const FREEZE_AFTER: usize = 200;
+    let mut frozen = vec![false; degree];
 
-    for _ in 0..MAX_ITER {
+    for iter in 0..MAX_ITER {
         let mut converged = true;
         let z_old = z.clone();               // Jacobi style
         for i in 0..degree {
+            if frozen[i] { continue; }
             let (p, dp) = eval_p_dp(monic_coeffs, z_old[i]);
+            if iter >= FREEZE_AFTER && p.norm() <= noise_bound(monic_coeffs, z_old[i]) {
+                frozen[i] = true;
+                continue;
+            }
             if dp == Complex::zero() { continue; }
             let newton = p / dp;
 
@@ -209,7 +266,32 @@ fn aberth<T: Float>(monic_coeffs: &[Complex<T>], mut z: Vec<Complex<T>>) -> Vec<
             let scale = z_old[i].norm().max(T::one());
             if w.norm() > tol * scale { converged = false; }
         }
-        if converged { return z; }
+        if converged { break; }
+    }
+
+    // Polish: a root frozen at the noise level may still be improved (a simple root converges
+    // quadratically), so take further Aberth steps but accept them only where |p| decreases.
+    // Members of a multiple-root cluster thus stay where |p| is at the noise level.
+    // Jacobi style, so that the roots of a real polynomial stay exactly conjugate-symmetric.
+    for _ in 0..5 {
+        let z_old = z.clone();
+        let mut improved = false;
+        for i in 0..degree {
+            let (p, dp) = eval_p_dp(monic_coeffs, z_old[i]);
+            if p == Complex::zero() || dp == Complex::zero() { continue; }
+            let newton = p / dp;
+            let mut s = Complex::zero();
+            for j in 0..degree {
+                let d = z_old[i] - z_old[j];
+                if j != i && d != Complex::zero() { s = s + Complex::<T>::one() / d; }
+            }
+            let candidate = z_old[i] - newton / (Complex::<T>::one() - newton * s);
+            if eval_p_dp(monic_coeffs, candidate).0.norm() < p.norm() {
+                z[i] = candidate;
+                improved = true;
+            }
+        }
+        if !improved { break; }
     }
     z
 }

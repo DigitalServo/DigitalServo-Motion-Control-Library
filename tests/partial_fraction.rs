@@ -140,19 +140,26 @@ fn high_multiplicity_pole() {
         1e-4 * (1.0 - e * (1.0 + a + a * a / 2.0 + a * a * a / 6.0))
     });
 
-    // (s+1)^6 / s: 1 - e^-t Σ_{k<6} t^k / k!
-    let x = tf!("1 / (s (s + 1)^6)");
-    assert!(x.partial_fraction().terms.iter().any(|p| p.multiplicity() == 6));
-    check(&x, |t| {
-        let (mut term, mut sum) = (1.0, 0.0);
-        for k in 0..6 {
-            if k > 0 {
-                term *= t / k as f64;
-            }
-            sum += term;
+    // a^n / (s (s+a)^n): 1 - e^-at Σ_{k<n} (at)^k / k!. Roots of multiplicity >= 8 are found as
+    // a ring of radius ~eps^(1/n), whose partial arcs must not be merged on their own.
+    for (a, n) in [(1.0_f64, 6), (0.3, 7), (0.3, 8), (10.0, 10), (1.0, 12)] {
+        let mut denom = Polynomial(vec![1.0, 0.0]);
+        for _ in 0..n {
+            denom = &denom * &Polynomial(vec![1.0, a]);
         }
-        1.0 - (-t).exp() * sum
-    });
+        let x: TransferFunction<f64> = TransferFunction::from_polynomials(Polynomial(vec![a.powi(n as i32)]), denom);
+        assert!(x.partial_fraction().terms.iter().any(|p| p.multiplicity() == n), "a = {a}, n = {n}");
+        check(&x, |t| {
+            let (mut term, mut sum) = (1.0, 0.0);
+            for k in 0..n {
+                if k > 0 {
+                    term *= a * t / k as f64;
+                }
+                sum += term;
+            }
+            1.0 - (-a * t).exp() * sum
+        });
+    }
 }
 
 #[test]
