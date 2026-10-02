@@ -109,7 +109,11 @@ fn polynomial_division<T: Float>(numer: &[T], denom: &[T]) -> (Polynomial<T>, Ve
 }
 
 /// Group numerically found roots into `(pole, multiplicity)`. A repeated root of multiplicity m
-/// is found as a small cluster (spread ~ eps^(1/m)), so roots within `rel_tol` are merged.
+/// is found as a small cluster whose spread grows like eps^(1/m), so a fixed tolerance cannot
+/// separate clusters reliably for large m. Clusters are therefore merged agglomeratively (closest
+/// pair first) while the merged cluster is isolated from the other roots and stays within
+/// `cluster_radius`, i.e. `rel_tol` or the spread expected from round-off for its multiplicity,
+/// whichever is larger.
 /// The cluster mean is then refined by Newton's method on `D^(m-1)(s)`, for which the pole is
 /// a simple root. Real / imaginary parts within `snap_tol` (relative to `max(|p|, 1)`) are
 /// snapped to zero, so that poles nearly on the real / imaginary axis lie exactly on it.
@@ -119,25 +123,41 @@ pub(super) fn group_roots<T: Float>(
     rel_tol: T,
     snap_tol: T,
 ) -> Vec<(Complex<T>, usize)> {
-    // (sum of members, count)
-    let mut groups: Vec<(Complex<T>, usize)> = Vec::new();
-    for &r in roots {
-        let found = groups.iter_mut().find(|(sum, n)| {
-            let center = *sum / T::from(*n).unwrap();
-            (center - r).norm() <= rel_tol * center.norm().max(T::one())
-        });
-        match found {
-            Some((sum, n)) => {
-                *sum = *sum + r;
-                *n += 1;
+    let mut groups: Vec<Vec<Complex<T>>> = roots.iter().map(|&r| vec![r]).collect();
+    loop {
+        // Closest pair of groups whose union is a consistent cluster.
+        let mut best: Option<(T, usize, usize)> = None;
+        for i in 0..groups.len() {
+            for j in (i + 1)..groups.len() {
+                let d = (mean(&groups[i]) - mean(&groups[j])).norm();
+                if best.is_some_and(|(bd, _, _)| bd <= d) {
+                    continue;
+                }
+                let merged: Vec<Complex<T>> = groups[i].iter().chain(&groups[j]).copied().collect();
+                let center = mean(&merged);
+                let spread = merged.iter().fold(T::zero(), |acc, &r| acc.max((r - center).norm()));
+                // The cluster must be isolated: no other root closer to its center than a member
+                // (otherwise e.g. a conjugate pair centered on another root would be merged).
+                let isolated = groups
+                    .iter()
+                    .enumerate()
+                    .filter(|&(k, _)| k != i && k != j)
+                    .flat_map(|(_, g)| g)
+                    .all(|&r| (r - center).norm() > spread);
+                if isolated && spread <= cluster_radius(denom, center, merged.len(), rel_tol) {
+                    best = Some((d, i, j));
+                }
             }
-            None => groups.push((r, 1)),
         }
+        let Some((_, i, j)) = best else { break };
+        let absorbed = groups.swap_remove(j);
+        groups[i].extend(absorbed);
     }
     groups
         .into_iter()
-        .map(|(sum, m)| {
-            let mut p = sum / T::from(m).unwrap();
+        .map(|members| {
+            let m = members.len();
+            let mut p = mean(&members);
             if m > 1 {
                 p = refine_repeated_root(denom, p, m);
             }
@@ -151,6 +171,26 @@ pub(super) fn group_roots<T: Float>(
             (p, m)
         })
         .collect()
+}
+
+fn mean<T: Float>(members: &[Complex<T>]) -> Complex<T> {
+    members.iter().fold(Complex::zero(), |acc, &r| acc + r) / T::from(members.len()).unwrap()
+}
+
+/// Admissible spread of a cluster of `m` roots around `center`: the larger of
+/// `rel_tol * max(|center|, 1)` and the round-off spread of an m-fold root,
+/// `(K eps Σ|a_i||center|^i / |D^(m)(center) / m!|)^(1/m)` (K: safety factor).
+fn cluster_radius<T: Float>(denom: &Polynomial<Complex<T>>, center: Complex<T>, m: usize, rel_tol: T) -> T {
+    let base = rel_tol * center.norm().max(T::one());
+    let c_m = taylor_coefficients(&denom.0, center, m + 1)[m].norm();
+    if c_m.is_zero() {
+        return T::infinity();
+    }
+    let x = center.norm();
+    let bound = denom.0.iter().fold(T::zero(), |acc, a| acc * x + a.norm());
+    let safety = T::from(100.0).unwrap();
+    let spread = (safety * T::epsilon() * bound / c_m).powf(T::one() / T::from(m).unwrap());
+    base.max(spread)
 }
 
 /// Newton's method on `D^(m-1)(s)`, whose root at a pole of multiplicity m is simple.

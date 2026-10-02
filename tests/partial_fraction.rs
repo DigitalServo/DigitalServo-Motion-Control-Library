@@ -125,3 +125,40 @@ fn time_function_closure() {
     let samples: Vec<f64> = (0..5).map(|i| i as f64 * 0.1).map(&y).collect();
     assert_eq!(samples.len(), 5);
 }
+
+#[test]
+fn high_multiplicity_pole() {
+    // 1 / (s (s+10)^4): the quadruple root is found as a cluster wider than 1e-4 relative,
+    // and must still be merged into one pole (otherwise huge cancelling residues appear).
+    let x = tf!("1 / (s (s + 10)^4)");
+    let pf = x.partial_fraction();
+    let quad = pf.terms.iter().find(|p| p.multiplicity() == 4).unwrap();
+    assert_close(quad.pole.re, -10.0, 1e-9);
+    check(&x, |t| {
+        let e = (-10.0 * t).exp();
+        let a = 10.0 * t;
+        1e-4 * (1.0 - e * (1.0 + a + a * a / 2.0 + a * a * a / 6.0))
+    });
+
+    // (s+1)^6 / s: 1 - e^-t Σ_{k<6} t^k / k!
+    let x = tf!("1 / (s (s + 1)^6)");
+    assert!(x.partial_fraction().terms.iter().any(|p| p.multiplicity() == 6));
+    check(&x, |t| {
+        let (mut term, mut sum) = (1.0, 0.0);
+        for k in 0..6 {
+            if k > 0 {
+                term *= t / k as f64;
+            }
+            sum += term;
+        }
+        1.0 - (-t).exp() * sum
+    });
+}
+
+#[test]
+fn close_distinct_poles_not_merged() {
+    // 1 / ((s+1)(s+1.001)) = 1000 (e^-t - e^-1.001t)
+    let x = tf!("1 / ((s + 1)(s + 1.001))");
+    assert_eq!(x.partial_fraction().terms.len(), 2);
+    check(&x, |t| 1000.0 * ((-t).exp() - (-1.001 * t).exp()));
+}
