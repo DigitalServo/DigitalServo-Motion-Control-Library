@@ -1,6 +1,8 @@
-//! Arithmetic on `TransferFunction`: `G1 * G2`, `G1 + G2`, and constant gains (`G * k`, `G / k`, ...).
+//! Arithmetic on `TransferFunction`: `G1 * G2`, `G1 / G2`, `G1 + G2`, constant gains (`G * k`, `G / k`, ...)
+//! and constant offsets (`G + k`).
 
 use super::TransferFunction;
+use crate::Polynomial;
 use num_traits::Float;
 use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign};
 
@@ -21,6 +23,22 @@ impl<T: Float + AddAssign, D> Mul for TransferFunction<T, D> {
     type Output = TransferFunction<T, D>;
     fn mul(self, rhs: TransferFunction<T, D>) -> TransferFunction<T, D> {
         &self * &rhs
+    }
+}
+
+impl<T: Float + AddAssign, D> Div for &TransferFunction<T, D> {
+    type Output = TransferFunction<T, D>;
+    fn div(self, rhs: &TransferFunction<T, D>) -> TransferFunction<T, D> {
+        // (n1/d1) / (n2/d2) = (n1/d1) * (d2/n2)
+        let rhs_inv = TransferFunction::from_polynomials(rhs.denominator.clone(), rhs.numerator.clone());
+        self * &rhs_inv
+    }
+}
+
+impl<T: Float + AddAssign, D> Div for TransferFunction<T, D> {
+    type Output = TransferFunction<T, D>;
+    fn div(self, rhs: TransferFunction<T, D>) -> TransferFunction<T, D> {
+        &self / &rhs
     }
 }
 
@@ -92,11 +110,48 @@ impl<T: Float, D> Div<T> for &TransferFunction<T, D> {
     }
 }
 
-// `k * G`: the orphan rule forbids `impl<T> Mul<TransferFunction<T, D>> for T`, so the
+// ---- Feedback ------------------------------------------------------------------------------
+
+impl<T: Float + AddAssign, D> TransferFunction<T, D> {
+    /// Closed-loop transfer function of `self` (open loop `L`) under unity negative feedback,
+    /// `L / (1 + L)`. Computed directly as `n / (d + n)`; `n + d` shares a root with `n` only if
+    /// `d` does, so no `reduced()` is needed when `self` is already reduced.
+    pub fn unity_feedback(&self) -> Self {
+        TransferFunction::from_polynomials(self.numerator.clone(), &self.denominator + &self.numerator)
+    }
+}
+
+// ---- Constant offset -----------------------------------------------------------------------
+// n/d + k = (n + k*d) / d. Poles are unchanged, and n + k*d shares a root with d only if n does,
+// so no `reduced()` is needed.
+
+impl<T: Float + AddAssign, D> AddAssign<T> for TransferFunction<T, D> {
+    fn add_assign(&mut self, k: T) {
+        let kd = Polynomial(self.denominator.iter().map(|&c| c * k).collect());
+        self.numerator += &kd;
+    }
+}
+
+impl<T: Float + AddAssign, D> Add<T> for TransferFunction<T, D> {
+    type Output = TransferFunction<T, D>;
+    fn add(mut self, k: T) -> TransferFunction<T, D> {
+        self += k;
+        self
+    }
+}
+
+impl<T: Float + AddAssign, D> Add<T> for &TransferFunction<T, D> {
+    type Output = TransferFunction<T, D>;
+    fn add(self, k: T) -> TransferFunction<T, D> {
+        TransferFunction::from_polynomials(self.numerator.clone(), self.denominator.clone()) + k
+    }
+}
+
+// `k * G` / `k + G`: the orphan rule forbids `impl<T> Mul<TransferFunction<T, D>> for T`, so the
 // left-hand scalar is implemented per concrete float type. Only f64: with both f32 and f64,
 // `10.0 * &g` fails to infer whenever `g`'s `T` is still an unresolved `{float}` (e.g. built by
-// `tf!` or from literal slices). For f32, use `g * k`.
-macro_rules! impl_scalar_lhs_mul {
+// `tf!` or from literal slices). For f32, use `g * k` / `g + k`.
+macro_rules! impl_scalar_lhs_ops {
     ($($t:ty),*) => {$(
         impl<D> Mul<TransferFunction<$t, D>> for $t {
             type Output = TransferFunction<$t, D>;
@@ -111,7 +166,21 @@ macro_rules! impl_scalar_lhs_mul {
                 tf * self
             }
         }
+
+        impl<D> Add<TransferFunction<$t, D>> for $t {
+            type Output = TransferFunction<$t, D>;
+            fn add(self, tf: TransferFunction<$t, D>) -> TransferFunction<$t, D> {
+                tf + self
+            }
+        }
+
+        impl<D> Add<&TransferFunction<$t, D>> for $t {
+            type Output = TransferFunction<$t, D>;
+            fn add(self, tf: &TransferFunction<$t, D>) -> TransferFunction<$t, D> {
+                tf + self
+            }
+        }
     )*};
 }
 
-impl_scalar_lhs_mul!(f64);
+impl_scalar_lhs_ops!(f64);

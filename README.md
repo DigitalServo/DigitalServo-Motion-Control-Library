@@ -51,6 +51,9 @@ let controller = tf!("(10 s + 100) / s");
 let open_loop = &controller * &plant;
 println!("{open_loop}");
 
+// Closed loop under unity negative feedback: L / (1 + L), same as `&open_loop / &(1.0 + &open_loop)`
+let closed_loop = open_loop.unity_feedback();
+
 // From coefficients (descending order), or parsed at runtime with error handling
 let g = TransferFunction::continuous(&[1.0], &[1.0, 3.0, 2.0]);
 let h: TransferFunction<f64> = "1 / (s + 1)^2".parse().unwrap();
