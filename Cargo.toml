@@ -1,12 +1,12 @@
 [package]
 name = "dsmc"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2024"
 license = "MIT"
-author = "Digitalservo"
-about = "Digitalservo Motion Control Library"
+authors = ["Digitalservo"]
 description = "Digitalservo Motion Control Library"
 readme = "README.md"
+documentation = "https://docs.rs/dsmc"
 homepage = "https://github.com/DigitalServo/DigitalServo-Motion-Control-Library"
 repository = "https://github.com/DigitalServo/DigitalServo-Motion-Control-Library"
 

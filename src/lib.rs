@@ -24,3 +24,8 @@ pub mod signal;
 pub mod system_identification;
 
 pub mod status;
+
+// Compile and run the code blocks of README.md as doctests.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
