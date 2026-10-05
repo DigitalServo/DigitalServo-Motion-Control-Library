@@ -10,11 +10,7 @@ use crate::math::binomial_coefficient;
 
 /// Descending order of powers for (1 + x)^n
 fn binom_one_plus_x<T: Float>(n: usize) -> Polynomial<T> {
-    let mut poly = vec![T::zero(); n + 1];
-    for k in 0..=n {
-        poly[k] = T::from(binomial_coefficient(n, k)).unwrap();
-    }
-    Polynomial(poly)
+    Polynomial((0..=n).map(|k| T::from(binomial_coefficient(n, k)).unwrap()).collect())
 }
 
 /// Descending order of powers for (1 - x)^n

@@ -28,6 +28,8 @@ impl<T: Float + AddAssign, D> Mul for TransferFunction<T, D> {
 
 impl<T: Float + AddAssign, D> Div for &TransferFunction<T, D> {
     type Output = TransferFunction<T, D>;
+    // Division is multiplication by the reciprocal
+    #[allow(clippy::suspicious_arithmetic_impl)]
     fn div(self, rhs: &TransferFunction<T, D>) -> TransferFunction<T, D> {
         // (n1/d1) / (n2/d2) = (n1/d1) * (d2/n2)
         let rhs_inv = TransferFunction::from_polynomials(rhs.denominator.clone(), rhs.numerator.clone());
@@ -126,6 +128,8 @@ impl<T: Float + AddAssign, D> TransferFunction<T, D> {
 // so no `reduced()` is needed.
 
 impl<T: Float + AddAssign, D> AddAssign<T> for TransferFunction<T, D> {
+    // n/d + k needs k*d
+    #[allow(clippy::suspicious_op_assign_impl)]
     fn add_assign(&mut self, k: T) {
         let kd = Polynomial(self.denominator.iter().map(|&c| c * k).collect());
         self.numerator += &kd;

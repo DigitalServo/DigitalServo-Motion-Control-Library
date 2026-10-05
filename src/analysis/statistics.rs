@@ -1,5 +1,3 @@
-use num_traits;
-
 /// Running statistics of a data stream, updated by `add`.
 /// Sums are accumulated relative to `offset` (a value close to the data) to reduce cancellation
 /// in the variance.

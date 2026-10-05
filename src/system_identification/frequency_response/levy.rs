@@ -69,10 +69,8 @@ fn levy_step<T: Float + ComplexField + AddAssign + MulAssign>(
         return Err(LevyIdentificationError::EmptyData);
     }
 
-    if let Some(prev) = &prev_result {
-        if prev.denominator.len() != (denom_order + 1) {
-            return Err(LevyIdentificationError::OrderMismatch);
-        }
+    if prev_result.as_ref().is_some_and(|prev| prev.denominator.len() != denom_order + 1) {
+        return Err(LevyIdentificationError::OrderMismatch);
     }
 
     let (num_a, num_b) = (denom_order, numer_order + 1);

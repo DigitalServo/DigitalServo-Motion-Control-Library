@@ -121,8 +121,8 @@ fn fujiwara_initial_values<T: Float>(monic_coeffs: &[Complex<T>]) -> Vec<Complex
         let mut max_val = T::zero();
 
         // |c_{n-k}|^{1/k} for k = 1..degree-1  → descending index k
-        for k in 1..degree {
-            let abs_coeff = monic_coeffs[k].norm();
+        for (k, coeff) in monic_coeffs.iter().enumerate().take(degree).skip(1) {
+            let abs_coeff = coeff.norm();
             if abs_coeff > T::zero() {
                 let cand = abs_coeff.powf(T::from(1.0 / k as f64).unwrap());
                 if cand > max_val { max_val = cand; }

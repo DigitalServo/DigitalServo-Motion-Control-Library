@@ -23,6 +23,12 @@ impl<T: Float> Motion<T> {
     }
 }
 
+impl<T: Float> Default for Motion<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T: Float> Add for Motion<T> {
     type Output = Motion<T>;
     fn add(self, rhs: Self) -> Self::Output {

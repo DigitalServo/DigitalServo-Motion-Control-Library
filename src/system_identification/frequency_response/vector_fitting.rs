@@ -83,12 +83,12 @@ pub struct VectorFittingResult<T> {
     pub rms_errors: Vec<T>,
 }
 
-impl<T: Float + RealField> Into<TransferFunction<T, Continuous>> for VectorFittingResult<T> {
-    fn into(self) -> TransferFunction<T, Continuous> {
-        let n = self.poles.len();
+impl<T: Float + RealField> From<VectorFittingResult<T>> for TransferFunction<T, Continuous> {
+    fn from(val: VectorFittingResult<T>) -> Self {
+        let n = val.poles.len();
         if n == 0 {
             return TransferFunction::from_polynomials(
-                Polynomial(vec![self.e, self.d]),
+                Polynomial(vec![val.e, val.d]),
                 Polynomial(vec![T::one()]),
             );
         }
@@ -98,24 +98,24 @@ impl<T: Float + RealField> Into<TransferFunction<T, Continuous>> for VectorFitti
         // B(s) = Σ_{k=1 to N} [r_k* (∏_{j!=k}(s - p_j))] + A(s)d + sA(s)e = numer1 + numer2 + numer3
 
         // Compute A(s)
-        let denom_complex = poly_from_roots(&self.poles);
+        let denom_complex = poly_from_roots(&val.poles);
         let denom: Vec<T> = denom_complex.iter().map(|c| c.re).collect();
 
         // Compute B(s)
         let numer: Vec<T> = {
             // The maximum length of the numerator polynomial is n + 2;
             // The highest order tem depends on s*A(s)*e.
-            let numer_len = self.poles.len() + 2;
+            let numer_len = val.poles.len() + 2;
             let mut numer_complex: Vec<Complex<T>> = vec![Complex::from(T::zero()); numer_len];
 
             // numer1
             for k in 0..n {
                 let other_poles: Vec<_> = (0..n)
                     .filter(|&j| j != k)
-                    .map(|j| self.poles[j])
+                    .map(|j| val.poles[j])
                     .collect();
 
-                let r_k = self.residues[k];
+                let r_k = val.residues[k];
                 let sub_poly: Vec<Complex<T>> = poly_from_roots(&other_poles)
                     .iter()
                     .map(|c| r_k * c)
@@ -132,7 +132,7 @@ impl<T: Float + RealField> Into<TransferFunction<T, Continuous>> for VectorFitti
             {
                 let sub_poly: Vec<Complex<T>> = denom_complex
                     .iter()
-                    .map(|c| c * Complex::from(self.d))
+                    .map(|c| c * Complex::from(val.d))
                     .collect();
 
                 // Right-shift
@@ -146,7 +146,7 @@ impl<T: Float + RealField> Into<TransferFunction<T, Continuous>> for VectorFitti
             {
                 let mut sub_poly: Vec<Complex<T>> = denom_complex
                     .iter()
-                    .map(|c| c * Complex::from(self.e))
+                    .map(|c| c * Complex::from(val.e))
                     .collect();
                 sub_poly.push(Complex::from(T::zero()));
 
@@ -207,16 +207,16 @@ pub fn identify<T: Float + RealField + Sum>(
     }
 
     // ---- Step 1: Set initial poles (logarithmic spacing on the imaginary axis) ----
-    let mut poles = generate_initial_poles(&samples, n_poles);
+    let mut poles = generate_initial_poles(samples, n_poles);
 
     let mut rms_errors = Vec::new();
 
     for _iter in 0..opts.max_iter {
         // ---- Step 2: Construct a least-squares problem and solve it ----
         // let (sigma_residues, res, d, e) = solve_normal_equation(&samples, &poles, opts)?;
-        let (sigma_residues, res, d, e) = solve_accumulated_normal_equation(&samples, &poles, opts)?;
+        let (sigma_residues, res, d, e) = solve_accumulated_normal_equation(samples, &poles, opts)?;
 
-        let rms = compute_rms(&samples, &poles, &res, d, e);
+        let rms = compute_rms(samples, &poles, &res, d, e);
         rms_errors.push(rms);
 
         // ---- Step 3: Find zeros of σ(s) to find new poles ----
@@ -252,7 +252,7 @@ pub fn identify<T: Float + RealField + Sum>(
 
     // ---- Step 5: Find final residues and constant terms using least-squares ----
     // let (_, residues, d, e) = solve_normal_equation(&samples, &poles, opts)?;
-    let (_, residues, d, e) = solve_accumulated_normal_equation(&samples, &poles, opts)?;
+    let (_, residues, d, e) = solve_accumulated_normal_equation(samples, &poles, opts)?;
 
     Ok(VectorFittingResult { poles, residues, d, e, rms_errors })
 }
@@ -286,13 +286,16 @@ fn generate_initial_poles<T: Float>(samples: &[FrequencyResponse<T>], n_poles: u
     poles
 }
 
+/// `(sigma_residues, fitted_residues, d, e)` of a least-squares step.
+type LeastSquaresSolution<T> = (Vec<Complex<T>>, Vec<Complex<T>>, T, T);
+
 /// Returns: `(sigma_residues, fitted_residues, d, e)`
 #[allow(unused)]
 fn solve_normal_equation<T: Float + RealField>(
     samples: &[FrequencyResponse<T>],
     poles: &[Complex<T>],
     opts: &VectorFittingOptions<T>,
-) -> Result<(Vec<Complex<T>>, Vec<Complex<T>>, T, T), VectorFittingError> {
+) -> Result<LeastSquaresSolution<T>, VectorFittingError> {
     let n = poles.len();
     let n_s = samples.len();
     let n_extra = opts.fit_d as usize + opts.fit_e as usize;
@@ -370,7 +373,7 @@ fn solve_accumulated_normal_equation<T: Float + RealField + AddAssign + MulAssig
     samples: &[FrequencyResponse<T>],
     poles: &[Complex<T>],
     opts: &VectorFittingOptions<T>,
-) -> Result<(Vec<Complex<T>>, Vec<Complex<T>>, T, T), VectorFittingError> {
+) -> Result<LeastSquaresSolution<T>, VectorFittingError> {
     let n = poles.len();
     let num_data = samples.len();
     if num_data == 0 {
@@ -392,8 +395,8 @@ fn solve_accumulated_normal_equation<T: Float + RealField + AddAssign + MulAssig
         y[0] = g.re;
         y[1] = g.im;
 
-        for j in 0..n {
-            let denom = s - poles[j];
+        for (j, &pole) in poles.iter().enumerate() {
+            let denom = s - pole;
 
             let term_tilde = g / denom;
             let col_t_re = 2 * j;
@@ -499,14 +502,14 @@ pub(crate) fn zeros_of_sigma<T: Float + RealField>(
     // Compute Π_{j≠k}(s−a_j) for each k and multiply by c̃_k, then add to num_poly
     let mut num_poly = denom_poly.clone();
 
-    for k in 0..n {
+    for (k, &residue) in sigma_residues.iter().enumerate().take(n) {
         let other_poles: Vec<Complex<T>> = (0..n).filter(|&j| j != k).map(|j| poles[j]).collect();
         let sub_poly = poly_from_roots(&other_poles); // 次数 n-1 の多項式
 
         // Add sub_poly (length: n) to num_poly (length: n+1) and multiply by sigma_residues[k]
         let offset = num_poly.len() - sub_poly.len(); // = 1
         for (i, &c) in sub_poly.iter().enumerate() {
-            num_poly[offset + i] += sigma_residues[k] * c;
+            num_poly[offset + i] += residue * c;
         }
     }
 

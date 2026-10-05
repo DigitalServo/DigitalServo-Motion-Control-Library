@@ -24,6 +24,12 @@ impl<T: Float> Polynomial<T> {
     }
 }
 
+impl<T: Float> Default for Polynomial<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T: Float> Deref for Polynomial<T> {
     type Target = Vec<T>;
     fn deref(&self) -> &Self::Target {
@@ -60,7 +66,7 @@ impl<T: Float + AddAssign> AddAssign<&Polynomial<T>> for Polynomial<T> {
         let max_len = self.len().max(rhs.len());
         if self.len() < max_len {
             // Prepend (not append) zeros, since index 0 is the highest degree.
-            self.0.splice(0..0, std::iter::repeat(T::zero()).take(max_len - self.len()));
+            self.0.splice(0..0, std::iter::repeat_n(T::zero(), max_len - self.len()));
         }
         let offset = self.len() - rhs.len();
         for (i, &v) in rhs.iter().enumerate() {

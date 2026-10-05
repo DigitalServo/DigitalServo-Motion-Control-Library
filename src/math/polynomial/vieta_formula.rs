@@ -25,8 +25,8 @@ pub fn vieta_formula<T: Float>(roots: &[Complex<T>]) -> Polynomial<Complex<T>> {
     let mut coeffs: Vec<Complex<T>> = Vec::with_capacity(n + 1);
     coeffs.push(Complex::one());
 
-    for k in 1..=n {
-        coeffs.push(if k % 2 == 0 { dp[k] } else { -dp[k] });
+    for (k, &d) in dp.iter().enumerate().skip(1) {
+        coeffs.push(if k % 2 == 0 { d } else { -d });
     }
 
     Polynomial(coeffs)

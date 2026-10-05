@@ -59,3 +59,9 @@ impl<T: Float, U> FrequencyCharacteristics<T, U> {
         Self { frequency: T::zero(), gain: T::zero(), phase: T::zero(), _unit: PhantomData }
     }
 }
+
+impl<T: Float, U> Default for FrequencyCharacteristics<T, U> {
+    fn default() -> Self {
+        Self::new()
+    }
+}

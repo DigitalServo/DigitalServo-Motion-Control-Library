@@ -36,7 +36,7 @@ impl<T: Float + std::fmt::Display, D: Domain> std::fmt::Display for TransferFunc
         let paren = |s: String, terms: usize| if terms > 1 { format!("({})", s) } else { s };
 
         let denom_terms = count_terms(&self.denominator);
-        let denom_is_one = denom_terms <= 1 && self.denominator.iter().rev().next() == Some(&T::one());
+        let denom_is_one = denom_terms <= 1 && self.denominator.iter().next_back() == Some(&T::one());
         let numer = paren(numer, if denom_is_one { 0 } else { count_terms(&self.numerator) });
         if denom_is_one {
             write!(f, "{}", numer)

@@ -34,10 +34,8 @@ impl DataStorage {
     /// `has_header` writes struct field names as the first row.
     pub fn new<P: AsRef<Path>>(path: P, separator: char, has_header: bool) -> Result<Self, Box<dyn Error>> {
         let path = path.as_ref();
-        if let Some(parent) = path.parent() {
-            if !parent.exists() {
-                fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = path.parent().filter(|parent| !parent.exists()) {
+            fs::create_dir_all(parent)?;
         }
 
         let delimiter: u8 = match separator.is_ascii() {
@@ -65,6 +63,8 @@ impl DataStorage {
             writer.serialize(data)?;
             self.cnt += 1;
 
+            // `is_multiple_of` needs Rust 1.87; edition 2024 allows 1.85
+            #[allow(clippy::manual_is_multiple_of)]
             if self.cnt % 100 == 0 {
                 let _ = writer.flush();
             }

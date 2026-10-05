@@ -32,10 +32,10 @@ pub fn binomial_coefficients<T: PrimInt + Unsigned>(n: T) -> Vec<T> {
     let mut current = T::one();
     let n_usize = n.to_usize().unwrap_or(0);
 
-    for k in 1..=n_usize {
+    for (k, r) in ret.iter_mut().enumerate().skip(1) {
         current = current * T::from(n_usize - k + 1).unwrap()
                 / T::from(k).unwrap();
-        ret[k] = current;
+        *r = current;
     }
     ret
 }

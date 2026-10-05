@@ -4,7 +4,16 @@ use std::ops::{AddAssign, MulAssign};
 
 use num_traits::Float;
 
-/// Gaussian process regression of a scalar function `y = f(x)` with a user-given kernel.
+/// Gaussian process regression of a scalar function `y = f(x)` with a user-given kernel, from
+/// samples with white measurement noise of variance `σ`:
+///
+/// ```text
+/// mean  = kᵀ (K + σI)^-1 y
+/// stdev = sqrt(k(x, x) - kᵀ (K + σI)^-1 k + σ)
+/// ```
+///
+/// (`K_ij = k(x_i, x_j)`, `k_i = k(x_i, x)`). With `σ > 0` the mean smooths the noisy samples instead
+/// of interpolating them, and repeated or close inputs do not make the covariance matrix singular.
 /// Samples are added with `add`; the inverse covariance matrix is recomputed lazily in `predict`.
 /// A typical kernel is the Gaussian kernel `k(x1, x2) = a exp(-(x1 - x2)^2 / (2 l^2))`.
 pub struct GaussianProcessRegression<T> {
@@ -27,7 +36,7 @@ pub struct GaussianProcessRegression<T> {
 pub struct PredictedValue<T> {
     /// Posterior mean.
     pub mean: T,
-    /// Posterior standard deviation (including the measurement noise).
+    /// Posterior standard deviation of a new measurement `y` (including the measurement noise).
     pub stdev: T,
 }
 
@@ -66,44 +75,36 @@ impl<T: Float + AddAssign + MulAssign> GaussianProcessRegression<T> {
         self.sample += 1;
     }
 
-    /// Posterior mean and standard deviation of `f(x)`.
+    /// Posterior mean of `f(x)` and standard deviation of a measurement `y` at `x`.
+    ///
+    /// Panics if `K + σI` is singular (only possible for `σ = 0`).
     pub fn predict(&mut self, x: T) -> PredictedValue<T> {
         if self.inv_cov.len() != self.sample {
-            let mut buffer: Vec<Vec<T>> = vec![vec![T::zero(); self.sample]; self.sample];
-            for i in 0..self.sample {
-                for j in 0..self.sample {
-                    buffer[i][j] = (self.kernel)(self.x_sample[i], self.x_sample[j]);
-                }
-            }
+            // K + σI
+            let buffer: Vec<Vec<T>> = self.x_sample
+                .iter()
+                .enumerate()
+                .map(|(i, &xi)| {
+                    self.x_sample
+                        .iter()
+                        .enumerate()
+                        .map(|(j, &xj)| (self.kernel)(xi, xj) + if i == j { self.sense_variance } else { T::zero() })
+                        .collect()
+                })
+                .collect();
             self.inv_cov = inverse(&buffer).unwrap();
         }
 
-        let mut k: Vec<T> = vec![T::zero(); self.sample];
-        for i in 0..self.sample {
-            k[i] = (self.kernel)(self.x_sample[i], x);
-        }
+        let k: Vec<T> = self.x_sample.iter().map(|&xi| (self.kernel)(xi, x)).collect();
 
-        let mut buffer1: Vec<T> = vec![T::zero(); self.sample];
-        let mut buffer2: T = T::zero();
-
-        let mut mean: T = T::zero();
-        for i in 0..self.sample {
-            for j in 0..self.sample {
-                buffer1[i] += self.inv_cov[i][j] * self.y_sample[j];
-            }
-            mean += k[i] * buffer1[i];
-        }
-
-        for i in 0..self.sample {
-            buffer1[i] = T::zero();
-        }
-
-        for i in 0..self.sample {
-            for j in 0..self.sample {
-                buffer1[i] += self.inv_cov[i][j] * k[j];
-            }
-            buffer2 += k[i] * buffer1[i];
-        }
+        // kᵀ K^-1 v
+        let quadratic = |v: &[T]| {
+            self.inv_cov.iter().zip(&k).fold(T::zero(), |acc, (row, &ki)| {
+                acc + ki * row.iter().zip(v).fold(T::zero(), |acc, (&a, &b)| acc + a * b)
+            })
+        };
+        let mean: T = quadratic(&self.y_sample);
+        let buffer2: T = quadratic(&k);
 
         let stdev: T = ((self.kernel)(x, x) - buffer2 + self.sense_variance)
             .abs()
@@ -113,21 +114,21 @@ impl<T: Float + AddAssign + MulAssign> GaussianProcessRegression<T> {
     }
 }
 
-fn inverse<T: Float + MulAssign>(m: &Vec<Vec<T>>) -> Option<Vec<Vec<T>>> {
+fn inverse<T: Float + MulAssign>(m: &[Vec<T>]) -> Option<Vec<Vec<T>>> {
     let vlen: usize = m.len();
 
-    let mut m1: Vec<Vec<T>> = m.clone();
+    let mut m1: Vec<Vec<T>> = m.to_vec();
     let mut m2: Vec<Vec<T>> = vec![vec![T::zero(); vlen]; vlen];
-    for i in 0..vlen {
-        m2[i][i] = T::one();
+    for (i, row) in m2.iter_mut().enumerate() {
+        row[i] = T::one();
     }
 
     for i in 0..vlen {
         let mut max_row_option: usize = 0;
         let mut max_value_option: T = T::zero();
-        for j in i..vlen {
-            if m1[j][i].abs() > max_value_option {
-                max_value_option = m1[j][i].abs();
+        for (j, row) in m1.iter().enumerate().skip(i) {
+            if row[i].abs() > max_value_option {
+                max_value_option = row[i].abs();
                 max_row_option = j;
             }
         }
