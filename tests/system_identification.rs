@@ -497,3 +497,194 @@ fn test_srivc_with_delay() {
     println!("Noisy ({noise_ratio} RMS): {:.3} ({} iterations), error {err:e}", result.model, result.iterations);
     assert!(result.converged && err < 1e-1, "with delay and noise: {} ({} iterations), error {err:e}", result.model, result.iterations);
 }
+
+/// `Validation`: simulation of continuous / discrete models against the measured output, mean
+/// squared residual and BIC.
+#[test]
+fn test_validation_bic() {
+    use dsmc::system_identification::validation::{Validation, ValidationError};
+    use dsmc::Discrete;
+    use std::f64::consts::PI;
+
+    // Uniform (0, 1) and standard normal pseudo-random numbers (xorshift64, Box-Muller)
+    let mut state: u64 = 0x2545_f491_4f6c_dd1d;
+    let mut uniform = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        ((state >> 11) as f64 + 0.5) / (1u64 << 53) as f64
+    };
+    let mut gaussian = move || (-2.0 * uniform().ln()).sqrt() * (2.0 * PI * uniform()).cos();
+
+    let ts: f64 = 1e-3;
+    let n_samples = 10000;
+    let delay = 3;
+    let plant = TransferFunction::continuous(&[1000.0], &[1.0, 20.0, 1000.0]);
+    let u: Vec<f64> = (0..n_samples).map(|_| gaussian()).collect();
+    let mut system = exact_discretize::DiscretizedSystem::from_tf(&plant, ts).unwrap();
+    let y0: Vec<f64> = (0..n_samples)
+        .map(|k| system.update(&[if k >= delay { u[k - delay] } else { 0.0 }]).unwrap()[0])
+        .collect();
+
+    // The true model reproduces the noise-free output
+    let validation = Validation::continuous(&plant, delay, ts, &u, &y0).unwrap();
+    let max_residual = validation.residual.iter().fold(0.0, |acc: f64, v| acc.max(v.abs()));
+    assert!(max_residual < 1e-10, "continuous: residual {max_residual:e}");
+
+    // With white noise, V is the noise variance and BIC = N ln V + p ln N
+    let sigma = 0.01;
+    let y: Vec<f64> = y0.iter().map(|v| v + sigma * gaussian()).collect();
+    let validation = Validation::continuous(&plant, delay, ts, &u, &y).unwrap();
+    let v = validation.mse();
+    assert!((v / (sigma * sigma) - 1.0).abs() < 0.05, "mse {v:e}");
+    let n = n_samples as f64;
+    assert!((validation.bic(3) - (n * v.ln() + 3.0 * n.ln())).abs() < 1e-9);
+
+    // A wrong delay or a missing pole is penalized
+    let wrong_delay = Validation::continuous(&plant, delay + 2, ts, &u, &y).unwrap();
+    let first_order = TransferFunction::continuous(&[50.0], &[1.0, 50.0]);
+    let wrong_order = Validation::continuous(&first_order, delay, ts, &u, &y).unwrap();
+    println!("BIC: true {:.1}, wrong delay {:.1}, first order {:.1}", validation.bic(3), wrong_delay.bic(3), wrong_order.bic(2));
+    assert!(wrong_delay.bic(3) > validation.bic(3) + 10.0 * n.ln());
+    assert!(wrong_order.bic(2) > validation.bic(3) + 10.0 * n.ln());
+
+    // Evaluation on the second half only
+    let second_half = validation.clone().evaluated_from(n_samples / 2);
+    assert_eq!(second_half.samples(), n_samples / 2);
+    assert!((second_half.mse() / (sigma * sigma) - 1.0).abs() < 0.1);
+
+    // Discrete-time model: y[k] = 1.5 y[k-1] - 0.7 y[k-2] + u[k-1] + 0.5 u[k-2]
+    let g_z = TransferFunction::<f64, Discrete>::discrete(&[1.0, 0.5], &[1.0, -1.5, 0.7]);
+    let mut y_arx = vec![0.0; n_samples];
+    for k in 0..n_samples {
+        let past = |x: &[f64], i: usize| if k >= i { x[k - i] } else { 0.0 };
+        y_arx[k] = 1.5 * past(&y_arx, 1) - 0.7 * past(&y_arx, 2) + past(&u, 1) + 0.5 * past(&u, 2);
+    }
+    let validation = Validation::discrete(&g_z, &u, &y_arx).unwrap();
+    let max_residual = validation.residual.iter().fold(0.0, |acc: f64, v| acc.max(v.abs()));
+    assert!(max_residual < 1e-10, "discrete: residual {max_residual:e}");
+
+    // Errors
+    let improper = TransferFunction::continuous(&[1.0, 0.0, 0.0], &[1.0, 1.0]);
+    assert!(matches!(Validation::continuous(&improper, 0, ts, &u, &y), Err(ValidationError::Improper { .. })));
+    assert!(matches!(Validation::continuous(&plant, 0, ts, &u, &y[1..]), Err(ValidationError::LengthMismatch { .. })));
+}
+
+/// Cross-correlation test of the residual and the input: within the bound for the true model, far
+/// outside for a wrong delay or a missing pole, with a white and with a colored (multisine) input.
+#[test]
+fn test_validation_cross_correlation() {
+    use dsmc::system_identification::validation::Validation;
+    use std::f64::consts::PI;
+
+    let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mut uniform = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        ((state >> 11) as f64 + 0.5) / (1u64 << 53) as f64
+    };
+    let mut gaussian = move || (-2.0 * uniform().ln()).sqrt() * (2.0 * PI * uniform()).cos();
+
+    let ts: f64 = 1e-3;
+    let n_samples = 20000;
+    let delay = 3;
+    let plant = TransferFunction::continuous(&[1000.0], &[1.0, 20.0, 1000.0]);
+    let first_order = TransferFunction::continuous(&[50.0], &[1.0, 50.0]);
+    let (max_lag, z) = (50, 2.58);
+
+    let white: Vec<f64> = (0..n_samples).map(|_| gaussian()).collect();
+    let phases: Vec<f64> = (0..40).map(|_| 2.0 * PI * uniform()).collect();
+    let multisine: Vec<f64> = (0..n_samples)
+        .map(|k| phases.iter().enumerate().map(|(i, p)| (2.0 * PI * (i + 1) as f64 * k as f64 * ts + p).sin()).sum::<f64>())
+        .collect();
+
+    for (name, u) in [("white", white), ("multisine", multisine)] {
+        let mut system = exact_discretize::DiscretizedSystem::from_tf(&plant, ts).unwrap();
+        let y0: Vec<f64> = (0..n_samples)
+            .map(|k| system.update(&[if k >= delay { u[k - delay] } else { 0.0 }]).unwrap()[0])
+            .collect();
+        let rms = (y0.iter().map(|v| v * v).sum::<f64>() / n_samples as f64).sqrt();
+        let y: Vec<f64> = y0.iter().map(|v| v + 0.1 * rms * gaussian()).collect();
+
+        let right = Validation::continuous(&plant, delay, ts, &u, &y).unwrap().cross_correlation(max_lag, z);
+        let wrong_delay = Validation::continuous(&plant, delay + 1, ts, &u, &y).unwrap().cross_correlation(max_lag, z);
+        let wrong_order = Validation::continuous(&first_order, delay, ts, &u, &y).unwrap().cross_correlation(max_lag, z);
+        for (model, c) in [("true", &right), ("wrong delay", &wrong_delay), ("first order", &wrong_order)] {
+            println!("{name} input, {model}: bound {:.4}, outside {:.1} %, max ratio {:.2}", c.bound, 100.0 * c.fraction_outside(), c.max_ratio());
+        }
+        // 99 % per lag: a few percent outside at most for the true model
+        assert!(right.fraction_outside() < 0.05 && right.max_ratio() < 1.5, "{name}: true model {:?}", right.outside());
+        assert!(wrong_delay.max_ratio() > 2.0 && wrong_delay.fraction_outside() > 0.1, "{name}: wrong delay");
+        assert!(wrong_order.max_ratio() > 2.0 && wrong_order.fraction_outside() > 0.1, "{name}: first order");
+    }
+}
+
+/// Line test with a periodic multisine: the true model is within the bound with white and with
+/// colored noise (the noise level is estimated per line), wrong models are far outside.
+#[test]
+fn test_validation_line_test() {
+    use dsmc::system_identification::validation::{Validation, ValidationError};
+    use std::f64::consts::PI;
+
+    let mut state: u64 = 0x2545_f491_4f6c_dd1d;
+    let mut uniform = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        ((state >> 11) as f64 + 0.5) / (1u64 << 53) as f64
+    };
+    let mut gaussian = move || (-2.0 * uniform().ln()).sqrt() * (2.0 * PI * uniform()).cos();
+
+    let ts: f64 = 1e-3;
+    let period = 1000; // 1 s: lines at 1 Hz spacing
+    let lines: Vec<usize> = (1..=40).collect();
+    let n_samples = 6 * period; // the first period (transient) is not evaluated: P = 5
+    let delay = 3;
+    let plant = TransferFunction::continuous(&[1000.0], &[1.0, 20.0, 1000.0]);
+    let first_order = TransferFunction::continuous(&[50.0], &[1.0, 50.0]);
+
+    let phases: Vec<f64> = lines.iter().map(|_| 2.0 * PI * uniform()).collect();
+    let u: Vec<f64> = (0..n_samples)
+        .map(|k| lines.iter().zip(&phases).map(|(&l, p)| (2.0 * PI * l as f64 * k as f64 / period as f64 + p).sin()).sum::<f64>())
+        .collect();
+    let mut system = exact_discretize::DiscretizedSystem::from_tf(&plant, ts).unwrap();
+    let y0: Vec<f64> = (0..n_samples)
+        .map(|k| system.update(&[if k >= delay { u[k - delay] } else { 0.0 }]).unwrap()[0])
+        .collect();
+    let rms = (y0.iter().map(|v| v * v).sum::<f64>() / n_samples as f64).sqrt();
+
+    // White noise, and noise of the same power low-passed at ~5 Hz (concentrated at the low lines)
+    let white: Vec<f64> = (0..n_samples).map(|_| 0.1 * rms * gaussian()).collect();
+    let mut colored = vec![0.0; n_samples];
+    for k in 1..n_samples {
+        colored[k] = 0.97 * colored[k - 1] + (1.0 - 0.97f64 * 0.97).sqrt() * 0.1 * rms * gaussian();
+    }
+
+    for (name, noise) in [("white", &white), ("colored", &colored)] {
+        let y: Vec<f64> = y0.iter().zip(noise.iter()).map(|(a, b)| a + b).collect();
+        let test = |model: &TransferFunction<f64>, nk: usize| {
+            Validation::continuous(model, nk, ts, &u, &y).unwrap().evaluated_from(period).line_test(period, &lines, 0.99).unwrap()
+        };
+        let (right, wrong_delay, wrong_order) = (test(&plant, delay), test(&plant, delay + 1), test(&first_order, delay));
+        for (model, t) in [("true", &right), ("wrong delay", &wrong_delay), ("first order", &wrong_order)] {
+            println!(
+                "{name} noise, {model}: P = {}, bound {:.2}, outside {:.1} %, mean F {:.2} (expected {:.2}), relative error {:.4}",
+                t.periods, t.bound, 100.0 * t.fraction_outside(), t.mean_statistic(), t.expected_statistic(), t.rms_relative_error()
+            );
+        }
+        assert_eq!(right.periods, 5);
+        assert!(right.fraction_outside() <= 0.05 && right.mean_statistic() < 2.0 * right.expected_statistic(), "{name}: true model");
+        // One sample of delay matters at 5 .. 20 Hz, where the colored noise is ~3 times the white
+        // one: there the shift is within the noise, and the test rightly does not reject it.
+        if name == "white" {
+            assert!(wrong_delay.fraction_outside() > 0.15 && wrong_delay.mean_statistic() > 3.0 * right.expected_statistic(), "{name}: wrong delay");
+        }
+        assert!(wrong_order.fraction_outside() > 0.5 && wrong_order.mean_statistic() > 10.0 * right.expected_statistic(), "{name}: first order");
+    }
+
+    // Errors
+    let validation = Validation::continuous(&plant, delay, ts, &u, &y0).unwrap();
+    assert!(matches!(validation.clone().evaluated_from(5 * period).line_test(period, &lines, 0.99), Err(ValidationError::TooFewPeriods { periods: 1 })));
+    assert!(matches!(validation.line_test(period, &[600], 0.99), Err(ValidationError::InvalidLine { line: 600, .. })));
+}

@@ -19,7 +19,7 @@ space models, discretization, frequency analysis, trajectory generation, feedfor
 | **Trajectories** | Modified trapezoid / sine / constant velocity, cycloid, harmonic, smoothstep of any smoothness |
 | **Feedforward** | Multirate perfect tracking control (PTC), with pre-actuation for nonminimum-phase plants |
 | **Signal processing** | Pseudo-differentiator, delay |
-| **System identification** | ARX models and linear regressions by least squares or Kalman filter, instrumental variables (IV) for ARX models, SRIVC for continuous-time models, Levy / Sanathanan-Koerner, vector fitting, Gaussian process regression |
+| **System identification** | ARX models and linear regressions by least squares or Kalman filter, instrumental variables (IV) for ARX models, SRIVC for continuous-time models, model validation (BIC, residual-input cross-correlation, test at the excited lines of a periodic input), Levy / Sanathanan-Koerner, vector fitting, Gaussian process regression |
 | **Logging** | CSV output of any `Serialize` value |
 
 ## Installation
@@ -197,6 +197,32 @@ let result = iv::srivc::identify(
     &u, &y, ts, 0, 2, &Initialization::StateVariableFilter(30.0), &SrivcOptions::default(),
 ).unwrap();
 let g_s = result.model;
+```
+
+An identified model is validated on another experiment by simulating it with the measured input:
+BIC for comparing model structures, and tests of the residual (it must not depend on the input,
+and, with a periodic input, must be at the noise level at every excited line):
+
+```rust
+use dsmc::tf;
+use dsmc::discretize::exact_discretize::DiscretizedSystem;
+use dsmc::system_identification::validation::Validation;
+
+let ts = 1e-3;
+let period = 1000; // multisine of period 1 s, lines at 1 .. 40 Hz
+let lines: Vec<usize> = (1..=40).collect();
+let u: Vec<f64> = (0..6 * period)
+    .map(|k| lines.iter().map(|&l| (2.0 * std::f64::consts::PI * (l * k) as f64 / period as f64 + l as f64).sin()).sum())
+    .collect();
+let g_s = tf!("1000 / (s^2 + 20 s + 1000)");
+let mut plant = DiscretizedSystem::from_tf(&g_s, ts).unwrap();
+let y: Vec<f64> = u.iter().map(|&uk| plant.update(&[uk]).unwrap()[0]).collect(); // + noise
+
+let validation = Validation::continuous(&g_s, 0, ts, &u, &y).unwrap();
+let bic = validation.bic(3); // N ln V + p ln N, p = n + m + 1
+let correlation = validation.cross_correlation(50, 2.58); // r(τ) within ±bound at 99 % per lag
+let line_test = validation.evaluated_from(period).line_test(period, &lines, 0.99).unwrap();
+println!("BIC {bic}, lags outside {}, lines outside {}", correlation.fraction_outside(), line_test.fraction_outside());
 ```
 
 From measured frequency responses (e.g. `dsmc::fft::welch`), a continuous-time model can be fitted:
