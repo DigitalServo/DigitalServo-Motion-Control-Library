@@ -5,70 +5,50 @@ use nalgebra::{ComplexField, DMatrix, DVector};
 use num_traits::Float;
 
 use crate::{Discrete, TransferFunction};
+use crate::system_identification::arx::Arx;
 
 /// Least-squares identification of the ARX model
 /// `y[k] = Σ_{i=1..na} a_i y[k-i] + Σ_{i=0..nb} b_i u[k-nk-i]` from sequential data
 /// (`na = state_order`, `nb = input_order`, `nk = input_delay`, 0 unless set by `with_input_delay`).
 /// Call `add` every sample with `u[k]`, `y[k-1]` and `y[k]`, then `identify`.
 pub struct DataBuffer<T> {
-    /// Input history `u[k], u[k-1], ..., u[k-nk-nb]`.
-    pub u: DVector<T>,
-    /// Output history `y[k-1], ..., y[k-na]`.
-    pub x: DVector<T>,
+    /// Model; `identify` sets `arx.parameter`.
+    pub arx: Arx<T>,
     psi_sum: DVector<T>,
     phi_sum: DMatrix<T>,
     y2_sum: T,
     count: usize,
-    input_order: usize,
-    state_order: usize,
-    input_delay: usize,
 }
 
 impl<T: Float + AddAssign + MulAssign + ComplexField> DataBuffer<T> {
     /// `input_order`: `nb`, `state_order`: `na`.
     pub fn new(input_order: usize, state_order: usize) -> Self {
+        Self::from_arx(Arx::new(input_order, state_order))
+    }
+
+    /// Least squares of the given model structure.
+    pub fn from_arx(arx: Arx<T>) -> Self {
+        let n = arx.parameter_len();
         Self {
-            u: DVector::zeros(input_order + 1),
-            x: DVector::zeros(state_order),
-            psi_sum: DVector::zeros(input_order + state_order + 1),
-            phi_sum: DMatrix::zeros(input_order + state_order + 1, input_order + state_order + 1),
+            arx,
+            psi_sum: DVector::zeros(n),
+            phi_sum: DMatrix::zeros(n, n),
             y2_sum: T::zero(),
             count: 0,
-            input_order,
-            state_order,
-            input_delay: 0,
         }
     }
 
     /// Input delay `nk` \[samples\]: the model uses `u[k-nk] .. u[k-nk-nb]`, and `identify` gives
     /// `z^-nk B(z) / A(z)`. Set it before adding data.
     pub fn with_input_delay(mut self, input_delay: usize) -> Self {
-        self.input_delay = input_delay;
-        self.u = DVector::zeros(input_delay + self.input_order + 1);
+        self.arx = self.arx.with_input_delay(input_delay);
         self
     }
 
     /// Add one sample: input `u = u[k]`, previous output `x = y[k-1]`, and output `y = y[k]`.
     pub fn add(&mut self, u: T, x: T, y: T) {
-        //FIFO for input u
-        for i in (1..self.u.len()).rev() {
-            self.u[i] = self.u[i - 1]
-        }
-        self.u[0] = u;
-
-        //FIFO for state x
-        for i in (1..self.state_order).rev() {
-            self.x[i] = self.x[i - 1]
-        }
-        self.x[0] = x;
-
-        let mut phi = DVector::zeros(self.input_order + self.state_order + 1);
-        for i in 0..self.state_order {
-            phi[i] = self.x[i]
-        }
-        for i in 0..(self.input_order + 1) {
-            phi[i + self.state_order] = self.u[i + self.input_delay]
-        }
+        self.arx.push(u, x);
+        let phi = self.arx.regressor();
 
         self.psi_sum += &phi * y;
         self.phi_sum += &phi * &phi.transpose();
@@ -76,24 +56,25 @@ impl<T: Float + AddAssign + MulAssign + ComplexField> DataBuffer<T> {
         self.count += 1;
     }
 
-    fn parameters(&self) -> Option<DVector<T>> {
+    fn solve(&self) -> Option<DVector<T>> {
         self.phi_sum.clone().try_inverse().map(|inv| &inv * &self.psi_sum)
     }
 
     /// Mean squared one-step prediction error `Σ (y - φᵀθ)^2 / N = (Σ y^2 - θᵀ Σ φ y) / N`.
     pub fn loss(&self) -> Option<T> {
-        let theta = self.parameters()?;
+        let theta = self.solve()?;
         let count = T::from(self.count.max(1)).unwrap();
         Some(((self.y2_sum - theta.dot(&self.psi_sum)) / count).max(T::zero()))
     }
 
-    /// Identified `G(z)`; `None` if the data do not determine the parameters (singular normal equations).
-    pub fn identify(&self) -> Option<TransferFunction<T, Discrete>> {
-        let theta = self.parameters()?;
-        let (a, b) = theta.as_slice().split_at(self.state_order);
-        Some(crate::system_identification::arx::transfer_function(a, b, self.input_delay))
+    /// Identify the parameters into `arx.parameter` and return `G(z)`; `None` (parameters unchanged)
+    /// if the data do not determine them (singular normal equations).
+    pub fn identify(&mut self) -> Option<TransferFunction<T, Discrete>> {
+        self.arx.parameter = self.solve()?;
+        Some(self.arx.transfer_function())
     }
 }
+
 
 /// Result of `estimate_input_delay`.
 #[derive(Clone, Debug)]
@@ -121,7 +102,7 @@ pub fn estimate_input_delay<T>(
 where
     T: Float + AddAssign + MulAssign + ComplexField,
 {
-    let buffers: Vec<DataBuffer<T>> = (0..=max_delay)
+    let mut buffers: Vec<DataBuffer<T>> = (0..=max_delay)
         .map(|nk| {
             let mut buffer = DataBuffer::new(input_order, state_order).with_input_delay(nk);
             for (k, (&uk, &yk)) in u.iter().zip(y).enumerate() {

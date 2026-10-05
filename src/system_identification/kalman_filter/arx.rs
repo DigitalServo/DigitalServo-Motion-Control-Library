@@ -1,10 +1,11 @@
 //! Recursive (Kalman filter) identification of an ARX model.
 
 use std::ops::{AddAssign, DivAssign, MulAssign, SubAssign};
-use nalgebra::{DMatrix, DVector, Scalar};
+use nalgebra::{DMatrix, Scalar};
 use num_traits::Float;
 
 use crate::{Discrete, TransferFunction};
+use crate::system_identification::arx::Arx;
 
 /// Recursive identification of the ARX model
 /// `y[k] = Σ_{i=1..na} a_i y[k-i] + Σ_{i=0..nb} b_i u[k-nk-i]`
@@ -12,18 +13,11 @@ use crate::{Discrete, TransferFunction};
 /// Call `update` every sample with `u[k]`, `y[k-1]` and `y[k]`, then `identify`.
 pub struct KalmanFilter<T>
 {
-    /// Input history `u[k], u[k-1], ..., u[k-nk-nb]`.
-    pub u: DVector<T>,
-    /// Output history `y[k-1], ..., y[k-na]`.
-    pub x: DVector<T>,
-    /// Current estimate `[a_1, ..., a_na, b_0, ..., b_nb]`.
-    pub parameter: DVector<T>,
+    /// Model with the current estimate `arx.parameter`.
+    pub arx: Arx<T>,
     covariance: DMatrix<T>,
     sigma_v: DMatrix<T>,
     sigma_w: T,
-    input_order: usize,
-    state_order: usize,
-    input_delay: usize,
 }
 
 impl<T: Float + AddAssign + SubAssign + MulAssign + DivAssign + Scalar> KalmanFilter<T>
@@ -31,50 +25,33 @@ impl<T: Float + AddAssign + SubAssign + MulAssign + DivAssign + Scalar> KalmanFi
     /// `input_order`: `nb`, `state_order`: `na`, `sigma_v`: variance of the parameter random walk,
     /// `sigma_w`: variance of the measurement noise, `cov_0`: initial covariance of the parameters.
     pub fn new(input_order: usize, state_order: usize, sigma_v: T, sigma_w: T, cov_0: T) -> Self {
+        Self::from_arx(Arx::new(input_order, state_order), sigma_v, sigma_w, cov_0)
+    }
+
+    /// Kalman filter of the given model structure (see `new` for the other arguments).
+    pub fn from_arx(arx: Arx<T>, sigma_v: T, sigma_w: T, cov_0: T) -> Self {
+        let n = arx.parameter_len();
         Self {
-            u: DVector::zeros(input_order + 1),
-            x: DVector::zeros(state_order),
-            parameter: DVector::zeros(input_order + state_order + 1),
-            covariance: DMatrix::identity(input_order + state_order + 1, input_order + state_order + 1) * cov_0,
-            sigma_v: DMatrix::identity(input_order + state_order + 1, input_order + state_order + 1) * sigma_v,
+            arx,
+            covariance: DMatrix::identity(n, n) * cov_0,
+            sigma_v: DMatrix::identity(n, n) * sigma_v,
             sigma_w,
-            input_order,
-            state_order,
-            input_delay: 0,
         }
     }
 
     /// Input delay `nk` \[samples\]: the model uses `u[k-nk] .. u[k-nk-nb]`, and `identify` gives
     /// `z^-nk B(z) / A(z)`. Set it before updating.
     pub fn with_input_delay(mut self, input_delay: usize) -> Self {
-        self.input_delay = input_delay;
-        self.u = DVector::zeros(input_delay + self.input_order + 1);
+        self.arx = self.arx.with_input_delay(input_delay);
         self
     }
 
     /// Update with input `u = u[k]`, previous output `x = y[k-1]`, and output `y = y[k]`.
     pub fn update(&mut self, u: T, x: T, y: T) {
-        //FIFO for input u
-        for i in (1..self.u.len()).rev() {
-            self.u[i] = self.u[i - 1]
-        }
-        self.u[0] = u;
+        self.arx.push(u, x);
+        let phi = self.arx.regressor();
 
-        //FIFO for state x
-        for i in (1..self.state_order).rev() {
-            self.x[i] = self.x[i - 1]
-        }
-        self.x[0] = x;
-
-        let mut phi: DVector<T> = DVector::zeros(self.input_order + self.state_order + 1);
-        for i in 0..self.state_order {
-            phi[i] = self.x[i]
-        }
-        for i in 0..(self.input_order + 1) {
-            phi[i + self.state_order] = self.u[i + self.input_delay]
-        }
-
-        let y_est: T = phi.dot(&self.parameter);
+        let y_est: T = phi.dot(&self.arx.parameter);
         let y_err: T = y - y_est;
 
         //Predict step
@@ -86,14 +63,13 @@ impl<T: Float + AddAssign + SubAssign + MulAssign + DivAssign + Scalar> KalmanFi
         let uncertainty_observe: T = uncertainty_sense + uncertainty_predict;
 
         let x = &self.covariance * &phi;
-        self.parameter += (&x * y_err) / uncertainty_observe;
+        self.arx.parameter += (&x * y_err) / uncertainty_observe;
         self.covariance -= (&x * &x.transpose()) / uncertainty_observe;
     }
 
     /// `G(z)` of the current estimate.
     pub fn identify(&self) -> TransferFunction<T, Discrete> {
-        let (a, b) = self.parameter.as_slice().split_at(self.state_order);
-        crate::system_identification::arx::transfer_function(a, b, self.input_delay)
+        self.arx.transfer_function()
     }
 
 }

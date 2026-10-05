@@ -19,7 +19,7 @@ space models, discretization, frequency analysis, trajectory generation, feedfor
 | **Trajectories** | Modified trapezoid / sine / constant velocity, cycloid, harmonic, smoothstep of any smoothness |
 | **Feedforward** | Multirate perfect tracking control (PTC), with pre-actuation for nonminimum-phase plants |
 | **Signal processing** | Pseudo-differentiator, delay |
-| **System identification** | ARX models and linear regressions by least squares or Kalman filter, Levy / Sanathanan-Koerner, vector fitting, Gaussian process regression |
+| **System identification** | ARX models and linear regressions by least squares or Kalman filter, instrumental variables (IV) for ARX models, SRIVC for continuous-time models, Levy / Sanathanan-Koerner, vector fitting, Gaussian process regression |
 | **Logging** | CSV output of any `Serialize` value |
 
 ## Installation
@@ -167,6 +167,36 @@ for k in 0..1000 {
 }
 let g_z = arx.identify().unwrap();
 println!("{g_z}");
+```
+
+With measurement noise on the output, least squares is biased. The instrumental variable (IV)
+method removes the bias, either for the discrete-time ARX model or, with SRIVC (simplified refined
+instrumental variable method for continuous-time systems), directly for `G(s)` from sampled data:
+
+```rust
+use dsmc::tf;
+use dsmc::discretize::exact_discretize::DiscretizedSystem;
+use dsmc::system_identification::{arx::Arx, iv};
+use dsmc::system_identification::iv::srivc::{Initialization, SrivcOptions};
+
+let ts = 1e-3;
+let mut plant = DiscretizedSystem::from_tf(&tf!("1000 / (s^2 + 20 s + 1000)"), ts).unwrap();
+let u: Vec<f64> = (0..5000)
+    .map(|k| (1..50).map(|i| (i as f64 * 10.0 * k as f64 * ts).sin()).sum::<f64>())
+    .collect();
+let y: Vec<f64> = u.iter().map(|&uk| plant.update(&[uk]).unwrap()[0]).collect(); // + noise
+
+// ARX model by least squares, then 3 IV iterations (each with the previous estimate as the
+// auxiliary model generating the instruments)
+let model = iv::arx::identify(&u, &y, &Arx::new(1, 2).with_input_delay(1), 3).unwrap();
+let g_z = model.transfer_function();
+
+// Continuous-time B(s) / A(s) with deg B = 0, deg A = 2, started from a state-variable filter
+// 1 / (s + 30)^2
+let result = iv::srivc::identify(
+    &u, &y, ts, 0, 2, &Initialization::StateVariableFilter(30.0), &SrivcOptions::default(),
+).unwrap();
+let g_s = result.model;
 ```
 
 From measured frequency responses (e.g. `dsmc::fft::welch`), a continuous-time model can be fitted:

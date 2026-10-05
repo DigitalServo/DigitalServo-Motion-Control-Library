@@ -36,7 +36,7 @@ fn test_lsm_arx() {
 
     let tf_c = TransferFunction::continuous(&[1000.0], &[1.0, 20.0, 1000.0]);
 
-    let (input_order, state_order) = (1, 2);
+    let (input_order, state_order) = (2, 2);
     // A plant driven through a zero-order hold has a one-sample delay (u[k] does not affect y[k]).
     let mut lsm = lsm::arx::DataBuffer::<f64>::new(input_order, state_order).with_input_delay(1);
     let mut kf = kalman_filter::arx::KalmanFilter::<f64>::new(input_order, state_order, 0.01, 0.01, 1.0e10).with_input_delay(1);
@@ -218,144 +218,6 @@ fn test_vector_fitting() {
 
 }
 
-
-#[test]
-fn test_identification_from_simulation() {
-    use num_complex::Complex;
-    use dsmc::discretize::bilinear_transform;
-    use dsmc::FrequencyResponse;
-    use dsmc::fft::{fft, welch};
-    use dsmc::logger::DataStorage;
-    use dsmc::system_identification::{kalman_filter,lsm};
-    use dsmc::BodeDiagramPlotter;
-
-    let iterations = 10000;
-
-    let ts: f64 = 1e-3;
-
-    let f_nyquist = 1.0 / (2.0 * ts);
-
-    let g = 20.0;
-    let tf_s = TransferFunction::continuous(&[g * g], &[1.0, 0.1 * g, g * g]);
-    let tf_z = bilinear_transform::discretize(&tf_s, ts);
-
-    let mut system = bilinear_transform::DiscretizedSystem::new(&tf_s, ts);
-
-    let simulator = |omega: f64| -> Complex<f64> {
-        let s = Complex::new(0.0, omega);
-        let numer = g * g;
-        let denom = s.powi(2) + 0.1 * g * s.powi(1) + g * g;
-        numer / denom
-    };
-
-    let input_order = 2;
-    let state_order = 2;
-    let mut lsm = lsm::arx::DataBuffer::<f64>::new(input_order, state_order);
-    let mut kf = kalman_filter::arx::KalmanFilter::<f64>::new(input_order, state_order, 0.01, 0.01, 1.0e10);
-
-    let mut input: Vec<f64> = Vec::with_capacity(iterations);
-    let mut output: Vec<f64> = Vec::with_capacity(iterations);
-
-    let mut t = 0.0;
-    for _ in 1..iterations {
-
-        let x_prev = system.output;
-
-        let mut u = 0.0;
-        for i in 1..=100 {
-            let omega = 2.0 * std::f64::consts::PI * (f_nyquist) * (i as f64) / 300.0;
-            u += 1.0 * (omega * t).sin();
-        }
-
-        input.push(u);
-        output.push(system.output);
-
-        let y = system.update(u);
-
-        lsm.add(u, x_prev, y);
-        kf.update(u, x_prev, y);
-
-        t += ts;
-    }
-
-    let s1 = {
-        let u = fft(&input, ts);
-        let y = fft(&output, ts);
-        let g: Vec<FrequencyResponse<f64>> = y
-            .iter()
-            .zip(u.iter())
-            .map(|(y, u)| FrequencyResponse{
-                omega: y.omega,
-                value: y.value / u.value,
-            })
-            .collect::<Vec<_>>();
-
-        g[5..].to_vec()
-    };
-
-    let mut s2: Vec<FrequencyResponse<f64>> = Vec::with_capacity(s1.len());
-    for x in &s1 {
-        let omega = x.omega;
-        let value = simulator(omega);
-        s2.push(FrequencyResponse { omega, value });
-    }
-
-    let (s3, _coherence) = welch(&input, &output, ts, 20);
-    let s3 = s3[1..40].to_vec();
-
-    let mut out = DataStorage::new("./out/si.csv", ',', false).unwrap();
-    for (v1, v2) in s1.iter().zip(s2.iter()) {
-        // out.add(&[v1.omega, v1.value.re, v1.value.im, v2.value.re, v2.value.im]).unwrap();
-        out.add(&[v1.omega, v1.value.norm(), v1.value.im.atan2(v1.value.re), v2.value.norm(), v2.value.im.atan2(v2.value.re)]).unwrap();
-    }
-
-    let mut out2 = DataStorage::new("./out/si2.csv", ',', false).unwrap();
-    for v in &s3 {
-        // out.add(&[v1.omega, v1.value.re, v1.value.im, v2.value.re, v2.value.im]).unwrap();
-        out2.add(&[v.omega, v.value.norm(), v.value.im.atan2(v.value.re)]).unwrap();
-    }
-
-    let tf_z_lsm = lsm.identify().unwrap();
-    let tf_z_kf = kf.identify();
-
-    // Noise-free data from the bilinear-discretized system: both methods should recover it.
-    let err_lsm = tf_distance(&tf_z_lsm, &tf_z);
-    let err_kf = tf_distance(&tf_z_kf, &tf_z);
-    assert!(err_lsm < TOL_LSM_ARX, "LS method: error {err_lsm:e}");
-    assert!(err_kf < TOL_KF_ARX, "Kalman filter: error {err_kf:e}");
-
-    let bode_plotter = BodeDiagramPlotter::<f64>::new(0.0, 50.0,  0.01, false);
-
-    let s4 = bode_plotter.frequency_response_z(&tf_z_lsm, ts);
-    let s5 = bode_plotter.frequency_response_z(&tf_z_kf, ts);
-
-    let mut out3 = DataStorage::new("./out/si3.csv", ',', false).unwrap();
-    for (&v1, &v2) in s4.iter().zip(s5.iter()) {
-        let omega = v1.frequency * 2.0 * std::f64::consts::PI;
-        out3.add(&[omega, v1.gain, v1.phase, v2.gain, v2.phase]).unwrap();
-    }
-
-    // use dsmc::system_identification::frequency_response::vector_fitting::{identify, VectorFittingOptions, VectorFittingResult};
-
-    // let mut rms = f64::INFINITY;
-    // let mut ret: Option<(usize, VectorFittingResult<f64>)> = None;
-
-    // let opts = VectorFittingOptions::default();
-    // for order in 1..=3 {
-    //     let result = identify(&s3, order, &opts).unwrap();
-    //     if rms > *result.rms_errors.last().unwrap() {
-    //         rms = *result.rms_errors.last().unwrap();
-    //         ret = Some((order, result))
-    //     }
-    // }
-
-    // let (_, result) = ret.unwrap();
-
-    // let tf: TransferFunction<f64> = result.into();
-    // println!("Transfer function: {:.2?}", tf);
-
-}
-
 /// ARX models with input order != state order: `y[k] = Σ a_i y[k-i] + Σ b_i u[k-i]` is
 /// `(b_0 + b_1 z^-1 + ...) / (1 - a_1 z^-1 - ...)`, i.e. polynomials in z of degree max(na, nb).
 #[test]
@@ -455,4 +317,183 @@ fn test_arx_input_delay() {
         let err = got.iter().zip(&expected).map(|(x, e)| (x - e).abs() / e.abs().max(1.0)).fold(0.0, f64::max);
         assert!(err < 1e-4, "{name}: {g}, relative error {err:e}");
     }
+}
+
+/// Output-error data `y = G u + v` with white measurement noise `v`: least squares is biased since
+/// the past outputs in the regressor contain the noise, while the IV method recovers `G`.
+#[test]
+fn test_iv_arx() {
+    use dsmc::system_identification::{arx::Arx, iv, lsm};
+    use dsmc::Discrete;
+
+    // Uniform pseudo-random numbers in [-1, 1) (xorshift64)
+    let mut state: u64 = 0x2545_f491_4f6c_dd1d;
+    let mut rand = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state >> 11) as f64 / (1u64 << 52) as f64 - 1.0
+    };
+
+    // y0[k] = 1.5 y0[k-1] - 0.7 y0[k-2] + 1.0 u[k-1] + 0.5 u[k-2]: na = 2, nb = 1, nk = 1
+    let (a, b) = ([1.5, -0.7], [1.0, 0.5]);
+    let expected = TransferFunction::<f64, Discrete>::discrete(&[0.0, 1.0, 0.5], &[1.0, -1.5, 0.7]);
+
+    let n = 20000;
+    let (mut u, mut y0) = (vec![0.0; n], vec![0.0; n]);
+    for k in 0..n {
+        u[k] = rand();
+        let y = |i: usize| if k >= i { y0[k - i] } else { 0.0 };
+        let u = |i: usize| if k >= i { u[k - i] } else { 0.0 };
+        y0[k] = a[0] * y(1) + a[1] * y(2) + b[0] * u(1) + b[1] * u(2);
+    }
+    let structure = Arx::<f64>::new(1, 2).with_input_delay(1);
+
+    // Noise-free: IV recovers the plant exactly, like least squares.
+    let model = iv::arx::identify(&u, &y0, &structure, 1).unwrap();
+    let err = tf_distance(&model.transfer_function(), &expected);
+    assert!(err < TOL_LSM_ARX, "IV method (noise-free): error {err:e}");
+
+    // Noise with a standard deviation of ~30 % of that of y0
+    let rms = (y0.iter().map(|v| v * v).sum::<f64>() / n as f64).sqrt();
+    let y: Vec<f64> = y0.iter().map(|&v| v + 0.5 * rms * rand()).collect();
+
+    let mut lsm = lsm::arx::DataBuffer::from_arx(structure.clone());
+    for k in 0..n {
+        lsm.add(u[k], if k > 0 { y[k - 1] } else { 0.0 }, y[k]);
+    }
+    let err_lsm = tf_distance(&lsm.identify().unwrap(), &expected);
+
+    for iterations in [1, 3] {
+        let model = iv::arx::identify(&u, &y, &structure, iterations).unwrap();
+        let err_iv = tf_distance(&model.transfer_function(), &expected);
+        println!("LS error {err_lsm:e}, IV ({iterations} iterations) error {err_iv:e}");
+        assert!(err_iv < 0.05, "IV method ({iterations} iterations): error {err_iv:e}");
+        assert!(err_iv < 0.2 * err_lsm, "IV method ({iterations} iterations): error {err_iv:e}, LS {err_lsm:e}");
+    }
+}
+
+/// SRIVC: continuous-time `G(s)` from ZOH input / sampled output. Noise-free data are fitted
+/// exactly; with strong white output noise the least-squares state-variable-filter estimate (the
+/// SRIVC starting point, `max_iterations = 0`) is biased while SRIVC is not.
+#[test]
+fn test_srivc() {
+    use dsmc::system_identification::iv::srivc::{identify, Initialization, SrivcOptions};
+
+    // Uniform pseudo-random numbers in [-1, 1) (xorshift64)
+    let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mut rand = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state >> 11) as f64 / (1u64 << 52) as f64 - 1.0
+    };
+
+    // Max relative error of the coefficients (denominators normalized to monic)
+    let relative_error = |got: &TransferFunction<f64>, expected: &TransferFunction<f64>| {
+        let coefficients = |tf: &TransferFunction<f64>| {
+            let k = tf.denominator[0];
+            let mut c = vec![0.0; tf.denominator.len() - tf.numerator.len()];
+            c.extend(tf.numerator.iter().chain(tf.denominator.iter()).map(|c| c / k));
+            c
+        };
+        let (got, expected) = (coefficients(got), coefficients(expected));
+        assert_eq!(got.len(), expected.len());
+        got.iter().zip(&expected).map(|(x, e)| (x - e).abs() / e.abs().max(1.0)).fold(0.0, f64::max)
+    };
+
+    let ts: f64 = 1e-3;
+    let n_samples = 20000;
+    let init = Initialization::StateVariableFilter(30.0);
+    let options = SrivcOptions::default();
+
+    let cases = [
+        (TransferFunction::continuous(&[1000.0], &[1.0, 20.0, 1000.0]), 0, 2),
+        (TransferFunction::continuous(&[20.0, 1000.0], &[1.0, 20.0, 1000.0]), 1, 2),
+    ];
+    for (tf_c, m, n) in cases {
+        let mut system = exact_discretize::DiscretizedSystem::from_tf(&tf_c, ts).unwrap();
+        let u: Vec<f64> = (0..n_samples).map(|_| rand()).collect();
+        let y0: Vec<f64> = u.iter().map(|&uk| system.update(&[uk]).unwrap()[0]).collect();
+
+        let result = identify(&u, &y0, ts, m, n, &init, &options).unwrap();
+        let err = relative_error(&result.model, &tf_c);
+        assert!(result.converged && err < 1e-8, "noise-free: {} ({} iterations), error {err:e}", result.model, result.iterations);
+
+        // Noise with a standard deviation of ~2.3 times the RMS of y0
+        let rms = (y0.iter().map(|v| v * v).sum::<f64>() / n_samples as f64).sqrt();
+        let y: Vec<f64> = y0.iter().map(|&v| v + 4.0 * rms * rand()).collect();
+        let ls = identify(&u, &y, ts, m, n, &init, &SrivcOptions { max_iterations: 0, ..options.clone() }).unwrap();
+        let err_ls = relative_error(&ls.model, &tf_c);
+        let result = identify(&u, &y, ts, m, n, &init, &options).unwrap();
+        let err_iv = relative_error(&result.model, &tf_c);
+        assert!(result.converged, "noisy: not converged in {} iterations", result.iterations);
+        assert!(err_iv < 0.1, "SRIVC: {}, error {err_iv:e}", result.model);
+        assert!(err_iv < 0.3 * err_ls, "SRIVC error {err_iv:e}, LS-SVF {err_ls:e}");
+    }
+}
+
+#[test]
+fn test_srivc_with_delay() {
+    use dsmc::system_identification::iv::srivc::{identify, Initialization, SrivcOptions};
+    use std::f64::consts::PI;
+
+    let multisine = |t: f64| (1..30).fold(0.0, |sum, freq_seed| {
+        let freq = freq_seed as f64 * 1.0;
+        let omega = 2.0 * PI * freq;
+        sum + (omega * t).sin()
+    });
+
+    // Max relative error of the coefficients (denominators normalized to monic)
+    let relative_error = |got: &TransferFunction<f64>, expected: &TransferFunction<f64>| {
+        let coefficients = |tf: &TransferFunction<f64>| {
+            let k = tf.denominator[0];
+            let mut c = vec![0.0; tf.denominator.len() - tf.numerator.len()];
+            c.extend(tf.numerator.iter().chain(tf.denominator.iter()).map(|c| c / k));
+            c
+        };
+        let (got, expected) = (coefficients(got), coefficients(expected));
+        assert_eq!(got.len(), expected.len());
+        got.iter().zip(&expected).map(|(x, e)| (x - e).abs() / e.abs().max(1.0)).fold(0.0, f64::max)
+    };
+
+    let ts: f64 = 1e-3;
+    let n_samples = 20000;
+    let options = SrivcOptions::default();
+
+    // Input delay of 5 samples, started from a rough initial model
+    let tf_c = TransferFunction::continuous(&[1000.0], &[1.0, 20.0, 1000.0]);
+    let delay = 5;
+    let mut system = exact_discretize::DiscretizedSystem::from_tf(&tf_c, ts).unwrap();
+    let u: Vec<f64> = (0..n_samples).map(|i| multisine(i as f64 * ts)).collect();
+    let y0: Vec<f64> = (0..n_samples)
+        .map(|k| system.update(&[if k >= delay { u[k - delay] } else { 0.0 }]).unwrap()[0])
+        .collect();
+    let init = Initialization::Model(TransferFunction::continuous(&[500.0], &[1.0, 50.0, 700.0]));
+    let options = SrivcOptions { input_delay: delay, ..options };
+
+    let result = identify(&u, &y0, ts, 1, 2, &init, &options).unwrap();
+    let err = relative_error(&result.model, &tf_c);
+    println!("Noise-free: {:.3} ({} iterations), error {err:e}", result.model, result.iterations);
+    assert!(result.converged && err < 1e-8, "with delay: {} ({} iterations), error {err:e}", result.model, result.iterations);
+
+    // Gaussian white noise on the output (xorshift64 + Box-Muller), standard deviation
+    // `noise_ratio` times the RMS of y0
+    let mut state: u64 = 0x2545_f491_4f6c_dd1d;
+    let mut uniform = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        ((state >> 11) as f64 + 0.5) / (1u64 << 53) as f64
+    };
+    let mut gaussian = move || (-2.0 * uniform().ln()).sqrt() * (2.0 * PI * uniform()).cos();
+
+    let noise_ratio = 0.2;
+    let rms = (y0.iter().map(|v| v * v).sum::<f64>() / n_samples as f64).sqrt();
+    let y: Vec<f64> = y0.iter().map(|&v| v + noise_ratio * rms * gaussian()).collect();
+
+    let result = identify(&u, &y, ts, 1, 2, &init, &options).unwrap();
+    let err = relative_error(&result.model, &tf_c);
+    println!("Noisy ({noise_ratio} RMS): {:.3} ({} iterations), error {err:e}", result.model, result.iterations);
+    assert!(result.converged && err < 1e-1, "with delay and noise: {} ({} iterations), error {err:e}", result.model, result.iterations);
 }
