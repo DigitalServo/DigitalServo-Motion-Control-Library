@@ -5,7 +5,7 @@ use std::ops::AddAssign;
 
 use num_complex::Complex;
 use num_traits::{Float, FloatConst};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::system::roots_with_multiplicity;
@@ -15,7 +15,8 @@ use super::Method;
 use crate::{StateSpace, StateSpaceError, vieta_formula, Continuous, Discrete, Polynomial, TransferFunction, TransferFunctionWithDelay};
 
 /// Where the zeros of `G(s)` at `s = ∞` (one per relative degree) go in `s -> z`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "zero", rename_all = "snake_case")]
 pub enum ZerosAtInfinity {
     /// All of them to `z = -1` (the Nyquist frequency): `G(z)` is biproper.
     MinusOne,

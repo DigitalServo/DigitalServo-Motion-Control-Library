@@ -38,7 +38,7 @@ pub(crate) mod state_variable_filter;
 
 pub use bilinear_transform::Tustin;
 pub use matched_z_transform::{MatchedZ, ZerosAtInfinity};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 pub use state_variable_filter::InterSample;
 pub use zoh::Zoh;
 pub use matched_z_transform::MatchedZError;
@@ -63,7 +63,8 @@ pub trait Method<T, S> {
 
 /// Discretization method chosen at run time; works on every kind of system all of `Zoh`,
 /// `Tustin` and `MatchedZ` support (`TransferFunction`, `StateSpace`), with the same result.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DiscretizeMethod {
     /// Zero-order hold (`Zoh`).
     Zoh,
