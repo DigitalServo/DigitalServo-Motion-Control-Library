@@ -1,4 +1,4 @@
-use dsmc::discretize::exact_discretize::DiscretizedSystem;
+use dsmc::discretize::zoh::DiscretizedSystem;
 use dsmc::feedforward::ptc::{LiftedDiscretizedSystem, PtcError, ReferenceSignal};
 use dsmc::trajectory;
 use dsmc::laplace_transform::{PiecewisePolynomial, StableInverseError};

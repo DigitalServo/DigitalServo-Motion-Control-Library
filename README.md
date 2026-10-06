@@ -69,14 +69,14 @@ assert!((x(1.0) - (-1.0f64).exp()).abs() < 1e-9);
 
 ```rust
 use dsmc::tf;
-use dsmc::discretize::{bilinear_transform, exact_discretize, matched_z_transform};
-use dsmc::discretize::exact_discretize::DiscretizedSystem;
+use dsmc::discretize::{bilinear_transform, matched_z_transform, zoh};
+use dsmc::discretize::zoh::DiscretizedSystem;
 use dsmc::discretize::matched_z_transform::ZerosAtInfinity;
 
 let g = tf!("100 / (s + 100)");
 let ts = 1e-3;
 
-let g_zoh = exact_discretize::discretize(&g, ts).unwrap();
+let g_zoh = zoh::discretize(&g, ts).unwrap();
 let g_tustin = bilinear_transform::discretize(&g, ts);
 let g_matched = matched_z_transform::to_discrete(&g, ts, ZerosAtInfinity::MinusOne).unwrap();
 
@@ -128,7 +128,7 @@ csv.close().unwrap();
 
 ```rust
 use dsmc::tf;
-use dsmc::discretize::exact_discretize::DiscretizedSystem;
+use dsmc::discretize::zoh::DiscretizedSystem;
 use dsmc::feedforward::ptc::LiftedDiscretizedSystem;
 use dsmc::trajectory::{self, ModifiedSine, Trajectory};
 
@@ -150,7 +150,7 @@ let u = lifted.calculate_ptc_input_for_reference_output(&y_d, 900).unwrap();
 
 ```rust
 use dsmc::tf;
-use dsmc::discretize::exact_discretize::DiscretizedSystem;
+use dsmc::discretize::zoh::DiscretizedSystem;
 use dsmc::system_identification::lsm;
 
 let ts = 1e-3;
@@ -175,7 +175,7 @@ instrumental variable method for continuous-time systems), directly for `G(s)` f
 
 ```rust
 use dsmc::tf;
-use dsmc::discretize::exact_discretize::DiscretizedSystem;
+use dsmc::discretize::zoh::DiscretizedSystem;
 use dsmc::system_identification::{arx::Arx, iv};
 use dsmc::system_identification::iv::srivc::{Initialization, SrivcOptions};
 
@@ -215,7 +215,7 @@ noise model, the one-step prediction (`Validation::one_step_prediction`):
 
 ```rust
 use dsmc::tf;
-use dsmc::discretize::exact_discretize::DiscretizedSystem;
+use dsmc::discretize::zoh::DiscretizedSystem;
 use dsmc::system_identification::validation::Validation;
 
 let ts = 1e-3;

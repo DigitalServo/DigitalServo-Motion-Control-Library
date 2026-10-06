@@ -7,7 +7,7 @@ use num_traits::Float;
 use thiserror::Error;
 
 use super::ReferenceSignal;
-use crate::discretize::exact_discretize::DiscretizedSystem;
+use crate::discretize::zoh::DiscretizedSystem;
 use crate::laplace_transform::StableInverseError;
 use crate::{Continuous, Discrete, StateSpace, StateSpaceError};
 

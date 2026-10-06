@@ -3,7 +3,7 @@ fn test_smith_predictor_with_ptc() {
 
     use dsmc::{
         TransferFunction,
-        discretize::{bilinear_transform, exact_discretize::DiscretizedSystem},
+        discretize::{bilinear_transform, zoh::DiscretizedSystem},
         feedforward::ptc::LiftedDiscretizedSystem,
         logger::DataStorage,
         signal::Delayer,

@@ -2,7 +2,7 @@
 fn test_simulate() {
 
     use dsmc::logger::DataStorage;
-    use dsmc::{BodeDiagramPlotter, TransferFunction, discretize::exact_discretize};
+    use dsmc::{BodeDiagramPlotter, TransferFunction, discretize::zoh};
 
 
     let ts = 1e-4;
@@ -13,7 +13,7 @@ fn test_simulate() {
         let zeta = 0.0 + 2.0 / iter as f64 * i as f64;
 
         let system = TransferFunction::continuous(&[omega_c * omega_c], &[1.0, 2.0 * zeta * omega_c, omega_c * omega_c]);
-        let mut system_d = exact_discretize::DiscretizedSystem::from_tf(&system, ts).unwrap();
+        let mut system_d = zoh::DiscretizedSystem::from_tf(&system, ts).unwrap();
 
         let bode_plotter = BodeDiagramPlotter::<f64>::new(0.0, 10000.0 / (2.0 * std::f64::consts::PI), 0.1, true);
         let frequency_response = bode_plotter.frequency_response_s(&system);

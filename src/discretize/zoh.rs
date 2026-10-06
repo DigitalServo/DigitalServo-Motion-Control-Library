@@ -1,4 +1,4 @@
-//! Exact (zero-order hold, step-invariant) discretization.
+//! Zero-order hold (step-invariant, exact) discretization.
 
 use std::borrow::Borrow;
 
@@ -44,9 +44,9 @@ pub fn discretize_ssr<T: Float + ComplexField + RealField, S: Borrow<StateSpace<
 /// (the usual situation of a digital controller driving a plant through a D/A converter).
 ///
 /// ```
-/// use dsmc::{tf, discretize::exact_discretize};
+/// use dsmc::{tf, discretize::zoh};
 ///
-/// let g_z = exact_discretize::discretize(&tf!("100 / (s + 100)"), 1e-3).unwrap();
+/// let g_z = zoh::discretize(&tf!("100 / (s + 100)"), 1e-3).unwrap();
 /// ```
 pub fn discretize<T, S>(tf: S, ts: T) -> Result<TransferFunction<T, Discrete>, StateSpaceError>
 where

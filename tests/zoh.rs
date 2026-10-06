@@ -1,10 +1,10 @@
 use dsmc::{
-    StateSpace, TransferFunction, discretize::exact_discretize::{DiscretizedSystem, discretize_ssr}, logger::DataStorage
+    StateSpace, TransferFunction, discretize::zoh::{DiscretizedSystem, discretize_ssr}, logger::DataStorage
 };
 use nalgebra::dmatrix;
 
 #[test]
-fn test_exact_discretize_ssr() {
+fn test_zoh_ssr() {
 
     let ts = 1.0e-4;
 
@@ -36,10 +36,10 @@ fn test_exact_discretize_ssr() {
 }
 
 #[test]
-fn test_exact_discretize_system_ssr() {
+fn test_zoh_system_ssr() {
 
     let ts = 1.0e-4;
-    let mut storage = DataStorage::new("./out/exact_discretized_ssr_out.csv", ',', false).unwrap();
+    let mut storage = DataStorage::new("./out/zohd_ssr_out.csv", ',', false).unwrap();
 
     let g = 10.0;
     let system = StateSpace::new(
@@ -64,10 +64,10 @@ fn test_exact_discretize_system_ssr() {
 
 
 #[test]
-fn test_exact_discretize_system_tf() {
+fn test_zoh_system_tf() {
 
     let ts = 1.0e-4;
-    let mut storage = DataStorage::new("./out/exact_discretized_tf_out.csv", ',', false).unwrap();
+    let mut storage = DataStorage::new("./out/zohd_tf_out.csv", ',', false).unwrap();
 
     let g = 10.0;
     let system = TransferFunction::continuous(&[g * g], &[1.0, 2.0 * g, g * g]);
@@ -86,7 +86,7 @@ fn test_exact_discretize_system_tf() {
 }
 
 mod transfer_function {
-    use dsmc::discretize::{bilinear_transform, exact_discretize::discretize};
+    use dsmc::discretize::{bilinear_transform, zoh::discretize};
     use dsmc::{tf, Continuous, Polynomial, StateSpace, StateSpaceError, TransferFunction};
 
     const TS: f64 = 1e-3;
@@ -199,7 +199,7 @@ mod transfer_function {
     /// (N(0) = 0), and simulate the same step response as `discretize`.
     #[test]
     fn from_tf_is_general() {
-        use dsmc::discretize::exact_discretize::DiscretizedSystem;
+        use dsmc::discretize::zoh::DiscretizedSystem;
         for g in plants() {
             // `update` returns y[k] for u[k], like the difference equation of G(z).
             let expected = step_response_z(&discretize(&g, TS).unwrap(), 300);

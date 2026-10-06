@@ -34,7 +34,7 @@ fn test_trajectory() {
 }
 
 mod traits {
-    use dsmc::discretize::exact_discretize::DiscretizedSystem;
+    use dsmc::discretize::zoh::DiscretizedSystem;
     use dsmc::feedforward::ptc::{LiftedDiscretizedSystem, ReferenceSignal};
     use dsmc::tf;
     use dsmc::trajectory::{
