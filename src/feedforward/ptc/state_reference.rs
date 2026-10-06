@@ -10,7 +10,7 @@ use std::ops::AddAssign;
 /// State reference `x_d(t) = [ξ_d, ξ_d', ..., ξ_d^(n-1)]` for perfect tracking control by stable inversion.
 ///
 /// For `G(s) = N(s) / D(s)` (`n = deg D`) in the controllable canonical realization normalized by
-/// `N(0)` (`StateSpace::normalized_controllable_canonical`, used by `DiscretizedSystem::from_tf_normalized`),
+/// `N(0)` (`StateSpace::normalized_controllable_canonical`, used by `LiftedDiscretizedSystem::new`),
 /// the state is `x = [ξ, ξ', ..., ξ^(n-1)]` with `y = N(s) / N(0) ξ`, hence for a desired output `y_d`
 ///
 /// ```text

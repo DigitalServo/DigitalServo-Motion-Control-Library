@@ -7,12 +7,12 @@ use num_traits::Float;
 use thiserror::Error;
 
 use super::ReferenceSignal;
-use crate::discretize::zoh::DiscretizedSystem;
+use crate::discretize::Zoh;
 use crate::laplace_transform::StableInverseError;
 use crate::{Continuous, Discrete, StateSpace, StateSpaceError};
 
-/// `DiscretizedSystem` lifted over a frame of `order` samples, for multirate perfect tracking
-/// control. Built with `DiscretizedSystem::try_into`.
+/// Zero-order hold discretization of a continuous-time plant lifted over a frame of `order`
+/// samples, for multirate perfect tracking control. Built with `LiftedDiscretizedSystem::new`.
 ///
 /// The discretized plant `x[k+1] = A x[k] + B u[k]` is lifted over a frame of `n` samples
 /// (`n` = number of states): `x[(i+1)n] = A^n x[in] + B_lifted [u[in], ..., u[in+n-1]]`, so the
@@ -30,19 +30,22 @@ pub struct LiftedDiscretizedSystem<T> {
     inv_b: DMatrix<T>,
 }
 
-impl<T: Float + ComplexField + RealField> TryInto<LiftedDiscretizedSystem<T>> for DiscretizedSystem<T> {
-    type Error = StateSpaceError;
+impl<T: Float + ComplexField + RealField> LiftedDiscretizedSystem<T> {
+    /// Discretize `continuous` with sampling period `ts` (`Zoh`) and lift it over a
+    /// frame of `n` samples (`n` = number of states). For an output reference, `continuous` is
+    /// usually `StateSpace::normalized_controllable_canonical` of the plant (the state coordinates
+    /// of `ReferenceSignal::to_state_reference`); any realization works.
+    pub fn new<S: Borrow<StateSpace<T, Continuous>>>(continuous: S, ts: T) -> Result<Self, StateSpaceError> {
+        let continuous = continuous.borrow().clone();
+        let discrete = continuous.discretize(Zoh, ts)?;
 
-    fn try_into(self) -> Result<LiftedDiscretizedSystem<T>, Self::Error> {
-        let system = self.borrow();
-
-        let n = system.ssr.order.system;
-        let m = system.ssr.order.input;
+        let n = discrete.order.system;
+        let m = discrete.order.input;
 
         let order = n as u32;
 
-        let a = &system.ssr.a;
-        let b = &system.ssr.b;
+        let a = &discrete.a;
+        let b = &discrete.b;
 
         let a_lifted = a.pow(order);
 
@@ -55,21 +58,15 @@ impl<T: Float + ComplexField + RealField> TryInto<LiftedDiscretizedSystem<T>> fo
             a_power = a * &a_power;
         }
 
-        let d = DMatrix::<T>::zeros(system.ssr.order.output, order as usize);
+        let d = DMatrix::<T>::zeros(discrete.order.output, order as usize);
 
         let inv_b = b_lifted.clone()
             .try_inverse()
             .ok_or(StateSpaceError::SingularMatrix)?;
 
-        let ssr = StateSpace::new(a_lifted.clone(), b_lifted.clone(), system.ssr.c.clone(), d)?;
+        let ssr = StateSpace::new(a_lifted, b_lifted, discrete.c.clone(), d)?;
 
-        Ok(LiftedDiscretizedSystem {
-            continuous: system.continuous.clone(),
-            ssr,
-            ts: system.ts,
-            order,
-            inv_b
-        })
+        Ok(Self { continuous, ssr, ts, order, inv_b })
     }
 }
 

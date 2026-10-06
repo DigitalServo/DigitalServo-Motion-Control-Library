@@ -1,5 +1,5 @@
 use dsmc::{
-    BodeDiagramPlotter, TransferFunction, discretize::bilinear_transform::{DiscretizedSystem, discretize}, logger::DataStorage, tf
+    BodeDiagramPlotter, DiscreteSystem, TransferFunction, discretize::Tustin, logger::DataStorage, tf
 };
 
 #[test]
@@ -10,7 +10,7 @@ fn test_bilinear_transform() {
     let g = 2.0 * std::f64::consts::PI * 10.0;
 
     let tf_s = TransferFunction::continuous(&[g * g],  &[1.0, 0.01 * g, g * g]);
-    let tf_z = discretize(&tf_s, ts);
+    let tf_z = tf_s.discretize(Tustin, ts).unwrap();
 
     let bode_plotter = BodeDiagramPlotter::<f64>::new(0.0, 1000.0, 0.01, true);
 
@@ -35,7 +35,7 @@ fn test_bilinear_transform_filter() {
 
     let tf = TransferFunction::continuous(&[g * g], &[1.0, 2.0 * g, g * g]);
 
-    let mut filter = DiscretizedSystem::new(&tf, ts);
+    let mut filter = DiscreteSystem::try_from(&tf.discretize(Tustin, ts).unwrap()).unwrap();
 
     let mut t = 0.0;
     for _ in 0..20000 {
@@ -57,7 +57,7 @@ fn test_discretize_filter() {
 
     let g = 10.0;
     let tf = tf!("{g} / (s + {g})");
-    let tf_d = discretize(&tf, ts);
+    let tf_d = tf.discretize(Tustin, ts).unwrap();
 
     // s = a(z - 1)/(z + 1), a = 2/ts:
     // g / (s + g) = g(z + 1) / ((a + g)z + (g - a)), normalized so the leading denominator is 1.

@@ -34,9 +34,9 @@ fn test_trajectory() {
 }
 
 mod traits {
-    use dsmc::discretize::zoh::DiscretizedSystem;
+    use dsmc::discretize::Zoh;
     use dsmc::feedforward::ptc::{LiftedDiscretizedSystem, ReferenceSignal};
-    use dsmc::tf;
+    use dsmc::{tf, DiscreteSystem, StateSpace};
     use dsmc::trajectory::{
         Cycloid, ModifiedConstantVelocity, ModifiedSine, ModifiedTrapezoid, ReferenceTrajectory, Sin, SmoothPolynomial,
         Trajectory, TrajectoryKind,
@@ -119,8 +119,9 @@ mod traits {
     {
         let (ts, rest, duration) = (1e-4, 0.02, 0.05);
         let plant = tf!("(1 - 0.001s) / (0.0002s^2 + 0.05s)");
-        let mut model = DiscretizedSystem::from_tf(&plant, ts).unwrap();
-        let lifted: LiftedDiscretizedSystem<f64> = model.clone().try_into().unwrap();
+        let ssr = StateSpace::try_from(&plant).unwrap();
+        let mut model = DiscreteSystem::from(ssr.discretize(Zoh, ts).unwrap());
+        let lifted: LiftedDiscretizedSystem<f64> = LiftedDiscretizedSystem::new(&ssr, ts).unwrap();
         let samples = ((2.0 * rest + duration) / ts).round() as usize;
         let u = lifted
             .calculate_ptc_input_for_reference_output(&profile.reference(1.0, duration, rest), samples)

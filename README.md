@@ -13,7 +13,7 @@ space models, discretization, frequency analysis, trajectory generation, feedfor
 | Area | What you get |
 | --- | --- |
 | **Systems** | `TransferFunction` in `s` or `z` (the domain is a type parameter, so they cannot be mixed up), the `tf!` macro, arithmetic, pole-zero cancellation, poles / zeros, partial fractions; `StateSpace` |
-| **Discretization** | Zero-order hold (exact), bilinear (Tustin), matched z-transform in both directions, sample-by-sample simulators |
+| **Discretization** | Zero-order hold (exact), bilinear (Tustin), matched z-transform in both directions, each for transfer functions and state-space models, chosen by type or at run time (`DiscretizeMethod`); running a discrete-time `TransferFunction` or `StateSpace` sample by sample (`DiscreteSystem`: plant simulation, controllers, filters) |
 | **Frequency analysis** | `FrequencyTransferFunction` (`ω -> G(jω)`, including dead time), Bode diagram, Nyquist plot, FFT, Welch's method |
 | **Laplace transform** | Inverse Laplace transform, stable (non-causal) inverse of nonminimum-phase systems, piecewise-polynomial signals |
 | **Trajectories** | Modified trapezoid / sine / constant velocity, cycloid, harmonic, smoothstep of any smoothness |
@@ -68,20 +68,27 @@ assert!((x(1.0) - (-1.0f64).exp()).abs() < 1e-9);
 ### Discretization and simulation
 
 ```rust
-use dsmc::tf;
-use dsmc::discretize::{bilinear_transform, matched_z_transform, zoh};
-use dsmc::discretize::zoh::DiscretizedSystem;
-use dsmc::discretize::matched_z_transform::ZerosAtInfinity;
+use dsmc::{tf, DiscreteSystem, StateSpace};
+use dsmc::discretize::{DiscretizeMethod, MatchedZ, Tustin, Zoh, ZerosAtInfinity};
 
 let g = tf!("100 / (s + 100)");
 let ts = 1e-3;
 
-let g_zoh = zoh::discretize(&g, ts).unwrap();
-let g_tustin = bilinear_transform::discretize(&g, ts);
-let g_matched = matched_z_transform::to_discrete(&g, ts, ZerosAtInfinity::MinusOne).unwrap();
+let g_zoh = g.discretize(Zoh, ts).unwrap();
+let g_tustin = g.discretize(Tustin, ts).unwrap();
+let g_matched = g.discretize(MatchedZ(ZerosAtInfinity::MinusOne), ts).unwrap();
+let ss_tustin = StateSpace::try_from(&g).unwrap().discretize(Tustin, ts).unwrap();
 
-// Step response, one sample at a time
-let mut system = DiscretizedSystem::from_tf(&g, ts).unwrap();
+// The method chosen at run time
+let method = DiscretizeMethod::MatchedZ(ZerosAtInfinity::KeepOneDelay);
+let g_z = g.discretize(method, ts).unwrap();
+
+// Step response, one sample at a time: a DiscreteSystem runs a discrete-time transfer
+// function (its difference equation; single input and output: scalar in, scalar out)...
+let mut system = DiscreteSystem::try_from(&g_zoh).unwrap();
+let y: Vec<f64> = (0..100).map(|_| system.update(1.0)).collect();
+// ...or a discrete-time state-space model (any number of inputs / outputs)
+let mut system = DiscreteSystem::from(StateSpace::try_from(&g).unwrap().discretize(Zoh, ts).unwrap());
 let y: Vec<f64> = (0..100).map(|_| system.update(&[1.0]).unwrap()[0]).collect();
 ```
 
@@ -127,8 +134,7 @@ csv.close().unwrap();
 ### Trajectory and perfect tracking control
 
 ```rust
-use dsmc::tf;
-use dsmc::discretize::zoh::DiscretizedSystem;
+use dsmc::{tf, StateSpace};
 use dsmc::feedforward::ptc::LiftedDiscretizedSystem;
 use dsmc::trajectory::{self, ModifiedSine, Trajectory};
 
@@ -141,8 +147,8 @@ let ts = 1e-4;
 let plant = tf!("(1 - 0.001 s) / (s (0.005 s + 1) (0.001 s + 1))");
 let y_d = trajectory::smoothstep::piecewise(1.0, 0.05, 0.02, 4); // distance, duration, start, smoothness
 
-let model = DiscretizedSystem::from_tf_normalized(&plant, ts).unwrap();
-let lifted: LiftedDiscretizedSystem<f64> = model.try_into().unwrap();
+let model = StateSpace::normalized_controllable_canonical(&plant).unwrap();
+let lifted = LiftedDiscretizedSystem::new(&model, ts).unwrap();
 let u = lifted.calculate_ptc_input_for_reference_output(&y_d, 900).unwrap();
 ```
 
@@ -150,20 +156,22 @@ let u = lifted.calculate_ptc_input_for_reference_output(&y_d, 900).unwrap();
 
 ```rust
 use dsmc::tf;
-use dsmc::discretize::zoh::DiscretizedSystem;
+use dsmc::DiscreteSystem;
+use dsmc::discretize::Zoh;
 use dsmc::system_identification::lsm;
 
 let ts = 1e-3;
-let mut plant = DiscretizedSystem::from_tf(&tf!("1000 / (s^2 + 20 s + 1000)"), ts).unwrap();
+let mut plant = DiscreteSystem::try_from(&tf!("1000 / (s^2 + 20 s + 1000)").discretize(Zoh, ts).unwrap()).unwrap();
 
 // ARX model y[k] = a1 y[k-1] + a2 y[k-2] + b0 u[k-1] + b1 u[k-2]
 let mut arx = lsm::arx::DataBuffer::<f64>::new(1, 2).with_input_delay(1);
+let mut y_prev = 0.0;
 for k in 0..1000 {
     let t = k as f64 * ts;
     let u = (1..50).map(|i| (i as f64 * 10.0 * t).sin()).sum::<f64>();
-    let y_prev = plant.output[0];
-    let y = plant.update(&[u]).unwrap()[0];
+    let y = plant.update(u);
     arx.add(u, y_prev, y);
+    y_prev = y;
 }
 let g_z = arx.identify().unwrap();
 println!("{g_z}");
@@ -175,16 +183,17 @@ instrumental variable method for continuous-time systems), directly for `G(s)` f
 
 ```rust
 use dsmc::tf;
-use dsmc::discretize::zoh::DiscretizedSystem;
+use dsmc::DiscreteSystem;
+use dsmc::discretize::Zoh;
 use dsmc::system_identification::{arx::Arx, iv};
 use dsmc::system_identification::iv::srivc::{Initialization, SrivcOptions};
 
 let ts = 1e-3;
-let mut plant = DiscretizedSystem::from_tf(&tf!("1000 / (s^2 + 20 s + 1000)"), ts).unwrap();
+let mut plant = DiscreteSystem::try_from(&tf!("1000 / (s^2 + 20 s + 1000)").discretize(Zoh, ts).unwrap()).unwrap();
 let u: Vec<f64> = (0..5000)
     .map(|k| (1..50).map(|i| (i as f64 * 10.0 * k as f64 * ts).sin()).sum::<f64>())
     .collect();
-let y: Vec<f64> = u.iter().map(|&uk| plant.update(&[uk]).unwrap()[0]).collect(); // + noise
+let y: Vec<f64> = u.iter().map(|&uk| plant.update(uk)).collect(); // + noise
 
 // ARX model by least squares, then 3 IV iterations (each with the previous estimate as the
 // auxiliary model generating the instruments)
@@ -215,7 +224,8 @@ noise model, the one-step prediction (`Validation::one_step_prediction`):
 
 ```rust
 use dsmc::tf;
-use dsmc::discretize::zoh::DiscretizedSystem;
+use dsmc::DiscreteSystem;
+use dsmc::discretize::Zoh;
 use dsmc::system_identification::validation::Validation;
 
 let ts = 1e-3;
@@ -227,8 +237,8 @@ let u: Vec<f64> = (0..20000)
     })
     .collect();
 let g_s = tf!("1000 / (s^2 + 20 s + 1000)");
-let mut plant = DiscretizedSystem::from_tf(&g_s, ts).unwrap();
-let y: Vec<f64> = u.iter().map(|&uk| plant.update(&[uk]).unwrap()[0]).collect(); // + noise
+let mut plant = DiscreteSystem::try_from(&g_s.discretize(Zoh, ts).unwrap()).unwrap();
+let y: Vec<f64> = u.iter().map(|&uk| plant.update(uk)).collect(); // + noise
 
 let validation = Validation::continuous(&g_s, 0, ts, &u, &y).unwrap();
 let (bic, aic) = (validation.bic(3), validation.aic(3)); // p = n + m + 1

@@ -1,11 +1,13 @@
 //! Bilinear (Tustin) transform `s = 2/ts (z - 1)/(z + 1)`.
 
-use std::borrow::Borrow;
-use std::collections::VecDeque;
+use std::convert::Infallible;
 use std::ops::{AddAssign, MulAssign};
 use num_traits::Float;
 
-use crate::{Continuous, Discrete, Polynomial, TransferFunction};
+use nalgebra::{ComplexField, DMatrix, RealField};
+
+use super::Method;
+use crate::{Continuous, Discrete, Polynomial, StateSpace, StateSpaceError, TransferFunction};
 use crate::math::binomial_coefficient;
 
 /// Descending order of powers for (1 + x)^n
@@ -22,30 +24,60 @@ fn binom_one_minus_x<T: Float>(n: usize) -> Polynomial<T> {
     poly
 }
 
-/// Bilinear (Tustin) transform `s = 2/ts (z - 1)/(z + 1)` of a proper `G(s)`; the result is normalized so that
-/// the leading denominator coefficient is 1.
+/// Bilinear (Tustin) transform `s = 2/ts (z - 1)/(z + 1)`.
+///
+/// - `TransferFunction`: substitution into a proper `G(s)`; the result is normalized so that the
+///   leading denominator coefficient is 1. It cannot fail (`Error = Infallible`).
+/// - `StateSpace`: with `M = (I - A ts/2)^-1`, `A_d = M (I + A ts/2)`, `B_d = M B ts`, `C_d = C M`,
+///   `D_d = D + C M B ts/2`, so that `C_d (zI - A_d)^-1 B_d + D_d = G(2/ts (z - 1)/(z + 1))`
+///   (any number of inputs and outputs). `SingularMatrix` if `A` has the eigenvalue `2/ts`.
 ///
 /// The stable region maps onto the stable region and the gain is kept, while the frequency axis is
 /// warped (`ω_d = 2/ts atan(ω ts / 2)`).
 ///
 /// ```
-/// use dsmc::{tf, discretize::bilinear_transform};
+/// use dsmc::{tf, DiscreteSystem, discretize::Tustin};
 ///
-/// let g_z = bilinear_transform::discretize(&tf!("100 / (s + 100)"), 1e-3);
+/// let g_z = tf!("100 / (s + 100)").discretize(Tustin, 1e-3).unwrap();
+/// let mut filter = DiscreteSystem::try_from(&g_z).unwrap();
+/// let y = filter.update(1.0);
 /// ```
 ///
 /// Numerator: bm*s^m + bm-1*s^m-1 + ...+ b0 => \[bm, bm-1, ..., b0\]
 ///
 /// Denominator: an*s^n + an-1*s^n-1 + ...+ a0 => \[an, an-1, ..., a0\]
-pub fn discretize<T, S>(
-    tf: S,
-    ts: T,
-) -> TransferFunction<T, Discrete>
-where
-    T: Float + AddAssign + MulAssign,
-    S: Borrow<TransferFunction<T, Continuous>>
-{
-    let tf = tf.borrow();
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Tustin;
+
+impl<T: Float + AddAssign + MulAssign> Method<T, TransferFunction<T, Continuous>> for Tustin {
+    type Output = TransferFunction<T, Discrete>;
+    type Error = Infallible;
+
+    fn apply(&self, tf: &TransferFunction<T, Continuous>, ts: T) -> Result<Self::Output, Self::Error> {
+        Ok(transform(tf, ts))
+    }
+}
+
+impl<T: Float + ComplexField + RealField> Method<T, StateSpace<T, Continuous>> for Tustin {
+    type Output = StateSpace<T, Discrete>;
+    type Error = StateSpaceError;
+
+    fn apply(&self, system: &StateSpace<T, Continuous>, ts: T) -> Result<Self::Output, Self::Error> {
+        let n = system.order.system;
+        let half = ts / T::from(2.0).unwrap();
+        let identity = DMatrix::<T>::identity(n, n);
+        let a_half = system.a.scale(half);
+        let m = if n == 0 { identity.clone() } else { (&identity - &a_half).try_inverse().ok_or(StateSpaceError::SingularMatrix)? };
+
+        let a = &m * (&identity + &a_half);
+        let b = (&m * &system.b).scale(ts);
+        let c = &system.c * &m;
+        let d = &system.d + (&c * &system.b).scale(half);
+        StateSpace::new(a, b, c, d)
+    }
+}
+
+fn transform<T: Float + AddAssign + MulAssign>(tf: &TransferFunction<T, Continuous>, ts: T) -> TransferFunction<T, Discrete> {
 
     let n = tf.denominator.len() - 1;
     let mut numer_z = Polynomial::zeros(n);
@@ -76,71 +108,4 @@ where
     denom_z *= scale;
 
     TransferFunction::from_polynomials(numer_z, denom_z)
-}
-
-/// Simulator of a discrete-time transfer function as a difference equation:
-///
-/// y\[k\] = (bn\[0\] * x\[k\] + bn\[1\] * x\[k-1\] + ... + bn\[N\] * x\[k-N\]) - (an\[0\] * y\[k-1\] + an\[1\] * y\[k-2\] - ... + an\[N\] * y\[k-N-1\])
-pub struct DiscretizedSystem<T> {
-    an: Vec<T>,
-    bn: Vec<T>,
-    xz: VecDeque<T>,
-    yz: VecDeque<T>,
-    /// Output of the last `update`.
-    pub output: T,
-}
-
-impl <T:Float + AddAssign + MulAssign> DiscretizedSystem<T> {
-    /// Bilinear transform of `tf` with sampling period `ts` (see `discretize`), at rest.
-    pub fn new<S: Borrow<TransferFunction<T, Continuous>>>(tf: S, ts: T) -> Self {
-
-        let tf_z = discretize(tf, ts);
-        let numer_order = tf_z.numerator.len() - 1;
-        let denom_order = tf_z.denominator.len() - 1;
-        let relative_order = denom_order - numer_order;
-
-        let an = tf_z.denominator[1..].to_vec();
-        let mut bn= vec![T::zero(); relative_order];
-        bn.extend_from_slice(&tf_z.numerator);
-
-        let xz = vec![T::zero(); denom_order + 1].into();
-        let yz = vec![T::zero(); denom_order].into();
-
-        Self { an, bn, xz, yz, output: T::zero() }
-    }
-
-    /// From a discrete-time transfer function whose leading denominator coefficient is 1, at rest.
-    pub fn from_tf_z<S: Borrow<TransferFunction<T, Discrete>>>(tf: S) -> Self {
-
-        let tf_z = tf.borrow();
-        let numer_order = tf_z.numerator.len() - 1;
-        let denom_order = tf_z.denominator.len() - 1;
-        let relative_order = denom_order - numer_order;
-
-        let an = tf_z.denominator[1..].to_vec();
-        let mut bn= vec![T::zero(); relative_order];
-        bn.extend_from_slice(&tf_z.numerator);
-
-        let xz = vec![T::zero(); denom_order + 1].into();
-        let yz = vec![T::zero(); denom_order].into();
-
-        Self { an, bn, xz, yz, output: T::zero() }
-    }
-
-    /// One sample with input `x[k]`; returns `y[k]`.
-    pub fn update(&mut self, x: T) -> T {
-        // FIFO for xz
-        self.xz.pop_back();
-        self.xz.push_front(x);
-
-        let yb = self.bn.iter().zip(self.xz.iter()).fold(T::zero(), |acc, (a, b)| acc + *a * *b);
-        let ya = self.an.iter().zip(self.yz.iter()).fold(T::zero(), |acc, (a, b)| acc + *a * *b);
-        self.output = yb - ya;
-
-        // FIFO for yz
-        self.yz.pop_back();
-        self.yz.push_front(self.output);
-
-        self.output
-    }
 }

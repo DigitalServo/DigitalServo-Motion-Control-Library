@@ -1,4 +1,4 @@
-use dsmc::{TransferFunction, discretize::zoh};
+use dsmc::{DiscreteSystem, StateSpace, TransferFunction, discretize::Zoh};
 
 /// Max absolute difference between the coefficients of two transfer functions, after
 /// normalizing both so that the leading denominator coefficient is 1.
@@ -41,7 +41,7 @@ fn test_lsm_arx() {
     let mut lsm = lsm::arx::DataBuffer::<f64>::new(input_order, state_order).with_input_delay(1);
     let mut kf = kalman_filter::arx::KalmanFilter::<f64>::new(input_order, state_order, 0.01, 0.01, 1.0e10).with_input_delay(1);
 
-    let mut system = zoh::DiscretizedSystem::from_tf(&tf_c, ts).unwrap();
+    let mut system = DiscreteSystem::from(StateSpace::try_from(&tf_c).unwrap().discretize(Zoh, ts).unwrap());
 
     let mut t = 0.0;
     for _ in 0..1000 {
@@ -58,7 +58,7 @@ fn test_lsm_arx() {
 
     // The data come from the bilinear-discretized system itself (noise-free), so both methods
     // should recover it.
-    let tf_z = zoh::discretize(&tf_c, ts).unwrap();
+    let tf_z = tf_c.discretize(Zoh, ts).unwrap();
 
     let tf_lsm = lsm.identify().unwrap();
     let tf_kf = kf.identify();
@@ -261,9 +261,8 @@ fn test_arx_mismatched_orders() {
 /// recovered as a continuous-time dead time.
 #[test]
 fn test_arx_input_delay() {
-    use dsmc::discretize::bilinear_transform;
     use dsmc::discretize::matched_z_transform::{
-        to_continuous_with_delay, to_discrete_with_delay, ContinuousWithDelay, ToContinuousOptions, ZerosAtInfinity,
+        to_continuous_with_delay, ContinuousWithDelay, MatchedZ, ToContinuousOptions, ZerosAtInfinity,
     };
     use dsmc::system_identification::{kalman_filter, lsm};
 
@@ -272,9 +271,9 @@ fn test_arx_input_delay() {
     let tf_c = TransferFunction::continuous(&[1000.0], &[1.0, 20.0, 1000.0]);
     let plant = ContinuousWithDelay { tf: tf_c.clone(), delay: delay_samples as f64 * ts };
     // z^-5 (b0 z^2 + b1 z + b2) / (z^2 + a1 z + a2): na = nb = 2, nk = 5
-    let tf_z = to_discrete_with_delay(&plant, ts, ZerosAtInfinity::MinusOne).unwrap();
+    let tf_z = plant.discretize(MatchedZ(ZerosAtInfinity::MinusOne), ts).unwrap();
 
-    let mut system = bilinear_transform::DiscretizedSystem::from_tf_z(&tf_z);
+    let mut system = DiscreteSystem::try_from(&tf_z).unwrap();
     let (mut u, mut y) = (Vec::new(), Vec::new());
     for k in 0..3000 {
         let t = k as f64 * ts;
@@ -410,7 +409,7 @@ fn test_srivc() {
         (TransferFunction::continuous(&[20.0, 1000.0], &[1.0, 20.0, 1000.0]), 1, 2),
     ];
     for (tf_c, m, n) in cases {
-        let mut system = zoh::DiscretizedSystem::from_tf(&tf_c, ts).unwrap();
+        let mut system = DiscreteSystem::from(StateSpace::try_from(&tf_c).unwrap().discretize(Zoh, ts).unwrap());
         let u: Vec<f64> = (0..n_samples).map(|_| rand()).collect();
         let y0: Vec<f64> = u.iter().map(|&uk| system.update(&[uk]).unwrap()[0]).collect();
 
@@ -462,7 +461,7 @@ fn test_srivc_with_delay() {
     // Input delay of 5 samples, started from a rough initial model
     let tf_c = TransferFunction::continuous(&[1000.0], &[1.0, 20.0, 1000.0]);
     let delay = 5;
-    let mut system = zoh::DiscretizedSystem::from_tf(&tf_c, ts).unwrap();
+    let mut system = DiscreteSystem::from(StateSpace::try_from(&tf_c).unwrap().discretize(Zoh, ts).unwrap());
     let u: Vec<f64> = (0..n_samples).map(|i| multisine(i as f64 * ts)).collect();
     let y0: Vec<f64> = (0..n_samples)
         .map(|k| system.update(&[if k >= delay { u[k - delay] } else { 0.0 }]).unwrap()[0])
@@ -519,7 +518,7 @@ fn test_validation_bic() {
     let delay = 3;
     let plant = TransferFunction::continuous(&[1000.0], &[1.0, 20.0, 1000.0]);
     let u: Vec<f64> = (0..n_samples).map(|_| gaussian()).collect();
-    let mut system = zoh::DiscretizedSystem::from_tf(&plant, ts).unwrap();
+    let mut system = DiscreteSystem::from(StateSpace::try_from(&plant).unwrap().discretize(Zoh, ts).unwrap());
     let y0: Vec<f64> = (0..n_samples)
         .map(|k| system.update(&[if k >= delay { u[k - delay] } else { 0.0 }]).unwrap()[0])
         .collect();
@@ -598,7 +597,7 @@ fn test_validation_cross_correlation() {
         .collect();
 
     for (name, u) in [("white", white), ("multisine", multisine)] {
-        let mut system = zoh::DiscretizedSystem::from_tf(&plant, ts).unwrap();
+        let mut system = DiscreteSystem::from(StateSpace::try_from(&plant).unwrap().discretize(Zoh, ts).unwrap());
         let y0: Vec<f64> = (0..n_samples)
             .map(|k| system.update(&[if k >= delay { u[k - delay] } else { 0.0 }]).unwrap()[0])
             .collect();
@@ -646,7 +645,7 @@ fn test_validation_line_test() {
     let u: Vec<f64> = (0..n_samples)
         .map(|k| lines.iter().zip(&phases).map(|(&l, p)| (2.0 * PI * l as f64 * k as f64 / period as f64 + p).sin()).sum::<f64>())
         .collect();
-    let mut system = zoh::DiscretizedSystem::from_tf(&plant, ts).unwrap();
+    let mut system = DiscreteSystem::from(StateSpace::try_from(&plant).unwrap().discretize(Zoh, ts).unwrap());
     let y0: Vec<f64> = (0..n_samples)
         .map(|k| system.update(&[if k >= delay { u[k - delay] } else { 0.0 }]).unwrap()[0])
         .collect();
@@ -780,7 +779,7 @@ fn test_validation_coherence_test() {
     }
 
     for (name, u) in [("chirp", chirp), ("random", random)] {
-        let mut system = zoh::DiscretizedSystem::from_tf(&plant, ts).unwrap();
+        let mut system = DiscreteSystem::from(StateSpace::try_from(&plant).unwrap().discretize(Zoh, ts).unwrap());
         let y0: Vec<f64> = (0..n_samples)
             .map(|k| system.update(&[if k >= delay { u[k - delay] } else { 0.0 }]).unwrap()[0])
             .collect();
@@ -853,7 +852,7 @@ fn test_validation_frequency_response() {
     for k in 1..n_samples {
         u[k] = 0.83 * u[k - 1] + gaussian();
     }
-    let mut system = zoh::DiscretizedSystem::from_tf(&plant, ts).unwrap();
+    let mut system = DiscreteSystem::from(StateSpace::try_from(&plant).unwrap().discretize(Zoh, ts).unwrap());
     let y0: Vec<f64> = (0..n_samples)
         .map(|k| system.update(&[if k >= delay { u[k - delay] } else { 0.0 }]).unwrap()[0])
         .collect();
@@ -890,7 +889,7 @@ fn test_validation_frequency_response() {
     // system (the ZOH-discretized G(z) at z = e^(jω ts), with the delay; not G(jω), which lacks the
     // half-sample delay of the hold), its bias falls as the segments grow against the impulse
     // response of the plant (~0.1 s here)
-    let g_z = zoh::discretize(&plant, ts).unwrap();
+    let g_z = plant.discretize(Zoh, ts).unwrap();
     let bias = |segment_len: usize| {
         let c = Validation::continuous(&plant, delay, ts, &u, &y).unwrap().frequency_response(segment_len).unwrap();
         c.frequencies(ts)
@@ -980,7 +979,7 @@ fn test_validation_whiteness() {
     let z_one_sided = 2.326; // 99 %
 
     let u: Vec<f64> = (0..n_samples).map(|_| gaussian()).collect();
-    let mut system = zoh::DiscretizedSystem::from_tf(&plant, ts).unwrap();
+    let mut system = DiscreteSystem::from(StateSpace::try_from(&plant).unwrap().discretize(Zoh, ts).unwrap());
     let y0: Vec<f64> = (0..n_samples)
         .map(|k| system.update(&[if k >= delay { u[k - delay] } else { 0.0 }]).unwrap()[0])
         .collect();
@@ -1129,8 +1128,8 @@ mod srivc {
 
     use std::f64::consts::PI;
 
-    use dsmc::TransferFunction;
-    use dsmc::discretize::zoh::DiscretizedSystem;
+    use dsmc::{DiscreteSystem, StateSpace, TransferFunction};
+    use dsmc::discretize::Zoh;
     use dsmc::system_identification::iv::srivc::{Initialization, SrivcOptions, identify};
     use dsmc::system_identification::validation::Validation;
     use num_complex::Complex;
@@ -1203,7 +1202,7 @@ mod srivc {
         /// `None` if the model cannot be realized or the response diverges (unstable model).
         fn simulate(&self, u: &[f64]) -> Option<Vec<f64>> {
             let tf = TransferFunction::continuous(&self.numerator, &self.denominator);
-            let mut system = DiscretizedSystem::from_tf(&tf, TS).ok()?;
+            let mut system = DiscreteSystem::from(StateSpace::try_from(&tf).ok()?.discretize(Zoh, TS).ok()?);
             let y: Vec<f64> = (0..u.len())
                 .map(|k| system.update(&[if k >= self.delay { u[k - self.delay] } else { 0.0 }]).unwrap()[0])
                 .collect();
@@ -1569,7 +1568,7 @@ fn test_validation_check() {
     let u: Vec<f64> = (0..n_samples)
         .map(|k| lines.iter().zip(&phases).map(|(&l, p)| (2.0 * PI * l as f64 * k as f64 / period as f64 + p).sin()).sum::<f64>())
         .collect();
-    let mut system = zoh::DiscretizedSystem::from_tf(&plant, ts).unwrap();
+    let mut system = DiscreteSystem::from(StateSpace::try_from(&plant).unwrap().discretize(Zoh, ts).unwrap());
     let y0: Vec<f64> = (0..n_samples)
         .map(|k| system.update(&[if k >= delay { u[k - delay] } else { 0.0 }]).unwrap()[0])
         .collect();

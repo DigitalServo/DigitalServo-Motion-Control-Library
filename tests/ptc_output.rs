@@ -1,8 +1,8 @@
-use dsmc::discretize::zoh::DiscretizedSystem;
+use dsmc::discretize::Zoh;
 use dsmc::feedforward::ptc::{LiftedDiscretizedSystem, PtcError, ReferenceSignal};
 use dsmc::trajectory;
 use dsmc::laplace_transform::{PiecewisePolynomial, StableInverseError};
-use dsmc::{tf, StateSpace, TransferFunction};
+use dsmc::{tf, DiscreteSystem, StateSpace, TransferFunction};
 use nalgebra::DMatrix;
 
 const TS: f64 = 1e-4;
@@ -19,7 +19,7 @@ fn y_d() -> PiecewisePolynomial<f64> {
 }
 
 /// Simulate `u` on `model` and return the largest |y - y_d| at frame instants.
-fn max_frame_error(mut model: DiscretizedSystem<f64>, u: &[f64], order: usize) -> f64 {
+fn max_frame_error(mut model: DiscreteSystem<f64>, u: &[f64], order: usize) -> f64 {
     let y = y_d();
     let mut max_error: f64 = 0.0;
     for (i, &ui) in u.iter().enumerate() {
@@ -55,8 +55,8 @@ fn arbitrary_realization() {
     let c = DMatrix::from_row_slice(1, 5, &[1.0, -0.001, 0.0, 0.0, 0.0]);
     let ssr = StateSpace::new(a, b, c, DMatrix::zeros(1, 1)).unwrap();
 
-    let model = DiscretizedSystem::from_ssr(&ssr, TS).unwrap();
-    let lifted: LiftedDiscretizedSystem<f64> = model.clone().try_into().unwrap();
+    let model = DiscreteSystem::from(ssr.discretize(Zoh, TS).unwrap());
+    let lifted = LiftedDiscretizedSystem::new(&ssr, TS).unwrap();
     let u = lifted.calculate_ptc_input_for_reference_output(&y_d(), samples()).unwrap();
     let error = max_frame_error(model, &u, 5);
     assert!(error < 1e-9, "max tracking error at frames: {error:e}");
@@ -74,8 +74,7 @@ fn arbitrary_realization() {
 #[test]
 fn errors() {
     // Zero on the imaginary axis: no stable inverse.
-    let model = DiscretizedSystem::from_tf(tf!("(s^2 + 4) / (s + 1)^3"), TS).unwrap();
-    let lifted: LiftedDiscretizedSystem<f64> = model.try_into().unwrap();
+    let lifted = LiftedDiscretizedSystem::new(StateSpace::try_from(&tf!("(s^2 + 4) / (s + 1)^3")).unwrap(), TS).unwrap();
     assert!(matches!(
         lifted.calculate_ptc_input_for_reference_output(&y_d(), 100),
         Err(PtcError::StableInverse(StableInverseError::PoleOnImaginaryAxis { .. }))
@@ -89,7 +88,7 @@ fn errors() {
         DMatrix::from_row_slice(1, 1, &[0.5]),
     )
     .unwrap();
-    let lifted: LiftedDiscretizedSystem<f64> = DiscretizedSystem::from_ssr(&ssr, TS).unwrap().try_into().unwrap();
+    let lifted = LiftedDiscretizedSystem::new(&ssr, TS).unwrap();
     assert_eq!(
         lifted.calculate_ptc_input_for_reference_output(&y_d(), 100).unwrap_err(),
         PtcError::Feedthrough

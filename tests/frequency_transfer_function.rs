@@ -1,4 +1,4 @@
-use dsmc::discretize::bilinear_transform;
+use dsmc::discretize::Tustin;
 use dsmc::{BodeDiagramPlotter, FrequencyTransferFunction, Hz, NyquistPlotter, RadPerSec, tf};
 use num_complex::Complex;
 
@@ -41,7 +41,7 @@ fn test_frequency_transfer_function() {
 
     // Discrete: matches z = e^{jωTs}
     let ts = 1e-4;
-    let tf_z = bilinear_transform::discretize(tf_s.clone(), ts);
+    let tf_z = tf_s.clone().discretize(Tustin, ts).unwrap();
     let g_z = tf_z.frequency_transfer_function(ts);
     assert!((g_z.response(1.0) - g_s.response(1.0)).norm() < 1e-6);
 

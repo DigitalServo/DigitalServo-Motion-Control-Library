@@ -117,14 +117,12 @@ impl<T: Float + ComplexField + RealField, D> StateSpace<T, D> {
             .collect();
         Ok(TransferFunction::from_polynomials(Polynomial(numerator), Polynomial(denominator)))
     }
-}
 
-impl<T: Float + ComplexField + RealField> StateSpace<T, Continuous> {
-    /// Controllable canonical realization of a proper `G(s) = N(s) / D(s)`:
-    /// with `G = d + R(s) / D(s)` (`D` monic, `deg R < n`),
+    /// Controllable canonical realization of a proper `G = N / D` (in `s` or `z`):
+    /// with `G = d + R / D` (`D` monic, `deg R < n`),
     /// `A` = companion matrix of `D`, `B = [0, ..., 0, 1]^T`, `C = [r_0, ..., r_(n-1)]`, `D = d`.
     /// A static gain (`n = 0`) has no state-space form (`EmptySystem`).
-    pub fn controllable_canonical(tf: &TransferFunction<T, Continuous>) -> Result<Self, StateSpaceError> {
+    pub fn controllable_canonical(tf: &TransferFunction<T, D>) -> Result<Self, StateSpaceError> {
         let trim = |p: &Polynomial<T>| p.iter().copied().skip_while(|c| c.is_zero()).collect::<Vec<T>>();
         let numer = trim(&tf.numerator);
         let denom = trim(&tf.denominator);
@@ -164,7 +162,30 @@ impl<T: Float + ComplexField + RealField> StateSpace<T, Continuous> {
         }
         Self::new(a, b, c, DMatrix::from_element(1, 1, d))
     }
+}
 
+impl<T: Float + ComplexField + RealField, D> TryFrom<&TransferFunction<T, D>> for StateSpace<T, D> {
+    type Error = StateSpaceError;
+
+    /// Controllable canonical realization (`StateSpace::controllable_canonical`); a static gain
+    /// `b_0 / a_0` (leading nonzero coefficients; 0 for a zero numerator) has no state:
+    /// `A` is `0 × 0`, `B` is `0 × 1`, `C` is `1 × 0` and `D = [b_0 / a_0]`.
+    fn try_from(tf: &TransferFunction<T, D>) -> Result<Self, Self::Error> {
+        match Self::controllable_canonical(tf) {
+            Err(StateSpaceError::EmptySystem) => {
+                let lead = |c: &[T]| c.iter().copied().find(|c| !c.is_zero());
+                let gain = match (lead(&tf.numerator), lead(&tf.denominator)) {
+                    (Some(b), Some(a)) => b / a,
+                    _ => T::zero(),
+                };
+                Self::new(DMatrix::zeros(0, 0), DMatrix::zeros(0, 1), DMatrix::zeros(1, 0), DMatrix::from_element(1, 1, gain))
+            }
+            result => result,
+        }
+    }
+}
+
+impl<T: Float + ComplexField + RealField> StateSpace<T, Continuous> {
     /// Controllable canonical realization whose output equals a state at low frequency.
     /// With `N(s) = s^k N_1(s)`, `N_1(0) != 0` (`k` zeros at the origin), `N` and `D` are divided by
     /// `N_1(0)`: the state equation is `x = u / D(s)` and the output equation `y = N(s) x`, i.e.

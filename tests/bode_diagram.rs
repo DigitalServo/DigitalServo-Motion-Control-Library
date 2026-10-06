@@ -1,4 +1,4 @@
-use dsmc::discretize::bilinear_transform;
+use dsmc::discretize::Tustin;
 use dsmc::logger::DataStorage;
 use dsmc::{BodeDiagramPlotter, tf};
 
@@ -37,7 +37,7 @@ fn test_bode_plotter_z() {
     let k1 = 0.01 * g;
     let k2 = g * g;
     let tf_s = tf!("{k2} / (s^2 + {k1}s + {k2})");
-    let tf_z = bilinear_transform::discretize(tf_s, ts);
+    let tf_z = tf_s.discretize(Tustin, ts).unwrap();
 
     // let tf_z = tf!("({}z + {})  / ({}z + {})", g * ts, g * ts, 2.0 + g * ts, -2.0 + g * ts);
 

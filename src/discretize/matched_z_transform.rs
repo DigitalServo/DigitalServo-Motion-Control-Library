@@ -8,7 +8,10 @@ use num_traits::{Float, FloatConst};
 use thiserror::Error;
 
 use crate::system::roots_with_multiplicity;
-use crate::{vieta_formula, Continuous, Discrete, Polynomial, TransferFunction};
+use nalgebra::{ComplexField, RealField};
+
+use super::Method;
+use crate::{StateSpace, StateSpaceError, vieta_formula, Continuous, Discrete, Polynomial, TransferFunction};
 
 /// Where the zeros of `G(s)` at `s = ∞` (one per relative degree) go in `s -> z`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -20,7 +23,7 @@ pub enum ZerosAtInfinity {
     KeepOneDelay,
 }
 
-/// Errors of the matched z-transform (`to_discrete`) and of its inverse.
+/// Errors of the matched z-transform (`MatchedZ`) and of its inverse.
 #[derive(Clone, Debug, Error, PartialEq)]
 pub enum MatchedZError {
     /// The transfer function is zero.
@@ -41,6 +44,10 @@ pub enum MatchedZError {
         /// Location of the pole.
         re: f64,
     },
+
+    /// The state-space model is not single-input single-output, or the result has no realization.
+    #[error(transparent)]
+    StateSpace(#[from] StateSpaceError),
 
     /// The dead time is not a multiple of the sampling period.
     #[error("Delay {delay} is not a whole number of sampling periods")]
@@ -87,7 +94,8 @@ const SNAP_TOLERANCE: f64 = 1e-12;
 /// `(z ∓ 1)` is a factor while the remainder is within this size relative to `Σ |coefficients|`.
 const FACTOR_TOLERANCE: f64 = 1e-10;
 
-/// Continuous-time `G(s)` to discrete-time `G(z)` by pole-zero matching.
+/// Continuous-time `G(s)` to discrete-time `G(z)` by pole-zero matching (a `StateSpace` goes
+/// through its transfer function, single input and output only).
 ///
 /// ```text
 /// s -> z :  poles / zeros  p  ->  e^(p ts),   zeros at s = ∞  ->  z = -1 (see `ZerosAtInfinity`)
@@ -102,12 +110,68 @@ const FACTOR_TOLERANCE: f64 = 1e-10;
 /// ```
 ///
 /// which is the DC gain for `k = 0` and the gain of the integrators' asymptote otherwise.
-pub fn to_discrete<T, S>(tf: S, ts: T, zeros_at_infinity: ZerosAtInfinity) -> Result<TransferFunction<T, Discrete>, MatchedZError>
+///
+/// A `ContinuousWithDelay` `e^(-delay s) G(s)` goes to `z^-d G(z)` with `d = delay / ts`, which
+/// must be a whole number (`FractionalDelay` otherwise, tolerance `1e-6` samples).
+///
+/// ```
+/// use dsmc::tf;
+/// use dsmc::discretize::{MatchedZ, ZerosAtInfinity};
+///
+/// let g_z = tf!("100 / (s + 100)").discretize(MatchedZ(ZerosAtInfinity::MinusOne), 1e-3).unwrap();
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MatchedZ(pub ZerosAtInfinity);
+
+impl<T: Float + FloatConst + AddAssign> Method<T, TransferFunction<T, Continuous>> for MatchedZ {
+    type Output = TransferFunction<T, Discrete>;
+    type Error = MatchedZError;
+
+    fn apply(&self, tf: &TransferFunction<T, Continuous>, ts: T) -> Result<Self::Output, Self::Error> {
+        matched(tf, ts, self.0)
+    }
+}
+
+impl<T: Float + FloatConst + AddAssign + ComplexField + RealField> Method<T, StateSpace<T, Continuous>> for MatchedZ {
+    type Output = StateSpace<T, Discrete>;
+    type Error = MatchedZError;
+
+    /// Through the transfer function (single input and output only): `C (sI - A)^-1 B + D`, then
+    /// pole-zero matching, then the controllable canonical realization of `G(z)`
+    /// (`StateSpace::try_from`). The state coordinates are not kept.
+    fn apply(&self, system: &StateSpace<T, Continuous>, ts: T) -> Result<Self::Output, Self::Error> {
+        let tf = system.transfer_function()?;
+        Ok(StateSpace::try_from(&matched(&tf, ts, self.0)?)?)
+    }
+}
+
+impl<T: Float + FloatConst + AddAssign> Method<T, ContinuousWithDelay<T>> for MatchedZ {
+    type Output = TransferFunction<T, Discrete>;
+    type Error = MatchedZError;
+
+    fn apply(&self, g: &ContinuousWithDelay<T>, ts: T) -> Result<Self::Output, Self::Error> {
+        let samples = g.delay / ts;
+        let d = samples.round();
+        if (samples - d).abs() > T::from(1e-6).unwrap() {
+            return Err(MatchedZError::FractionalDelay { delay: g.delay.to_f64().unwrap_or(f64::NAN) });
+        }
+        let d = d.to_i64().unwrap();
+        let gz = matched(&g.tf, ts, self.0)?;
+        // z^-d: d > 0 multiplies the denominator by z^d, d < 0 the numerator by z^-d
+        let times_z_power = |p: &Polynomial<T>, n: i64| {
+            let mut c = p.0.clone();
+            c.extend(std::iter::repeat_n(T::zero(), n.max(0) as usize));
+            Polynomial(c)
+        };
+        Ok(TransferFunction::from_polynomials(times_z_power(&gz.numerator, -d), times_z_power(&gz.denominator, d)))
+    }
+}
+
+/// `G(s)` to `G(z)` by pole-zero matching (see `MatchedZ`).
+fn matched<T>(tf: &TransferFunction<T, Continuous>, ts: T, zeros_at_infinity: ZerosAtInfinity) -> Result<TransferFunction<T, Discrete>, MatchedZError>
 where
     T: Float + FloatConst + AddAssign,
-    S: Borrow<TransferFunction<T, Continuous>>,
 {
-    let tf = tf.borrow();
     // G(s) = s^(a - b) N(s) / D(s) with N(0), D(0) != 0
     let (numer, a) = split_origin(&tf.numerator).ok_or(MatchedZError::ZeroSystem)?;
     let (denom, b) = split_origin(&tf.denominator).ok_or(MatchedZError::ZeroSystem)?;
@@ -159,7 +223,7 @@ impl<T: Float> Default for ToContinuousOptions<T> {
     }
 }
 
-/// Discrete-time `G(z)` to continuous-time `G(s)` by pole-zero matching (inverse of `to_discrete`).
+/// Discrete-time `G(z)` to continuous-time `G(s)` by pole-zero matching (inverse of `MatchedZ`).
 /// Only exact `(z + 1)` factors of the numerator are taken as zeros at `s = ∞`; for identified
 /// models, use `to_continuous_with`.
 ///
@@ -173,7 +237,7 @@ impl<T: Float> Default for ToContinuousOptions<T> {
 /// The factors `(z - 1)` and `(z + 1)` are divided out of the coefficients exactly (synthetic
 /// division while the remainder vanishes) rather than detected among numerically found roots,
 /// since with fast sampling all poles crowd around `z = 1`. The remaining roots are mapped with the
-/// principal logarithm (`|Im s| < π / ts`); the gain is matched as in [`to_discrete`]. Poles at
+/// principal logarithm (`|Im s| < π / ts`); the gain is matched as in [`MatchedZ`]. Poles at
 /// `z = 0` or on the negative real axis are an error.
 pub fn to_continuous<T, S>(tf: S, ts: T) -> Result<TransferFunction<T, Continuous>, MatchedZError>
 where
@@ -215,31 +279,6 @@ where
     let tf = rational_part(&numer, &denom, ts, options)?;
     let shift = poles_at_origin as i32 - zeros_at_origin as i32;
     Ok(ContinuousWithDelay { tf, delay: ts * T::from(shift).unwrap() })
-}
-
-/// `e^(-delay s) G(s)` to `z^-d G(z)` with `d = delay / ts`, which must be a whole number.
-pub fn to_discrete_with_delay<T>(
-    g: &ContinuousWithDelay<T>,
-    ts: T,
-    zeros_at_infinity: ZerosAtInfinity,
-) -> Result<TransferFunction<T, Discrete>, MatchedZError>
-where
-    T: Float + FloatConst + AddAssign,
-{
-    let samples = g.delay / ts;
-    let d = samples.round();
-    if (samples - d).abs() > T::from(1e-6).unwrap() {
-        return Err(MatchedZError::FractionalDelay { delay: g.delay.to_f64().unwrap_or(f64::NAN) });
-    }
-    let d = d.to_i64().unwrap();
-    let gz = to_discrete(&g.tf, ts, zeros_at_infinity)?;
-    // z^-d: d > 0 multiplies the denominator by z^d, d < 0 the numerator by z^-d
-    let times_z_power = |p: &Polynomial<T>, n: i64| {
-        let mut c = p.0.clone();
-        c.extend(std::iter::repeat_n(T::zero(), n.max(0) as usize));
-        Polynomial(c)
-    };
-    Ok(TransferFunction::from_polynomials(times_z_power(&gz.numerator, -d), times_z_power(&gz.denominator, d)))
 }
 
 /// `G(z) = N(z) / D(z)` with `N(0), D(0) != 0` to the rational `G(s)`.

@@ -1,5 +1,5 @@
 use dsmc::{
-    StateSpace, TransferFunction, discretize::zoh::{DiscretizedSystem, discretize_ssr}, logger::DataStorage
+    DiscreteSystem, StateSpace, TransferFunction, discretize::Zoh, logger::DataStorage
 };
 use nalgebra::dmatrix;
 
@@ -15,7 +15,7 @@ fn test_zoh_ssr() {
         dmatrix![g * g, 0.0],
         dmatrix![0.0],
     ).unwrap();
-    let ssr_z = discretize_ssr(&system, ts).unwrap();
+    let ssr_z = system.discretize(Zoh, ts).unwrap();
 
     // A has the double eigenvalue λ = -g, so e^{At} = e^{λt}(I + t(A - λI)) with
     // A - λI = [[g, 1], [-g^2, -g]]. Then
@@ -39,7 +39,7 @@ fn test_zoh_ssr() {
 fn test_zoh_system_ssr() {
 
     let ts = 1.0e-4;
-    let mut storage = DataStorage::new("./out/zohd_ssr_out.csv", ',', false).unwrap();
+    let mut storage = DataStorage::new("./out/zoh_ssr_out.csv", ',', false).unwrap();
 
     let g = 10.0;
     let system = StateSpace::new(
@@ -48,7 +48,7 @@ fn test_zoh_system_ssr() {
         dmatrix![g * g, 0.0],
         dmatrix![0.0],
     ).unwrap();
-    let mut system = DiscretizedSystem::from_ssr(system, ts).unwrap();
+    let mut system = DiscreteSystem::from(system.discretize(Zoh, ts).unwrap());
 
     let mut t = 0.0;
     for _ in 0..20000 {
@@ -67,17 +67,17 @@ fn test_zoh_system_ssr() {
 fn test_zoh_system_tf() {
 
     let ts = 1.0e-4;
-    let mut storage = DataStorage::new("./out/zohd_tf_out.csv", ',', false).unwrap();
+    let mut storage = DataStorage::new("./out/zoh_tf_out.csv", ',', false).unwrap();
 
     let g = 10.0;
     let system = TransferFunction::continuous(&[g * g], &[1.0, 2.0 * g, g * g]);
-    let mut system = DiscretizedSystem::from_tf(system, ts).unwrap();
+    let mut system = DiscreteSystem::try_from(&system.discretize(Zoh, ts).unwrap()).unwrap();
 
     let mut t = 0.0;
     for _ in 0..20000 {
         let x = if t < 0.2 { 0.0 } else { 1.0 };
-        let y = system.update(&[x]).unwrap();
-        storage.add(&[t, x, y[0]]).unwrap();
+        let y = system.update(x);
+        storage.add(&[t, x, y]).unwrap();
 
         t += ts;
     }
@@ -86,8 +86,8 @@ fn test_zoh_system_tf() {
 }
 
 mod transfer_function {
-    use dsmc::discretize::{bilinear_transform, zoh::discretize};
-    use dsmc::{tf, Continuous, Polynomial, StateSpace, StateSpaceError, TransferFunction};
+    use dsmc::discretize::Zoh;
+    use dsmc::{tf, Continuous, Polynomial, DiscreteSystem, StateSpace, StateSpaceError, TransferFunction};
 
     const TS: f64 = 1e-3;
 
@@ -103,9 +103,9 @@ mod transfer_function {
         ]
     }
 
-    /// Step response of G(z) at t = k ts by the difference equation.
+    /// Step response of G(z) at t = k ts (`DiscreteSystem`: the difference equation in state form).
     fn step_response_z(g: &TransferFunction<f64, dsmc::Discrete>, samples: usize) -> Vec<f64> {
-        let mut system = bilinear_transform::DiscretizedSystem::from_tf_z(g);
+        let mut system = DiscreteSystem::try_from(g).unwrap();
         (0..samples).map(|_| system.update(1.0)).collect()
     }
 
@@ -113,7 +113,7 @@ mod transfer_function {
     #[test]
     fn step_invariant() {
         for g in plants() {
-            let gz = discretize(&g, TS).unwrap();
+            let gz = g.discretize(Zoh, TS).unwrap();
             // y(t) = L^-1[G(s) / s] (exact, by partial fractions), sampled at t = k ts
             let step = TransferFunction::<f64, Continuous>::from_polynomials(
                 g.numerator.clone(),
@@ -133,7 +133,7 @@ mod transfer_function {
     fn first_order() {
         // a / (s + a) -> (1 - p) / (z - p), p = e^(-a ts)
         let p = (-100.0 * TS).exp();
-        let gz = discretize(tf!("100 / (s + 100)"), TS).unwrap();
+        let gz = tf!("100 / (s + 100)").discretize(Zoh, TS).unwrap();
         let k = gz.denominator[0];
         let numer: Vec<f64> = gz.numerator.iter().map(|c| c / k).skip_while(|c| c.abs() < 1e-15).collect();
         let denom: Vec<f64> = gz.denominator.iter().map(|c| c / k).collect();
@@ -195,15 +195,16 @@ mod transfer_function {
         assert_eq!(ssr.c, nalgebra::dmatrix![0.0, 1.0, 0.5]);
     }
 
-    /// `from_tf` and `from_tf_normalized` work for any proper G(s), including a zero at the origin
-    /// (N(0) = 0), and simulate the same step response as `discretize`.
+    /// The discretized canonical realizations (standard and normalized) work for any proper G(s),
+    /// including a zero at the origin (N(0) = 0), and simulate the same step response as the
+    /// discretized transfer function.
     #[test]
-    fn from_tf_is_general() {
-        use dsmc::discretize::zoh::DiscretizedSystem;
+    fn realizations_simulate_like_tf() {
         for g in plants() {
             // `update` returns y[k] for u[k], like the difference equation of G(z).
-            let expected = step_response_z(&discretize(&g, TS).unwrap(), 300);
-            for mut system in [DiscretizedSystem::from_tf(&g, TS).unwrap(), DiscretizedSystem::from_tf_normalized(&g, TS).unwrap()] {
+            let expected = step_response_z(&g.discretize(Zoh, TS).unwrap(), 300);
+            let realizations = [StateSpace::try_from(&g).unwrap(), StateSpace::normalized_controllable_canonical(&g).unwrap()];
+            for mut system in realizations.map(|ssr| DiscreteSystem::from(ssr.discretize(Zoh, TS).unwrap())) {
                 for (k, &e) in expected.iter().enumerate() {
                     let y = system.update(&[1.0]).unwrap()[0];
                     assert!((y - e).abs() < 1e-9 * e.abs().max(1.0), "{g:?} at k = {k}: {y} vs {e}");
@@ -215,10 +216,70 @@ mod transfer_function {
     #[test]
     fn static_gain_and_improper() {
         let gain = TransferFunction::<f64, Continuous>::from_polynomials(Polynomial(vec![3.0]), Polynomial(vec![2.0]));
-        let gz = discretize(&gain, TS).unwrap();
+        let gz = gain.discretize(Zoh, TS).unwrap();
         assert_eq!((gz.numerator.0.clone(), gz.denominator.0.clone()), (vec![3.0], vec![2.0]));
 
         let improper = TransferFunction::<f64, Continuous>::from_polynomials(Polynomial(vec![1.0, 1.0, 1.0]), Polynomial(vec![1.0, 2.0]));
-        assert_eq!(discretize(&improper, TS).unwrap_err(), StateSpaceError::Improper { numerator: 2, denominator: 1 });
+        assert_eq!(improper.discretize(Zoh, TS).unwrap_err(), StateSpaceError::Improper { numerator: 2, denominator: 1 });
+    }
+
+    /// A transfer function is simulated as its difference equation: the leading denominator
+    /// coefficient need not be 1, leading zero coefficients are skipped, a static gain works,
+    /// and `reset` goes back to rest. The model itself is left unchanged.
+    #[test]
+    fn discrete_system_of_transfer_function() {
+        use dsmc::Discrete;
+        // 2 y[k] - y[k-1] = u[k-1]  (G = 1 / (2z - 1), written with a leading zero in the numerator)
+        let g = TransferFunction::<f64, Discrete>::from_polynomials(Polynomial(vec![0.0, 1.0]), Polynomial(vec![2.0, -1.0]));
+        let mut system = DiscreteSystem::try_from(&g).unwrap();
+        let y: Vec<f64> = (0..4).map(|_| system.update(1.0)).collect();
+        for (yk, e) in y.iter().zip([0.0, 0.5, 0.75, 0.875]) {
+            assert!((yk - e).abs() < 1e-15, "{y:?}");
+        }
+        system.reset();
+        assert_eq!(system.update(1.0), 0.0);
+        assert_eq!(system.model().order.system, 1);
+
+        // Static gain
+        let k = TransferFunction::<f64, Discrete>::from_polynomials(Polynomial(vec![3.0]), Polynomial(vec![2.0]));
+        assert_eq!(DiscreteSystem::try_from(&k).unwrap().update(2.0), 3.0);
+
+        // Improper (not causal)
+        let improper = TransferFunction::<f64, Discrete>::from_polynomials(Polynomial(vec![1.0, 0.0]), Polynomial(vec![1.0]));
+        assert!(matches!(DiscreteSystem::try_from(&improper), Err(StateSpaceError::Improper { .. })));
+
+    }
+
+    /// `Siso` and `Mimo` run the same model; converting between them keeps the state. `Siso` needs
+    /// one input and one output, `Mimo` checks the length of the input.
+    #[test]
+    fn siso_and_mimo() {
+        use dsmc::{Discrete, Mimo, Siso};
+        use nalgebra::dmatrix;
+
+        let gz = tf!("1000 / (s^2 + 20s + 1000)").discretize(Zoh, TS).unwrap();
+        let mut siso: DiscreteSystem<f64, Siso> = DiscreteSystem::try_from(&gz).unwrap();
+        let mut mimo: DiscreteSystem<f64, Mimo> = DiscreteSystem::from(StateSpace::try_from(&gz).unwrap());
+        for k in 0..50 {
+            let u = (k as f64 * 0.3).sin();
+            let (y_siso, y_mimo) = (siso.update(u), mimo.update(&[u]).unwrap()[0]);
+            assert!((y_siso - y_mimo).abs() < 1e-15, "at k = {k}: {y_siso} vs {y_mimo}");
+            assert_eq!(siso.output[0], y_siso);
+        }
+
+        // Switching keeps the state: both continue identically.
+        let mut back: DiscreteSystem<f64, Siso> = DiscreteSystem::try_from(mimo.clone()).unwrap();
+        let mut again: DiscreteSystem<f64, Mimo> = DiscreteSystem::from(siso.clone());
+        for _ in 0..10 {
+            assert_eq!(back.update(1.0), siso.update(1.0));
+            assert_eq!(again.update(&[1.0]).unwrap(), mimo.update(&[1.0]).unwrap());
+        }
+
+        assert!(matches!(mimo.update(&[1.0, 2.0]), Err(StateSpaceError::InputVector { .. })));
+        let two_inputs = StateSpace::<f64, Discrete>::new(dmatrix![0.5], dmatrix![1.0, 1.0], dmatrix![1.0], dmatrix![0.0, 0.0]).unwrap();
+        assert_eq!(
+            DiscreteSystem::<f64, Siso>::try_from(&two_inputs).unwrap_err(),
+            StateSpaceError::NotSiso { inputs: 2, outputs: 1 }
+        );
     }
 }

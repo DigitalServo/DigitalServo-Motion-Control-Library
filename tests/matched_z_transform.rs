@@ -1,5 +1,5 @@
 use dsmc::discretize::matched_z_transform::{
-    to_continuous, to_continuous_with, to_continuous_with_delay, to_discrete, to_discrete_with_delay, ContinuousWithDelay,
+    to_continuous, to_continuous_with, to_continuous_with_delay, ContinuousWithDelay, MatchedZ,
     MatchedZError, ToContinuousOptions, ZerosAtInfinity,
 };
 use dsmc::{tf, Continuous, Discrete, Polynomial, TransferFunction};
@@ -57,13 +57,13 @@ fn first_order() {
     let p = (-a * TS).exp();
 
     // All zeros at infinity to z = -1: K (z + 1) / (z - p), DC gain 1 -> K = (1 - p) / 2
-    let g = to_discrete(tf!("100 / (s + 100)"), TS, ZerosAtInfinity::MinusOne).unwrap();
+    let g = tf!("100 / (s + 100)").discretize(MatchedZ(ZerosAtInfinity::MinusOne), TS).unwrap();
     let (n, d) = normalized(&g);
     assert_coeffs_close(&n, &[(1.0 - p) / 2.0, (1.0 - p) / 2.0], 1e-12);
     assert_coeffs_close(&d, &[1.0, -p], 1e-12);
 
     // One kept at infinity: (1 - p) / (z - p)
-    let g = to_discrete(tf!("100 / (s + 100)"), TS, ZerosAtInfinity::KeepOneDelay).unwrap();
+    let g = tf!("100 / (s + 100)").discretize(MatchedZ(ZerosAtInfinity::KeepOneDelay), TS).unwrap();
     let (n, d) = normalized(&g);
     assert_coeffs_close(&n, &[1.0 - p], 1e-12);
     assert_coeffs_close(&d, &[1.0, -p], 1e-12);
@@ -73,7 +73,7 @@ fn first_order() {
 fn round_trip_s_z_s() {
     for g in plants() {
         for option in [ZerosAtInfinity::MinusOne, ZerosAtInfinity::KeepOneDelay] {
-            let back = to_continuous(to_discrete(&g, TS, option).unwrap(), TS).unwrap();
+            let back = to_continuous(g.discretize(MatchedZ(option), TS).unwrap(), TS).unwrap();
             let (n0, d0) = normalized(&g);
             let (n1, d1) = normalized(&back);
             assert_coeffs_close(&n1, &n0, 1e-7);
@@ -86,8 +86,8 @@ fn round_trip_s_z_s() {
 fn round_trip_z_s_z() {
     for g in plants() {
         for option in [ZerosAtInfinity::MinusOne, ZerosAtInfinity::KeepOneDelay] {
-            let gz = to_discrete(&g, TS, option).unwrap();
-            let again = to_discrete(to_continuous(&gz, TS).unwrap(), TS, option).unwrap();
+            let gz = g.discretize(MatchedZ(option), TS).unwrap();
+            let again = to_continuous(&gz, TS).unwrap().discretize(MatchedZ(option), TS).unwrap();
             let (n0, d0) = normalized(&gz);
             let (n1, d1) = normalized(&again);
             assert_coeffs_close(&n1, &n0, 1e-7);
@@ -100,7 +100,7 @@ fn round_trip_z_s_z() {
 #[test]
 fn low_frequency_response() {
     for g in plants() {
-        let gz = to_discrete(&g, TS, ZerosAtInfinity::MinusOne).unwrap();
+        let gz = g.discretize(MatchedZ(ZerosAtInfinity::MinusOne), TS).unwrap();
         for w in [0.1, 1.0, 10.0] {
             let (hs, hz) = (response_s(&g, w), response_z(&gz, w));
             assert!((hs - hz).norm() <= 2e-2 * hs.norm(), "{g:?} at {w}: {hs} vs {hz}");
@@ -120,14 +120,14 @@ fn errors() {
 
     // Improper G(s)
     let improper = TransferFunction::<f64, Continuous>::from_polynomials(Polynomial(vec![1.0, 1.0, 1.0]), Polynomial(vec![1.0, 2.0]));
-    assert_eq!(to_discrete(&improper, TS, ZerosAtInfinity::MinusOne).unwrap_err(), MatchedZError::Improper);
+    assert_eq!(improper.discretize(MatchedZ(ZerosAtInfinity::MinusOne), TS).unwrap_err(), MatchedZError::Improper);
 }
 
 /// Perturbed zeros near z = -1 (as in identified models) are zeros at s = ∞ within the tolerance.
 #[test]
 fn perturbed_nyquist_zeros() {
     let g = tf!("1000 / (s^2 + 20s + 1000)");
-    let gz = to_discrete(&g, TS, ZerosAtInfinity::MinusOne).unwrap();
+    let gz = g.discretize(MatchedZ(ZerosAtInfinity::MinusOne), TS).unwrap();
     // (z + 1)^2 -> (z + 1)^2 + 1e-6: zeros at -1 ± 1e-3 j, mapped to |Im s| ≈ π / ts without the tolerance
     let mut numer = gz.numerator.clone();
     let last = numer.len() - 1;
@@ -148,7 +148,7 @@ fn perturbed_nyquist_zeros() {
 #[test]
 fn unmappable_zeros_are_dropped() {
     let g = tf!("1000 / (s^2 + 20s + 1000)");
-    let gz = to_discrete(&g, TS, ZerosAtInfinity::MinusOne).unwrap();
+    let gz = g.discretize(MatchedZ(ZerosAtInfinity::MinusOne), TS).unwrap();
     // Replace the numerator by b0 z^2 + b1 z = b0 z (z + 102) with the same DC gain.
     let dc = gz.numerator.iter().sum::<f64>();
     let numer = Polynomial(vec![dc / 103.0, dc * 102.0 / 103.0, 0.0]);
@@ -170,9 +170,9 @@ fn unmappable_zeros_are_dropped() {
 fn dead_time() {
     let g = tf!("(1 - 0.01s) / ((s + 20)^2)");
     let delayed = ContinuousWithDelay { tf: g.clone(), delay: 3.0 * TS };
-    let gz = to_discrete_with_delay(&delayed, TS, ZerosAtInfinity::KeepOneDelay).unwrap();
+    let gz = delayed.discretize(MatchedZ(ZerosAtInfinity::KeepOneDelay), TS).unwrap();
     // z^-3: three more trailing zeros in the denominator than without the delay
-    let plain = to_discrete(&g, TS, ZerosAtInfinity::KeepOneDelay).unwrap();
+    let plain = g.discretize(MatchedZ(ZerosAtInfinity::KeepOneDelay), TS).unwrap();
     assert_eq!(gz.denominator.len(), plain.denominator.len() + 3);
 
     assert_eq!(to_continuous(&gz, TS).unwrap_err(), MatchedZError::PoleAtOrigin);
@@ -190,14 +190,14 @@ fn dead_time() {
 
     // A fractional delay has no z^-d form.
     let fractional = ContinuousWithDelay { tf: g, delay: 2.5 * TS };
-    assert!(matches!(to_discrete_with_delay(&fractional, TS, ZerosAtInfinity::MinusOne), Err(MatchedZError::FractionalDelay { .. })));
+    assert!(matches!(fractional.discretize(MatchedZ(ZerosAtInfinity::MinusOne), TS), Err(MatchedZError::FractionalDelay { .. })));
 }
 
 /// Zeros at z = 0 are a time advance (negative delay) instead of being dropped.
 #[test]
 fn time_advance() {
     let g = tf!("1000 / (s^2 + 20s + 1000)");
-    let gz = to_discrete(&g, TS, ZerosAtInfinity::MinusOne).unwrap();
+    let gz = g.discretize(MatchedZ(ZerosAtInfinity::MinusOne), TS).unwrap();
     // b0 z (z + 102) with the same DC gain (as identified with a mismatched order)
     let dc = gz.numerator.iter().sum::<f64>();
     let numer = Polynomial(vec![dc / 103.0, dc * 102.0 / 103.0, 0.0]);
