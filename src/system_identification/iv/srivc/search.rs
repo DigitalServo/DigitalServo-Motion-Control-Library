@@ -1,4 +1,4 @@
-//! Search of the model structure `(n, m, nk)` by identification and validation.
+//! Search of the model structure `(n, m, q, nk)` by identification and validation.
 
 use std::fmt;
 use std::ops::{AddAssign, MulAssign};
@@ -7,46 +7,54 @@ use nalgebra::{ComplexField, RealField};
 use num_traits::Float;
 use rustfft::FftNum;
 
-use super::{identify, Initialization, SrivcError, SrivcOptions, SrivcResult};
+use super::{identify, identify_with_prefilter, Initialization, Prefilter, SrivcError, SrivcOptions, SrivcResult};
+use crate::system_identification::preprocessing::high_pass;
 use crate::system_identification::validation::{Check, CheckResult, Report, Validation, ValidationError};
 
-/// Model structure `e^(-nk ts s) B(s) / A(s)` of SRIVC: `deg A = n = denominator_order`,
-/// `deg B = m = numerator_order`, `nk = input_delay` \[samples\], always in this order
-/// `(n, m, nk)` (constructor, `grid`, display).
+/// Model structure `e^(-nk ts s) B(s) / (s^q A(s))` of SRIVC: `deg A = n = denominator_order`,
+/// `deg B = m = numerator_order`, `q = integrators` (poles fixed at the origin, see
+/// `identify_with_prefilter`), `nk = input_delay` \[samples\], always in this order `(n, m, q, nk)`
+/// (constructor, `grid`, display).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Structure {
     /// `n`.
     pub denominator_order: usize,
     /// `m`.
     pub numerator_order: usize,
+    /// `q`.
+    pub integrators: usize,
     /// `nk` \[samples\].
     pub input_delay: usize,
 }
 
 impl Structure {
-    /// `(n, m, nk)`: the denominator order first, e.g. `b_0 / (s^2 + a_1 s + a_2)` with a delay of
-    /// 3 samples is `Structure::new(2, 0, 3)`.
-    pub fn new(denominator_order: usize, numerator_order: usize, input_delay: usize) -> Self {
-        Self { denominator_order, numerator_order, input_delay }
+    /// `(n, m, q, nk)`: the denominator order first, e.g. `b_0 / (s (s^2 + a_1 s + a_2))` with a
+    /// delay of 3 samples is `Structure::new(2, 0, 1, 3)`.
+    pub fn new(denominator_order: usize, numerator_order: usize, integrators: usize, input_delay: usize) -> Self {
+        Self { denominator_order, numerator_order, integrators, input_delay }
     }
 
-    /// Number of estimated parameters of `B / A`, `n + m + 1` (the penalty of BIC / AIC).
+    /// Number of estimated parameters of `B / A`, `n + m + 1` (the penalty of BIC / AIC; the poles
+    /// at the origin are fixed, not estimated).
     pub fn parameters(&self) -> usize {
         self.denominator_order + self.numerator_order + 1
     }
 
-    /// Every structure with `n` in `denominator_orders`, `m` in `numerator_orders` (`m <= n`) and
-    /// `nk` in `input_delays` (arguments in the order `(n, m, nk)`).
+    /// Every structure with `n` in `denominator_orders`, `m` in `numerator_orders` (`m <= n`), `q`
+    /// in `integrators` and `nk` in `input_delays` (arguments in the order `(n, m, q, nk)`).
     pub fn grid(
         denominator_orders: impl IntoIterator<Item = usize>,
         numerator_orders: impl IntoIterator<Item = usize> + Clone,
+        integrators: impl IntoIterator<Item = usize> + Clone,
         input_delays: impl IntoIterator<Item = usize> + Clone,
     ) -> Vec<Self> {
         let mut structures = Vec::new();
         for n in denominator_orders {
             for m in numerator_orders.clone().into_iter().filter(|&m| m <= n) {
-                for nk in input_delays.clone() {
-                    structures.push(Self::new(n, m, nk));
+                for q in integrators.clone() {
+                    for nk in input_delays.clone() {
+                        structures.push(Self::new(n, m, q, nk));
+                    }
                 }
             }
         }
@@ -55,9 +63,9 @@ impl Structure {
 }
 
 impl fmt::Display for Structure {
-    /// `(n, m, nk) = (5, 2, 8)`.
+    /// `(n, m, q, nk) = (4, 2, 1, 8)`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "(n, m, nk) = ({}, {}, {})", self.denominator_order, self.numerator_order, self.input_delay)
+        write!(f, "(n, m, q, nk) = ({}, {}, {}, {})", self.denominator_order, self.numerator_order, self.integrators, self.input_delay)
     }
 }
 
@@ -76,12 +84,18 @@ pub struct SearchOptions<T> {
     /// First evaluated sample of the validation data (e.g. one period of a periodic input, to
     /// leave out the transient from rest; required by `Check::Lines`).
     pub evaluated_from: usize,
+    /// Cutoff `ω_c` \[rad/s\] of the prefilters, needed by the structures with `q > 0`: each
+    /// candidate is identified with `Prefilter::new(q, ω_c)`, and the validation data are
+    /// high-passed alike for all of them (`preprocessing::high_pass` at `ω_c`, of order
+    /// `q_max + 1` over the structures), so that the models with poles at the origin do not drift
+    /// and the BIC are compared on the same data. `None`: no prefilter, `q = 0` only.
+    pub prefilter: Option<T>,
 }
 
 impl<T: Float> SearchOptions<T> {
-    /// Default SRIVC options, evaluation from the first sample.
+    /// Default SRIVC options, evaluation from the first sample, no prefilter.
     pub fn new(initialization: Initialization<T>, checks: Vec<Check<T>>, confidence: T) -> Self {
-        Self { initialization, srivc: SrivcOptions::default(), checks, confidence, evaluated_from: 0 }
+        Self { initialization, srivc: SrivcOptions::default(), checks, confidence, evaluated_from: 0, prefilter: None }
     }
 }
 
@@ -160,6 +174,11 @@ impl<T> StructureSearch<T> {
 /// The delay has to be searched together with the orders: missing poles are made up for by a
 /// longer delay, so the best delay depends on the order.
 ///
+/// The integrators `q` too: with too few, `A` needs a pole near the origin, with too many, `B` a
+/// zero near the origin; either costs a parameter that does not improve the fit, so that BIC
+/// picks the right `q` (from candidates with `n` and `m` adjusted). With `options.prefilter`, the
+/// validation data are high-passed (the input and the output alike) before the simulation.
+///
 /// Errors of the validation that do not depend on the candidate (e.g. too few segments or
 /// periods for the checks) are returned.
 pub fn search<T>(
@@ -173,15 +192,27 @@ where
     T: Float + AddAssign + MulAssign + ComplexField + RealField + FftNum,
 {
     let (u, y) = identification;
-    let (u_val, y_val) = validation;
+    let (u_val, y_val) = match options.prefilter {
+        Some(cutoff) => {
+            let order = structures.iter().map(|s| s.integrators).max().unwrap_or(0) + 1;
+            high_pass(validation.0, validation.1, cutoff / T::from(2.0 * std::f64::consts::PI).unwrap(), ts, order)
+        }
+        None => (validation.0.to_vec(), validation.1.to_vec()),
+    };
     let mut candidates = Vec::with_capacity(structures.len());
     for &structure in structures {
         let srivc = SrivcOptions { input_delay: structure.input_delay, ..options.srivc.clone() };
-        let outcome = match identify(u, y, ts, structure.denominator_order, structure.numerator_order, &options.initialization, &srivc) {
+        let (n, m, q) = (structure.denominator_order, structure.numerator_order, structure.integrators);
+        let identified = match options.prefilter {
+            Some(cutoff) => Prefilter::new(q, cutoff).and_then(|prefilter| identify_with_prefilter(u, y, ts, n, m, &prefilter, &options.initialization, &srivc)),
+            None if q == 0 => identify(u, y, ts, n, m, &options.initialization, &srivc),
+            None => Err(SrivcError::NoPrefilter { integrators: q }),
+        };
+        let outcome = match identified {
             Err(error) => Outcome::NotIdentified(error),
             Ok(result) if result.parameter.iter().any(|v| !Float::is_finite(*v)) => Outcome::Unstable(result),
             Ok(result) => {
-                let validation = Validation::continuous(&result.model, ts, u_val, y_val)?.evaluated_from(options.evaluated_from);
+                let validation = Validation::continuous(&result.model, ts, &u_val, &y_val)?.evaluated_from(options.evaluated_from);
                 if !Float::is_finite(validation.mse()) {
                     Outcome::Unstable(result)
                 } else {
@@ -207,10 +238,10 @@ impl<T: Float + fmt::Display> fmt::Display for StructureSearch<T> {
     /// One row per candidate: structure, BIC, pass / fail of each test, SRIVC iterations; then the
     /// selected structure.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "  n  m  nk |          BIC | tests | iterations")?;
+        writeln!(f, "  n  m  q  nk |          BIC | tests | iterations")?;
         for (i, c) in self.candidates.iter().enumerate() {
             let s = &c.structure;
-            write!(f, "{:3} {:2} {:3} | ", s.denominator_order, s.numerator_order, s.input_delay)?;
+            write!(f, "{:3} {:2} {:2} {:3} | ", s.denominator_order, s.numerator_order, s.integrators, s.input_delay)?;
             match &c.outcome {
                 Outcome::NotIdentified(error) => write!(f, "not identified: {error}")?,
                 Outcome::Unstable(result) => write!(f, "unstable model ({} iterations)", result.iterations)?,

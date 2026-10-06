@@ -328,8 +328,8 @@ With a periodic input (e.g. a multisine of `period` samples, excited at the harm
 every excited line with the noise level estimated from the period-to-period variation
 (`Check::Lines { period, lines }` in `check`).
 
-The structure of a continuous-time model (orders `n`, `m` and input delay `nk`, searched together:
-missing poles are made up for by a longer delay) is chosen by `srivc::search`: every candidate is
+The structure of a continuous-time model (orders `n`, `m`, integrators `q` and input delay `nk`,
+searched together: missing poles are made up for by a longer delay) is chosen by `srivc::search`: every candidate is
 identified, validated on another experiment by `check`, and the lowest BIC among the candidates
 passing every test is selected:
 
@@ -359,8 +359,8 @@ let experiment = |periods: usize, seed: u64| {
 let (u, y) = experiment(3, 1);
 let (u_val, y_val) = experiment(5, 2);
 
-// n = 1 ..= 3, m = 0 ..= 1, nk = 2 ..= 4
-let structures = Structure::grid(1..=3, 0..=1, 2..=4);
+// n = 1 ..= 3, m = 0 ..= 1, q = 0 (no pole at the origin), nk = 2 ..= 4
+let structures = Structure::grid(1..=3, 0..=1, 0..=0, 2..=4);
 let options = SearchOptions {
     evaluated_from: period, // leave out the transient of the first period
     ..SearchOptions::new(
@@ -371,8 +371,14 @@ let options = SearchOptions {
 };
 let search = srivc::search((&u, &y), (&u_val, &y_val), ts, &structures, &options).unwrap();
 println!("{search}"); // one row per candidate: BIC, tests, iterations
-assert_eq!(search.selected().unwrap().structure, Structure::new(2, 0, 3));
+assert_eq!(search.selected().unwrap().structure, Structure::new(2, 0, 0, 3));
 ```
+
+A plant with a rigid-body mode (poles at, or very close to, the origin) is identified as
+`R(s) / s^q` by `srivc::identify_with_prefilter` with a `Prefilter::new(q, omega_c)`: the input
+is pseudo-integrated, `s / (s + ω_c)^(q+1)`, and the output high-passed, `s^(q+1) / (s + ω_c)^(q+1)`,
+so that no integrator is applied to the data. With `SearchOptions::prefilter = Some(omega_c)`,
+`srivc::search` searches `q` with the other parameters of the structure.
 
 Data with a drift (e.g. an integrating plant driven by an unknown input offset) are high-passed
 before the identification by `preprocessing::high_pass(&u, &y, cutoff, ts, order)`, which filters

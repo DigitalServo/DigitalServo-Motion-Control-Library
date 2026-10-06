@@ -53,9 +53,11 @@ impl<T: Float> Default for SrivcOptions<T> {
 /// Result of `identify`.
 #[derive(Clone, Debug)]
 pub struct SrivcResult<T> {
-    /// Identified `e^(-nk ts s) B(s) / A(s)` (`A` monic; `tf` = `B / A`, `delay` = `nk ts`).
+    /// Identified `e^(-nk ts s) B(s) / (s^q A(s))` (`A` monic; `tf` = `B / (s^q A)`, `delay` = `nk ts`;
+    /// `q` the integrators of the prefilter, 0 by `identify`).
     pub model: TransferFunctionWithDelay<T>,
-    /// Parameters `θ = [a_1, ..., a_n, b_0, ..., b_m]` of `A(s) = s^n + a_1 s^(n-1) + ... + a_n`, `B(s) = b_0 s^m + ... + b_m`.
+    /// Parameters `θ = [a_1, ..., a_n, b_0, ..., b_m]` of `A(s) = s^n + a_1 s^(n-1) + ... + a_n`, `B(s) = b_0 s^m + ... + b_m`
+    /// (`s^q` not included).
     pub parameter: DVector<T>,
     /// Number of IV iterations done.
     pub iterations: usize,
@@ -74,6 +76,10 @@ pub enum SrivcError {
     InitialModel { denominator: usize, numerator: usize },
     #[error("singular normal equations")]
     Singular,
+    #[error("invalid prefilter (need a positive, finite cutoff)")]
+    InvalidPrefilter,
+    #[error("{integrators} integrators need a prefilter")]
+    NoPrefilter { integrators: usize },
 }
 
 /// SRIVC identification of `G(s) = e^(-nk ts s) B(s) / A(s)` (`deg A = n = denominator_order`,
@@ -94,13 +100,102 @@ pub enum SrivcError {
 /// `FirstOrderHold`), so `ts` should be small against the time constants of the plant.
 ///
 /// Argument order: `denominator_order` (`n`) before `numerator_order` (`m`), as in the notation
-/// `(n, m, nk)`; e.g. `b_0 / (s^2 + a_1 s + a_2)` is `(2, 0)`.
+/// `(n, m, q, nk)`; e.g. `b_0 / (s^2 + a_1 s + a_2)` is `(2, 0)`.
 pub fn identify<T>(
     u: &[T],
     y: &[T],
     ts: T,
     denominator_order: usize,
     numerator_order: usize,
+    initialization: &Initialization<T>,
+    options: &SrivcOptions<T>,
+) -> Result<SrivcResult<T>, SrivcError>
+where
+    T: Float + AddAssign + MulAssign + ComplexField + RealField,
+{
+    identify_with_prefilter(u, y, ts, denominator_order, numerator_order, &Prefilter::none(), initialization, options)
+}
+
+/// Prefilter of `identify_with_prefilter` for a plant `G(s)` with `q = integrators` poles at, or
+/// very close to, the origin (rigid-body mode: `q = 1` for torque -> velocity, `q = 2` for
+/// torque -> position): with the order `k = q + 1` and `ω_c = cutoff` \[rad/s\],
+///
+/// ```text
+/// w = s / (s + ω_c)^k u      (pseudo-integral of the input: ≈ u / s^q above ω_c)
+/// z = s^k / (s + ω_c)^k y    (high-pass of the output)
+/// ```
+///
+/// No pure integrator is applied to the data, and the input path keeps a zero at the origin, so
+/// an input offset or the noise does not drift into `w`, nor a polynomial drift of the output of
+/// degree `<= q` (e.g. the integrated unknown input offset, `~ t^q`) into `z`. Put `ω_c` below the
+/// lowest excited frequency (e.g. 1/5 .. 1/3 of it), with its transient, `~ k / ω_c`, well within
+/// the record.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Prefilter<T> {
+    order: usize,
+    cutoff: T,
+    integrators: usize,
+}
+
+impl<T: Float> Prefilter<T> {
+    /// Prefilter for `integrators` (`q`) of cutoff `cutoff` (`ω_c` \[rad/s\], positive and finite),
+    /// of order `q + 1`.
+    pub fn new(integrators: usize, cutoff: T) -> Result<Self, SrivcError> {
+        if !(cutoff > T::zero() && cutoff.is_finite()) {
+            return Err(SrivcError::InvalidPrefilter);
+        }
+        Ok(Self { order: integrators + 1, cutoff, integrators })
+    }
+
+    /// No prefilter (`identify`).
+    fn none() -> Self {
+        Self { order: 0, cutoff: T::zero(), integrators: 0 }
+    }
+
+    /// Order `k = q + 1`.
+    pub fn order(&self) -> usize {
+        self.order
+    }
+
+    /// Cutoff `ω_c` \[rad/s\].
+    pub fn cutoff(&self) -> T {
+        self.cutoff
+    }
+
+    /// Number of integrators `q`.
+    pub fn integrators(&self) -> usize {
+        self.integrators
+    }
+}
+
+/// SRIVC identification of `R(s) = s^q G(s) = e^(-nk ts s) B(s) / A(s)` of a plant `G(s)` with `q`
+/// poles at, or very close to, the origin (`q` = `prefilter.integrators()`), from the
+/// pseudo-integrated input `w` and the high-passed output `z` of `prefilter` (see `Prefilter`):
+///
+/// ```text
+/// A(s) z = B(s) w                  (z = L(s) G(s) u = R(s) w with L = s^k / (s + ω_c)^k)
+/// ```
+///
+/// The relation is exact for any `ω_c` (the same filter `L` on both sides, zero initial states),
+/// which only weights the data. The prefilter is folded into the SRIVC filter,
+/// `s^i / (Â(s) (s + ω_c)^k)`, so the input stays exact for its intersample behaviour; the output,
+/// filtered as linear between samples, is not: the error of that interpolation leaves a bias that
+/// grows like `k ω_c ts^2` (without the prefilter it cancels at convergence).
+///
+/// The poles of `G` near the origin are not identified (`deg A = n` = `denominator_order` is the
+/// order of `R`, `q` less than that of `G`): the data of a band-limited, finite-length test hold
+/// no information on them. The model returned is `G(s) = e^(-nk ts s) R(s) / s^q` (exact poles at
+/// the origin, valid in the excited band; replace `1 / s^q` by e.g. `1 / (s + p)` from a separate
+/// test of the rigid-body mode if needed), the parameters those of `R`; `R(0) = b_m / a_n` is the
+/// gain of the rigid-body mode (`1 / J` for torque -> velocity).
+#[allow(clippy::too_many_arguments)]
+pub fn identify_with_prefilter<T>(
+    u: &[T],
+    y: &[T],
+    ts: T,
+    denominator_order: usize,
+    numerator_order: usize,
+    prefilter: &Prefilter<T>,
     initialization: &Initialization<T>,
     options: &SrivcOptions<T>,
 ) -> Result<SrivcResult<T>, SrivcError>
@@ -121,14 +216,7 @@ where
     let mut theta = match initialization {
         Initialization::StateVariableFilter(lambda) => {
             // (s + λ)^n
-            let mut a = vec![T::one()];
-            for _ in 0..n {
-                a.push(T::zero());
-                for i in (1..a.len()).rev() {
-                    a[i] = a[i] + *lambda * a[i - 1];
-                }
-            }
-            Step::new(&a[1..], ts, &u, y, m, options.input_intersample).solve(None)?
+            Step::new(&times_power(&[], *lambda, n), prefilter, ts, &u, y, m, options.input_intersample).solve(None)?
         }
         Initialization::Model(tf) => initial_parameter(tf, m, n)?,
     };
@@ -138,7 +226,7 @@ where
     while iterations < options.max_iterations {
         let a = stabilized(&theta.as_slice()[..n]);
         let b = &theta.as_slice()[n..];
-        let next = Step::new(&a, ts, &u, y, m, options.input_intersample).solve(Some(b))?;
+        let next = Step::new(&a, prefilter, ts, &u, y, m, options.input_intersample).solve(Some(b))?;
         iterations += 1;
 
         let change = (&next - &theta).norm() / next.norm();
@@ -149,8 +237,10 @@ where
         }
     }
 
+    // s^q A(s)
     let mut denom = vec![T::one()];
     denom.extend_from_slice(&theta.as_slice()[..n]);
+    denom.resize(n + 1 + prefilter.integrators, T::zero());
     let tf = TransferFunction::from_polynomials(Polynomial(theta.as_slice()[n..].to_vec()), Polynomial(denom));
     let model = TransferFunctionWithDelay::new(tf, ts * T::from(nk).unwrap());
     Ok(SrivcResult { model, parameter: theta, iterations, converged })
@@ -191,58 +281,81 @@ fn stabilized<T: Float + ComplexField>(a: &[T]) -> Vec<T> {
     vieta_formula(&reflected).0.iter().skip(1).enumerate().map(|(i, c)| c.re * Float::powi(rho, i as i32 + 1)).collect()
 }
 
-/// One estimation step with the filter `1 / A(s)`.
+/// `[c_1, ..., c_(n+count)]` of the monic `A(s) (s + root)^count`, `a = [a_1, ..., a_n]`.
+fn times_power<T: Float>(a: &[T], root: T, count: usize) -> Vec<T> {
+    let mut c = vec![T::one()];
+    c.extend_from_slice(a);
+    for _ in 0..count {
+        c.push(T::zero());
+        for i in (1..c.len()).rev() {
+            c[i] = c[i] + root * c[i - 1];
+        }
+    }
+    c.split_off(1)
+}
+
+/// One estimation step with the filter `1 / (A(s) P(s))`, `P(s) = (s + ω_c)^k` the prefilter
+/// (`P = 1` without it).
 struct Step<T> {
     filter: StateVariableFilter<T>,
+    /// `1 / A(s)` for the instruments, if the prefilter is on (else `filter`).
+    instrument_filter: Option<StateVariableFilter<T>>,
     uf: DMatrix<T>,
     yf: DMatrix<T>,
+    n: usize,
     m: usize,
+    /// Columns of `uf` / `yf` where `w^(0)` / `z^(0)` start (`k - integrators` / `k`).
+    u_shift: usize,
+    y_shift: usize,
 }
 
 impl<T: Float + AddAssign + MulAssign + ComplexField + RealField> Step<T> {
-    fn new(a: &[T], ts: T, u: &[T], y: &[T], m: usize, input_intersample: InterSample) -> Self {
-        let filter = StateVariableFilter::new(a, ts);
+    fn new(a: &[T], prefilter: &Prefilter<T>, ts: T, u: &[T], y: &[T], m: usize, input_intersample: InterSample) -> Self {
+        let filter = StateVariableFilter::new(&times_power(a, prefilter.cutoff, prefilter.order), ts);
+        let instrument_filter = (prefilter.order > 0).then(|| StateVariableFilter::new(a, ts));
         let uf = filter.apply(u, input_intersample);
         let yf = filter.apply(y, InterSample::FirstOrderHold);
-        Self { filter, uf, yf, m }
+        let (u_shift, y_shift) = (prefilter.order - prefilter.integrators, prefilter.order);
+        Self { filter, instrument_filter, uf, yf, n: a.len(), m, u_shift, y_shift }
     }
 
-    /// Regressors `φ[k]ᵀ = [-v^(n-1), ..., -v, u^(m), ..., u]` at every sample as the rows of an
-    /// `N × (n + m + 1)` matrix, from the filtered `vf` (and the filtered input), by column copies.
-    fn regressors(&self, vf: &DMatrix<T>) -> DMatrix<T> {
-        let (n, m) = (self.filter.order(), self.m);
+    /// Regressors `φ[k]ᵀ = [-v^(n-1), ..., -v, w^(m), ..., w]` at every sample as the rows of an
+    /// `N × (n + m + 1)` matrix, from the filtered `vf` (`v^(i)` in its column `shift + i`) and the
+    /// filtered input, by column copies.
+    fn regressors(&self, vf: &DMatrix<T>, shift: usize) -> DMatrix<T> {
+        let (n, m) = (self.n, self.m);
         let mut regressors = DMatrix::zeros(vf.nrows(), n + m + 1);
         for i in 0..n {
             let mut column = regressors.column_mut(i);
-            column.copy_from(&vf.column(n - 1 - i));
+            column.copy_from(&vf.column(shift + n - 1 - i));
             column.neg_mut();
         }
         for j in 0..=m {
-            regressors.column_mut(n + j).copy_from(&self.uf.column(m - j));
+            regressors.column_mut(n + j).copy_from(&self.uf.column(self.u_shift + m - j));
         }
         regressors
     }
 
     /// IV estimate with the auxiliary model `b / A(s)` (least squares if `None`).
     fn solve(&self, b: Option<&[T]>) -> Result<DVector<T>, SrivcError> {
-        let n = self.filter.order();
+        let n = self.n;
         let xf = b.map(|b| {
-            // x̂ = B̂(s) / A(s) u = Σ b_j u_f^(m-j)
+            // x̂ = B̂(s) / A(s) w = Σ b_j w_f^(m-j)
             let x_hat: Vec<T> = (0..self.uf.nrows())
-                .map(|k| (0..=self.m).fold(T::zero(), |acc, j| acc + b[j] * self.uf[(k, self.m - j)]))
+                .map(|k| (0..=self.m).fold(T::zero(), |acc, j| acc + b[j] * self.uf[(k, self.u_shift + self.m - j)]))
                 .collect();
-            self.filter.apply(&x_hat, InterSample::FirstOrderHold)
+            self.instrument_filter.as_ref().unwrap_or(&self.filter).apply(&x_hat, InterSample::FirstOrderHold)
         });
         let instrument = xf.as_ref().unwrap_or(&self.yf);
 
         let size = n + self.m + 1;
         // Σ_k ζ[k] φ[k]ᵀ = Zᵀ Φ and Σ_k ζ[k] y_f^(n)[k] = Zᵀ y_f^(n), with the regressors as rows
         // (one matrix product each instead of an outer product per sample)
-        let phi = self.regressors(&self.yf);
-        let zeta_instrument = xf.as_ref().map(|_| self.regressors(instrument));
+        let phi = self.regressors(&self.yf, self.y_shift);
+        let zeta_instrument = xf.as_ref().map(|_| self.regressors(instrument, 0));
         let zeta = zeta_instrument.as_ref().unwrap_or(&phi); // least squares: ζ = φ
         let zeta_phi_sum = zeta.tr_mul(&phi);
-        let zeta_y_sum: DVector<T> = zeta.tr_mul(&self.yf.column(n));
+        let zeta_y_sum: DVector<T> = zeta.tr_mul(&self.yf.column(self.y_shift + n));
         // Equilibration: rows and columns scaled to unit max norm
         let col: Vec<T> = (0..size).map(|j| zeta_phi_sum.column(j).amax()).collect();
         let row: Vec<T> = (0..size).map(|i| zeta_phi_sum.row(i).amax()).collect();

@@ -569,7 +569,7 @@ mod srivc {
     //! `TransferFunctionWithDelay` (plant, simulation, identified model), `signal::excitation`,
     //! `preprocessing::high_pass`, `srivc::search` with `validation::Check`.
     //!
-    //! Three things are checked, each of them needed to use `srivc::identify` on such data:
+    //! Five things are checked, each of them needed to use `srivc::identify` on such data:
     //!
     //! 1. `test_srivc_structure_search`: the denominator order `n`, the numerator order `m` and the
     //!    input delay `nk` have to be searched *jointly*, and validated by the residual tests of
@@ -579,6 +579,11 @@ mod srivc {
     //!    estimate; the same high-pass filter on the input and the output removes the problem.
     //! 3. `test_srivc_high_order`: at high orders the coefficients of `A(s)` span many decades;
     //!    `srivc::identify` scales its prefilter internally, so that it still converges.
+    //! 4. `test_srivc_pseudo_integration`: the pole of the rigid-body mode is not in band-limited,
+    //!    finite-length data; `srivc::identify_with_prefilter` identifies `s G(s)` (finite gain)
+    //!    through a pseudo-integrating prefilter instead, with no integrator applied to the data.
+    //! 5. `test_srivc_integrator_search`: the number of integrators `q` is searched with `(n, m, nk)`
+    //!    and picked by BIC, a wrong `q` costing a parameter (a pole or a zero near the origin).
     //!
     //! The tests take ~10 s with optimizations and several minutes without, so they are ignored in
     //! debug builds: run `cargo test --release --test system_identification srivc:: -- --nocapture` (the
@@ -588,7 +593,7 @@ mod srivc {
 
     use dsmc::{Polynomial, TransferFunction, TransferFunctionWithDelay};
     use dsmc::signal::excitation::multisine;
-    use dsmc::system_identification::iv::srivc::{self, identify, Initialization, Outcome, SearchOptions, SrivcOptions, Structure};
+    use dsmc::system_identification::iv::srivc::{self, identify, identify_with_prefilter, Initialization, Outcome, Prefilter, SearchOptions, SrivcError, SrivcOptions, Structure};
     use dsmc::system_identification::preprocessing::high_pass;
     use dsmc::system_identification::validation::{Check, CheckKind};
 
@@ -669,9 +674,9 @@ mod srivc {
     /// `n = 5`, `m = 2`, `nk = 8`.
     fn two_inertia_plant() -> TransferFunctionWithDelay<f64> {
         let (antiresonance, resonance, low_pass) = (second_order(40.0, 0.02), second_order(65.0, 0.02), second_order(300.0, 0.5f64.sqrt()));
-        let dc_gain = 100.0;
+        let gain = 100.0;
         let gain_adjuster = resonance[2] / antiresonance[2] * low_pass[2];
-        let numerator = &antiresonance * dc_gain * gain_adjuster;
+        let numerator = &antiresonance * gain * gain_adjuster;
         let denominator = &(&Polynomial(vec![1.0, 0.0]) * &resonance) * &low_pass;
         TransferFunctionWithDelay::new(TransferFunction::from_polynomials(numerator, denominator), 8.0 * TS)
     }
@@ -721,7 +726,7 @@ mod srivc {
 
         let structures: Vec<Structure> = [(3, 2, vec![14, 16, 18]), (4, 2, vec![12, 13, 14]), (5, 2, vec![6, 7, 8, 9, 10]), (5, 3, vec![6, 8, 10]), (6, 3, vec![8])]
             .into_iter()
-            .flat_map(|(n, m, delays)| delays.into_iter().map(move |nk| Structure::new(n, m, nk)))
+            .flat_map(|(n, m, delays)| delays.into_iter().map(move |nk| Structure::new(n, m, 0, nk)))
             .collect();
         let options = SearchOptions {
             evaluated_from: PERIOD,
@@ -747,7 +752,7 @@ mod srivc {
 
         let selected = search.selected().unwrap();
         println!("{}", selected.report().unwrap());
-        assert_eq!(selected.structure, Structure::new(5, 2, 8));
+        assert_eq!(selected.structure, Structure::new(5, 2, 0, 8));
         let (relative, phase) = band_error(&selected.result().unwrap().model, &plant, &antiresonance);
         assert!(relative < 0.02 && phase < 1.0, "selected model: relative error {relative:e}, phase error {phase} deg");
 
@@ -767,6 +772,74 @@ mod srivc {
         let extra: Vec<_> = search.candidates.iter().filter(|c| c.structure.numerator_order == 3 && c.selectable()).collect();
         assert!(!extra.is_empty() && extra.iter().all(|c| c.bic() > selected.bic()));
         assert!(search.candidates.iter().all(|c| matches!(c.outcome, Outcome::Validated { .. })));
+    }
+
+    /// Joint search of `(n, m, q, nk)` with the prefilters at `ω_c` = 3 Hz (order `q + 1` for each
+    /// candidate, 3 on the validation data), on
+    /// data with an input offset of 1 % (not recorded): the right number of integrators `q = 1`
+    /// is selected.
+    ///
+    /// - A wrong `q` with the orders of the right one fails every test: with `q = 0` the pole at
+    ///   the origin is missing from `A`, with `q = 2` the zero at the origin `s^2 G` needs is
+    ///   missing from `B`.
+    /// - Too many integrators with the orders adjusted (`(4, 3, 2)`: a zero near the origin) fits as
+    ///   well and passes every test, but loses in BIC by about the penalty of the extra parameter,
+    ///   `ln N` (~11).
+    /// - Too few with the orders adjusted (`(5, 2, 0)`: a pole near the origin) would lose the same
+    ///   way without the offset, but here its prefilter (order `q + 1 = 1`) leaves the ramp of the
+    ///   output: the iterations do not converge.
+    #[test]
+    #[cfg_attr(debug_assertions, ignore = "slow without optimizations; run with `cargo test --release`")]
+    fn test_srivc_integrator_search() {
+        let plant = two_inertia_plant();
+        let (noise_ratio, offset) = (0.05, 0.01);
+        let (u, y) = experiment(&plant, 4 * PERIOD, 0x1234_5678_9abc, noise_ratio, offset);
+        let (u_val, y_val) = experiment(&plant, 6 * PERIOD, 0x0fed_cba9_8765, noise_ratio, offset);
+        let antiresonance = 36..=44;
+
+        let mut structures = Vec::new();
+        for (n, m, q) in [(4, 2, 0), (5, 2, 0), (3, 2, 1), (4, 2, 1), (4, 3, 1), (5, 2, 1), (4, 2, 2), (4, 3, 2), (3, 3, 2)] {
+            for nk in [7, 8, 9] {
+                structures.push(Structure::new(n, m, q, nk));
+            }
+        }
+        let options = SearchOptions {
+            evaluated_from: PERIOD,
+            prefilter: Some(2.0 * PI * 3.0),
+            ..SearchOptions::new(
+                Initialization::StateVariableFilter(2.0 * PI * 100.0),
+                vec![
+                    Check::Whiteness { max_lag: 20 },
+                    Check::CrossCorrelation { max_lag: 100 },
+                    Check::Lines { period: PERIOD, lines: BAND.collect() },
+                    Check::Coherence { segment_len: PERIOD, excited: 1e-2 },
+                ],
+                0.99,
+            )
+        };
+        let search = srivc::search((&u, &y), (&u_val, &y_val), TS, &structures, &options).unwrap();
+        println!("{search}");
+        for c in &search.candidates {
+            if let Some(result) = c.result() {
+                let (relative, phase) = band_error(&result.model, &plant, &antiresonance);
+                println!("{}: max relative error {relative:.4}, max phase error {phase:.2} deg", c.structure);
+            }
+        }
+
+        let selected = search.selected().unwrap();
+        assert_eq!(selected.structure, Structure::new(4, 2, 1, 8));
+        let (relative, phase) = band_error(&selected.result().unwrap().model, &plant, &antiresonance);
+        assert!(relative < 0.02 && phase < 1.0, "selected model: relative error {relative:e}, phase error {phase} deg");
+
+        let candidate = |n, m, q, nk| search.candidates.iter().find(|c| c.structure == Structure::new(n, m, q, nk)).unwrap();
+        for nk in [7, 8, 9] {
+            for (n, m, q) in [(4, 2, 0), (4, 2, 2)] {
+                assert!(!candidate(n, m, q, nk).report().unwrap().passed(), "{} passes", candidate(n, m, q, nk).structure);
+            }
+        }
+        let c = candidate(4, 3, 2, 8);
+        assert!(c.selectable() && c.bic().unwrap() > selected.bic().unwrap() + 5.0, "{}: BIC {:?}", c.structure, c.bic());
+        assert!(!candidate(5, 2, 0, 8).result().unwrap().converged);
     }
 
     /// A constant input offset that is not in the recorded input (a torque bias in an open-loop test)
@@ -803,6 +876,48 @@ mod srivc {
             if offset == 0.01 {
                 assert!(raw_error > 10.0 * error, "offset {offset}: raw {raw_error:e}, high-passed {error:e}");
             }
+        }
+    }
+
+    /// `srivc::identify_with_prefilter`: `R(s) = s G(s)` (order 4, finite gain) from the
+    /// pseudo-integrated input `s / (s + ω_c)^2 u` and the high-passed output `s^2 / (s + ω_c)^2 y`,
+    /// with `ω_c` = 3 Hz (below the excited band, which starts at 10 Hz), instead of a fifth-order
+    /// `G(s)` whose pole near the origin is not in the data (it lands anywhere around 1e-3 rad/s).
+    ///
+    /// - The model returned, `R(s) / s` (the pole exactly at the origin), matches the plant over the
+    ///   band, and the rigid-body gain `R(0)` (= `dc_gain`, the low-frequency asymptote `R(0) / s`)
+    ///   is found from the parameters of `R`.
+    /// - An input offset of 1 % (the ramp of the output) does not need a separate high-pass: the
+    ///   second-order prefilter removes it.
+    /// - Without noise the error is ~5e-5, not ~1e-10 as by `identify`: the output is filtered as
+    ///   linear between samples, and the error of that interpolation no longer cancels at
+    ///   convergence once the high-pass `s^k / (s + ω_c)^k` is in the filter; it grows like
+    ///   `k ω_c ts^2` (~1.5e-5 per Hz of the cutoff and per order here), far below the noise.
+    #[test]
+    #[cfg_attr(debug_assertions, ignore = "slow without optimizations; run with `cargo test --release`")]
+    fn test_srivc_pseudo_integration() {
+        let plant = two_inertia_plant();
+        let options = SrivcOptions { input_delay: 8, ..SrivcOptions::default() };
+        let init = Initialization::StateVariableFilter(2.0 * PI * 100.0);
+        let prefilter = Prefilter::new(1, 2.0 * PI * 3.0).unwrap();
+        let antiresonance = 36..=44;
+
+        for (noise_ratio, offset, tolerance) in [(0.0, 0.0, 1e-4), (0.05, 0.0, 0.01), (0.05, 0.01, 0.01)] {
+            let (u, y) = experiment(&plant, 4 * PERIOD, 0x1234_5678_9abc, noise_ratio, offset);
+            let result = identify_with_prefilter(&u, &y, TS, 4, 2, &prefilter, &init, &options).unwrap();
+            // G(s) = R(s) / s, with R(0) = b_2 / a_4 (θ = [a_1, ..., a_4, b_0, b_1, b_2])
+            let (relative, phase) = band_error(&result.model, &plant, &antiresonance);
+            let rigid_body_gain = result.parameter[6] / result.parameter[3];
+            println!("noise {noise_ratio}, offset {offset}: relative error {relative:.2e}, phase error {phase:.3} deg, R(0) {rigid_body_gain:.3}, {} iterations", result.iterations);
+            println!("tf: {}", result.model);
+            assert!(result.converged && orders(&result.model) == (2, 5) && result.model.tf.denominator[5] == 0.0);
+            assert!(relative < tolerance && phase < 100.0 * tolerance, "noise {noise_ratio}, offset {offset}: relative error {relative:e}, phase error {phase} deg");
+            assert!((rigid_body_gain / 100.0 - 1.0).abs() < tolerance, "R(0) = {rigid_body_gain}");
+        }
+
+        assert_eq!(prefilter.order(), 2);
+        for cutoff in [0.0, -10.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(Prefilter::new(1, cutoff), Err(SrivcError::InvalidPrefilter));
         }
     }
 

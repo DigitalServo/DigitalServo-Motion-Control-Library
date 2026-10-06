@@ -59,11 +59,6 @@ impl<T: Float + AddAssign + ComplexField + RealField> StateVariableFilter<T> {
         }
     }
 
-    /// Order `n` of `A(s)`.
-    pub(crate) fn order(&self) -> usize {
-        self.a.len()
-    }
-
     /// Row `k`: `[x[k], x'[k], ..., x^(n)[k]]`.
     pub(crate) fn apply(&self, v: &[T], hold: InterSample) -> DMatrix<T> {
         let n = self.a.len();
