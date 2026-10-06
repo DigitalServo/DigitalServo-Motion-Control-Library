@@ -6,5 +6,6 @@ pub mod iv;
 pub mod kalman_filter;
 pub mod frequency_response;
 pub mod validation;
+pub mod preprocessing;
 
 pub mod arx;

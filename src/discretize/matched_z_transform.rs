@@ -11,7 +11,7 @@ use crate::system::roots_with_multiplicity;
 use nalgebra::{ComplexField, RealField};
 
 use super::Method;
-use crate::{StateSpace, StateSpaceError, vieta_formula, Continuous, Discrete, Polynomial, TransferFunction};
+use crate::{StateSpace, StateSpaceError, vieta_formula, Continuous, Discrete, Polynomial, TransferFunction, TransferFunctionWithDelay};
 
 /// Where the zeros of `G(s)` at `s = ∞` (one per relative degree) go in `s -> z`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,36 +57,6 @@ pub enum MatchedZError {
     },
 }
 
-/// `G(s) = e^(-delay s) tf(s)`: a rational transfer function with a time shift (dead time for
-/// `delay > 0`, time advance for `delay < 0`).
-#[derive(Clone, Debug)]
-pub struct ContinuousWithDelay<T> {
-    /// Rational part.
-    pub tf: TransferFunction<T, Continuous>,
-    /// Dead time (negative for a time advance).
-    pub delay: T,
-}
-
-impl<T: Float> ContinuousWithDelay<T> {
-    /// `G(jω) = e^(-jω delay) tf(jω)`.
-    pub fn frequency_response(&self, omega: T) -> Complex<T> {
-        let s = Complex::new(T::zero(), omega);
-        let eval = |p: &Polynomial<T>| p.iter().fold(Complex::new(T::zero(), T::zero()), |acc, &c| acc * s + c);
-        (s * -self.delay).exp() * eval(&self.tf.numerator) / eval(&self.tf.denominator)
-    }
-}
-
-impl<T: Float + std::fmt::Display> std::fmt::Display for ContinuousWithDelay<T> {
-    /// e.g. `exp(-0.003 s) * (1000 / (s^2 + 20 * s + 1000))` (precision is passed on).
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let (delay, tf) = match f.precision() {
-            Some(p) => (format!("{:.*}", p, -self.delay), format!("{:.*}", p, self.tf)),
-            None => ((-self.delay).to_string(), self.tf.to_string()),
-        };
-        write!(f, "exp({} s) * ({})", delay, tf)
-    }
-}
-
 /// Roots within this distance (relative to `max(|root|, 1)`) are one repeated root.
 const CLUSTER_TOLERANCE: f64 = 1e-6;
 /// Imaginary / real parts within this (relative) size are round-off and set to zero.
@@ -111,7 +81,7 @@ const FACTOR_TOLERANCE: f64 = 1e-10;
 ///
 /// which is the DC gain for `k = 0` and the gain of the integrators' asymptote otherwise.
 ///
-/// A `ContinuousWithDelay` `e^(-delay s) G(s)` goes to `z^-d G(z)` with `d = delay / ts`, which
+/// A `TransferFunctionWithDelay` `e^(-delay s) G(s)` goes to `z^-d G(z)` with `d = delay / ts`, which
 /// must be a whole number (`FractionalDelay` otherwise, tolerance `1e-6` samples).
 ///
 /// ```
@@ -145,11 +115,11 @@ impl<T: Float + FloatConst + AddAssign + ComplexField + RealField> Method<T, Sta
     }
 }
 
-impl<T: Float + FloatConst + AddAssign> Method<T, ContinuousWithDelay<T>> for MatchedZ {
+impl<T: Float + FloatConst + AddAssign> Method<T, TransferFunctionWithDelay<T>> for MatchedZ {
     type Output = TransferFunction<T, Discrete>;
     type Error = MatchedZError;
 
-    fn apply(&self, g: &ContinuousWithDelay<T>, ts: T) -> Result<Self::Output, Self::Error> {
+    fn apply(&self, g: &TransferFunctionWithDelay<T>, ts: T) -> Result<Self::Output, Self::Error> {
         let samples = g.delay / ts;
         let d = samples.round();
         if (samples - d).abs() > T::from(1e-6).unwrap() {
@@ -268,7 +238,7 @@ where
 /// Same as `to_continuous_with`, but roots at `z = 0` are kept as a time shift:
 /// `G(z) = z^-d G'(z)  ->  G(s) = e^(-d ts s) G'(s)` (`d` = poles - zeros at `z = 0`; `d > 0` is a
 /// dead time, e.g. an input delay of the identified plant).
-pub fn to_continuous_with_delay<T, S>(tf: S, ts: T, options: &ToContinuousOptions<T>) -> Result<ContinuousWithDelay<T>, MatchedZError>
+pub fn to_continuous_with_delay<T, S>(tf: S, ts: T, options: &ToContinuousOptions<T>) -> Result<TransferFunctionWithDelay<T>, MatchedZError>
 where
     T: Float + FloatConst + AddAssign,
     S: Borrow<TransferFunction<T, Discrete>>,
@@ -278,7 +248,7 @@ where
     let (denom, poles_at_origin) = split_origin(&tf.denominator).ok_or(MatchedZError::ZeroSystem)?;
     let tf = rational_part(&numer, &denom, ts, options)?;
     let shift = poles_at_origin as i32 - zeros_at_origin as i32;
-    Ok(ContinuousWithDelay { tf, delay: ts * T::from(shift).unwrap() })
+    Ok(TransferFunctionWithDelay { tf, delay: ts * T::from(shift).unwrap() })
 }
 
 /// `G(z) = N(z) / D(z)` with `N(0), D(0) != 0` to the rational `G(s)`.

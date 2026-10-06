@@ -23,7 +23,7 @@
 //! }
 //! ```
 //!
-//! | Method | `TransferFunction` | `StateSpace` | `ContinuousWithDelay` |
+//! | Method | `TransferFunction` | `StateSpace` | `TransferFunctionWithDelay` |
 //! | --- | --- | --- | --- |
 //! | `Zoh` | yes | yes (any inputs / outputs) | no |
 //! | `Tustin` | yes | yes (any inputs / outputs) | no |
@@ -34,9 +34,11 @@
 pub mod bilinear_transform;
 pub mod matched_z_transform;
 pub mod zoh;
+pub(crate) mod state_variable_filter;
 
 pub use bilinear_transform::Tustin;
-pub use matched_z_transform::{ContinuousWithDelay, MatchedZ, ZerosAtInfinity};
+pub use matched_z_transform::{MatchedZ, ZerosAtInfinity};
+pub use state_variable_filter::InterSample;
 pub use zoh::Zoh;
 pub use matched_z_transform::MatchedZError;
 
@@ -44,7 +46,7 @@ use std::convert::Infallible;
 
 use thiserror::Error;
 
-use crate::{Continuous, StateSpace, StateSpaceError, TransferFunction};
+use crate::{Continuous, StateSpace, StateSpaceError, TransferFunction, TransferFunctionWithDelay};
 
 /// A discretization method for continuous-time systems of type `S` with sampling period of type `T`
 /// (`Zoh`, `Tustin`, `MatchedZ`, `DiscretizeMethod`). Called through `discretize` of the system.
@@ -120,7 +122,7 @@ impl<T> StateSpace<T, Continuous> {
     }
 }
 
-impl<T> ContinuousWithDelay<T> {
+impl<T> TransferFunctionWithDelay<T> {
     /// Discrete-time transfer function by `method` (`MatchedZ`) with sampling period `ts`.
     pub fn discretize<M: Method<T, Self>>(&self, method: M, ts: T) -> Result<M::Output, M::Error> {
         method.apply(self, ts)

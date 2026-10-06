@@ -12,14 +12,14 @@ space models, discretization, frequency analysis, trajectory generation, feedfor
 
 | Area | What you get |
 | --- | --- |
-| **Systems** | `TransferFunction` in `s` or `z` (the domain is a type parameter, so they cannot be mixed up), the `tf!` macro, arithmetic, pole-zero cancellation, poles / zeros, partial fractions; `StateSpace` |
+| **Systems** | `TransferFunction` in `s` or `z` (the domain is a type parameter, so they cannot be mixed up), the `tf!` macro, arithmetic, pole-zero cancellation, poles / zeros, partial fractions; `TransferFunctionWithDelay` (dead time: frequency response, exact simulation of a held input); `StateSpace` |
 | **Discretization** | Zero-order hold (exact), bilinear (Tustin), matched z-transform in both directions, each for transfer functions and state-space models, chosen by type or at run time (`DiscretizeMethod`); running a discrete-time `TransferFunction` or `StateSpace` sample by sample (`DiscreteSystem`: plant simulation, controllers, filters) |
 | **Frequency analysis** | `FrequencyTransferFunction` (`ω -> G(jω)`, including dead time), Bode diagram, Nyquist plot, FFT, Welch's method |
 | **Laplace transform** | Inverse Laplace transform, stable (non-causal) inverse of nonminimum-phase systems, piecewise-polynomial signals |
 | **Trajectories** | Modified trapezoid / sine / constant velocity, cycloid, harmonic, smoothstep of any smoothness |
 | **Feedforward** | Multirate perfect tracking control (PTC), with pre-actuation for nonminimum-phase plants |
-| **Signal processing** | Pseudo-differentiator, delay |
-| **System identification** | ARX models and linear regressions by least squares or Kalman filter, instrumental variables (IV) for ARX models, SRIVC for continuous-time models, model validation (BIC / AIC, whiteness, residual-input cross-correlation and coherence, test at the excited lines of a periodic input, comparison with the nonparametric frequency response; output error or one-step prediction error), Levy / Sanathanan-Koerner, vector fitting, Gaussian process regression |
+| **Signal processing** | Pseudo-differentiator, delay; excitation signals (random-phase multisine, chirp) |
+| **System identification** | ARX models and linear regressions by least squares or Kalman filter, instrumental variables (IV) for ARX models, SRIVC for continuous-time models, model validation (BIC / AIC, whiteness, residual-input cross-correlation and coherence, test at the excited lines of a periodic input, comparison with the nonparametric frequency response; output error or one-step prediction error; several tests at once with pass / fail), search of the SRIVC model structure (orders and delay) by validation, high-pass preprocessing against drifts, Levy / Sanathanan-Koerner, vector fitting, Gaussian process regression |
 | **Logging** | CSV output of any `Serialize` value |
 
 ## Installation
@@ -240,7 +240,7 @@ let g_s = tf!("1000 / (s^2 + 20 s + 1000)");
 let mut plant = DiscreteSystem::try_from(&g_s.discretize(Zoh, ts).unwrap()).unwrap();
 let y: Vec<f64> = u.iter().map(|&uk| plant.update(uk)).collect(); // + noise
 
-let validation = Validation::continuous(&g_s, 0, ts, &u, &y).unwrap();
+let validation = Validation::continuous(&g_s, ts, &u, &y).unwrap();
 let (bic, aic) = (validation.bic(3), validation.aic(3)); // p = n + m + 1
 let correlation = validation.cross_correlation(50, 2.58); // r(τ) within ±bound at 99 % per lag
 let coherence = validation.coherence_test(1000, 0.99).unwrap().excited(1e-2); // 1 Hz bins
@@ -304,10 +304,10 @@ let noise = |k: usize| {
     ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64 - 0.5
 };
 let u: Vec<f64> = (0..10000).map(|k| noise(k + 100_000)).collect();
-let y0 = Validation::continuous(&g_s, 0, ts, &u, &u).unwrap().simulated; // plant output
+let y0 = Validation::continuous(&g_s, ts, &u, &u).unwrap().simulated; // plant output
 let y: Vec<f64> = y0.iter().enumerate().map(|(k, v)| v + 0.01 * noise(k)).collect();
 
-let report = Validation::continuous(&g_s, 0, ts, &u, &y)
+let report = Validation::continuous(&g_s, ts, &u, &y)
     .unwrap()
     .check(
         &[
@@ -327,6 +327,56 @@ With a periodic input (e.g. a multisine of `period` samples, excited at the harm
 `validation.evaluated_from(period).line_test(period, &lines, 0.99)` compares the model error at
 every excited line with the noise level estimated from the period-to-period variation
 (`Check::Lines { period, lines }` in `check`).
+
+The structure of a continuous-time model (orders `n`, `m` and input delay `nk`, searched together:
+missing poles are made up for by a longer delay) is chosen by `srivc::search`: every candidate is
+identified, validated on another experiment by `check`, and the lowest BIC among the candidates
+passing every test is selected:
+
+```rust
+use dsmc::{tf, TransferFunctionWithDelay};
+use dsmc::signal::excitation::multisine;
+use dsmc::system_identification::iv::srivc::{self, Initialization, SearchOptions, Structure};
+use dsmc::system_identification::validation::Check;
+
+let ts = 1e-3;
+let period = 1000; // multisine of period 1 s over 1 .. 40 Hz
+let lines: Vec<usize> = (1..=40).collect();
+let plant = TransferFunctionWithDelay::new(tf!("1000 / (s^2 + 20 s + 1000)"), 3.0 * ts);
+let noise = |k: u64| {
+    // splitmix64: uniform in [-0.5, 0.5)
+    let mut z = k.wrapping_add(1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+};
+let experiment = |periods: usize, seed: u64| {
+    let u: Vec<f64> = multisine(periods * period, period, &lines, seed);
+    let y = plant.simulate(ts, &u).unwrap(); // plant output, plus measurement noise:
+    let y: Vec<f64> = y.iter().enumerate().map(|(k, v)| v + 0.02 * noise(k as u64 + (seed << 32))).collect();
+    (u, y)
+};
+let (u, y) = experiment(3, 1);
+let (u_val, y_val) = experiment(5, 2);
+
+// n = 1 ..= 3, m = 0 ..= 1, nk = 2 ..= 4
+let structures = Structure::grid(1..=3, 0..=1, 2..=4);
+let options = SearchOptions {
+    evaluated_from: period, // leave out the transient of the first period
+    ..SearchOptions::new(
+        Initialization::StateVariableFilter(30.0),
+        vec![Check::CrossCorrelation { max_lag: 50 }, Check::Lines { period, lines: lines.clone() }],
+        0.99,
+    )
+};
+let search = srivc::search((&u, &y), (&u_val, &y_val), ts, &structures, &options).unwrap();
+println!("{search}"); // one row per candidate: BIC, tests, iterations
+assert_eq!(search.selected().unwrap().structure, Structure::new(0, 2, 3));
+```
+
+Data with a drift (e.g. an integrating plant driven by an unknown input offset) are high-passed
+before the identification by `preprocessing::high_pass(&u, &y, cutoff, ts, order)`, which filters
+the input and the output alike from rest, so that they are still related by the same `G(s)`.
 
 From measured frequency responses (e.g. `dsmc::fft::welch`), a continuous-time model can be fitted:
 

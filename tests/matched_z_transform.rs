@@ -1,5 +1,5 @@
 use dsmc::discretize::matched_z_transform::{
-    to_continuous, to_continuous_with, to_continuous_with_delay, ContinuousWithDelay, MatchedZ,
+    to_continuous, to_continuous_with, to_continuous_with_delay, MatchedZ,
     MatchedZError, ToContinuousOptions, ZerosAtInfinity,
 };
 use dsmc::{tf, Continuous, Discrete, Polynomial, TransferFunction};
@@ -169,7 +169,7 @@ fn unmappable_zeros_are_dropped() {
 #[test]
 fn dead_time() {
     let g = tf!("(1 - 0.01s) / ((s + 20)^2)");
-    let delayed = ContinuousWithDelay { tf: g.clone(), delay: 3.0 * TS };
+    let delayed = dsmc::TransferFunctionWithDelay { tf: g.clone(), delay: 3.0 * TS };
     let gz = delayed.discretize(MatchedZ(ZerosAtInfinity::KeepOneDelay), TS).unwrap();
     // z^-3: three more trailing zeros in the denominator than without the delay
     let plain = g.discretize(MatchedZ(ZerosAtInfinity::KeepOneDelay), TS).unwrap();
@@ -189,7 +189,7 @@ fn dead_time() {
     assert!((back.frequency_response(w) - rational * Complex::new(0.0, -w * 3.0 * TS).exp()).norm() < 1e-9 * rational.norm());
 
     // A fractional delay has no z^-d form.
-    let fractional = ContinuousWithDelay { tf: g, delay: 2.5 * TS };
+    let fractional = dsmc::TransferFunctionWithDelay { tf: g, delay: 2.5 * TS };
     assert!(matches!(fractional.discretize(MatchedZ(ZerosAtInfinity::MinusOne), TS), Err(MatchedZError::FractionalDelay { .. })));
 }
 

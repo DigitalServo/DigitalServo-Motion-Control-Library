@@ -43,7 +43,28 @@ pub enum CheckResult<T> {
     Lines { test: LineTest<T>, allowed: usize, passed: bool },
 }
 
+/// Kind of a `Check` / `CheckResult`, to look a result up in a `Report`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CheckKind {
+    InformationCriteria,
+    Whiteness,
+    CrossCorrelation,
+    Coherence,
+    Lines,
+}
+
 impl<T> CheckResult<T> {
+    /// Which check this is the result of.
+    pub fn kind(&self) -> CheckKind {
+        match self {
+            Self::InformationCriteria { .. } => CheckKind::InformationCriteria,
+            Self::Whiteness { .. } => CheckKind::Whiteness,
+            Self::CrossCorrelation { .. } => CheckKind::CrossCorrelation,
+            Self::Coherence { .. } => CheckKind::Coherence,
+            Self::Lines { .. } => CheckKind::Lines,
+        }
+    }
+
     /// Pass / fail (`None` for the information criteria).
     pub fn passed(&self) -> Option<bool> {
         match self {
@@ -69,6 +90,78 @@ impl<T> Report<T> {
     /// Whether every test passed (the information criteria have no pass / fail).
     pub fn passed(&self) -> bool {
         self.results.iter().all(|r| r.passed() != Some(false))
+    }
+
+    /// The (first) result of the given kind of check, if it was run.
+    pub fn get(&self, kind: CheckKind) -> Option<&CheckResult<T>> {
+        self.results.iter().find(|r| r.kind() == kind)
+    }
+
+    /// Pass / fail of the given kind of check (`None` if it was not run, or has no pass / fail).
+    pub fn passed_by(&self, kind: CheckKind) -> Option<bool> {
+        self.get(kind).and_then(CheckResult::passed)
+    }
+
+    /// Whiteness test, if run.
+    pub fn whiteness(&self) -> Option<&WhitenessTest<T>> {
+        match self.get(CheckKind::Whiteness)? {
+            CheckResult::Whiteness { test, .. } => Some(test),
+            _ => None,
+        }
+    }
+
+    /// Cross-correlation test, if run.
+    pub fn cross_correlation(&self) -> Option<&CrossCorrelation<T>> {
+        match self.get(CheckKind::CrossCorrelation)? {
+            CheckResult::CrossCorrelation { test, .. } => Some(test),
+            _ => None,
+        }
+    }
+
+    /// Coherence test, if run.
+    pub fn coherence(&self) -> Option<&CoherenceTest<T>> {
+        match self.get(CheckKind::Coherence)? {
+            CheckResult::Coherence { test, .. } => Some(test),
+            _ => None,
+        }
+    }
+
+    /// Line test, if run.
+    pub fn lines(&self) -> Option<&LineTest<T>> {
+        match self.get(CheckKind::Lines)? {
+            CheckResult::Lines { test, .. } => Some(test),
+            _ => None,
+        }
+    }
+}
+
+impl<T: Copy> Report<T> {
+    /// `(mse, bic, aic, aicc)` of the information criteria, if run.
+    fn criteria(&self) -> Option<(T, T, T, T)> {
+        match self.get(CheckKind::InformationCriteria)? {
+            CheckResult::InformationCriteria { mse, bic, aic, aicc, .. } => Some((*mse, *bic, *aic, *aicc)),
+            _ => None,
+        }
+    }
+
+    /// Mean squared residual `V`, if the information criteria were run.
+    pub fn mse(&self) -> Option<T> {
+        self.criteria().map(|c| c.0)
+    }
+
+    /// BIC, if the information criteria were run.
+    pub fn bic(&self) -> Option<T> {
+        self.criteria().map(|c| c.1)
+    }
+
+    /// AIC, if the information criteria were run.
+    pub fn aic(&self) -> Option<T> {
+        self.criteria().map(|c| c.2)
+    }
+
+    /// AICc, if the information criteria were run.
+    pub fn aicc(&self) -> Option<T> {
+        self.criteria().map(|c| c.3)
     }
 }
 

@@ -9,7 +9,9 @@ mod display;
 mod ops;
 mod parser;
 mod partial_fraction;
+mod with_delay;
 pub use partial_fraction::{PartialFraction, PoleTerm};
+pub use with_delay::{SimulationError, TransferFunctionWithDelay};
 pub(crate) use partial_fraction::{fmt_num, principal_part, push_term};
 
 pub use parser::TransferFunctionParseError;

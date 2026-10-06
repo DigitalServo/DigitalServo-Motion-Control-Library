@@ -23,7 +23,7 @@
 //!
 //! let g = tf!("1000 / (s^2 + 20 s + 1000)");
 //! let u: Vec<f64> = (0..4000).map(|k| ((k * 7919) % 101) as f64 / 50.0 - 1.0).collect();
-//! let y0 = Validation::continuous(&g, 0, 1e-3, &u, &vec![0.0; u.len()]).unwrap().simulated;
+//! let y0 = Validation::continuous(&g, 1e-3, &u, &vec![0.0; u.len()]).unwrap().simulated;
 //! let noise = |k: usize| {
 //!     // splitmix64: uniform in [-0.5, 0.5)
 //!     let mut z = (k as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
@@ -34,7 +34,7 @@
 //! // Plant output with pseudo-random measurement noise
 //! let y: Vec<f64> = y0.iter().enumerate().map(|(k, v)| v + 0.02 * noise(k)).collect();
 //!
-//! let report = Validation::continuous(&g, 0, 1e-3, &u, &y)
+//! let report = Validation::continuous(&g, 1e-3, &u, &y)
 //!     .unwrap()
 //!     .check(
 //!         &[
@@ -55,9 +55,8 @@ use nalgebra::{ComplexField, RealField, Scalar};
 use num_traits::Float;
 use thiserror::Error;
 
-use crate::{Continuous, Discrete, Polynomial, TransferFunction};
+use crate::{Discrete, Polynomial, SimulationError, TransferFunction, TransferFunctionWithDelay};
 use crate::system_identification::arx::Arx;
-use crate::system_identification::iv::srivc::{InterSample, Prefilter};
 
 mod check;
 mod coherence;
@@ -68,7 +67,7 @@ mod line_test;
 mod spectra;
 mod whiteness;
 
-pub use check::{Check, CheckResult, Report};
+pub use check::{Check, CheckKind, CheckResult, Report};
 pub use coherence::CoherenceTest;
 pub use cross_correlation::CrossCorrelation;
 pub use frequency_response::FrequencyResponseComparison;
@@ -90,6 +89,8 @@ pub enum ValidationError {
     InvalidLine { line: usize, half: usize },
     #[error("{segments} segment(s) of {segment_len} samples evaluated; at least 2 are needed")]
     TooFewSegments { segments: usize, segment_len: usize },
+    #[error(transparent)]
+    Simulation(#[from] SimulationError),
 }
 
 /// Validation of a model on measured data by the residual `ε[k] = y[k] - ŷ[k]`, with `ŷ` either
@@ -119,30 +120,18 @@ pub struct Validation<T> {
 }
 
 impl<T: Float> Validation<T> {
-    /// Continuous-time model `e^(-nk ts s) G(s)` (`nk = input_delay` \[samples\]) driven by `u`
-    /// through a zero-order hold, sampled with period `ts` (exact discretization).
-    pub fn continuous(
-        model: &TransferFunction<T, Continuous>,
-        input_delay: usize,
-        ts: T,
-        u: &[T],
-        y: &[T],
-    ) -> Result<Self, ValidationError>
+    /// Continuous-time model `e^(-delay s) G(s)` (a `TransferFunctionWithDelay`, or a
+    /// `TransferFunction` without delay) driven by `u` through a zero-order hold, sampled with
+    /// period `ts` (`TransferFunctionWithDelay::simulate`: exact; the delay must be a whole number
+    /// of sampling periods).
+    pub fn continuous(model: impl Into<TransferFunctionWithDelay<T>>, ts: T, u: &[T], y: &[T]) -> Result<Self, ValidationError>
     where
         T: AddAssign + ComplexField + RealField,
     {
-        let (numer, denom) = monic(&model.numerator, &model.denominator)?;
-        let (m, n) = (numer.len() - 1, denom.len() - 1);
-        let u_delayed = delayed(u, input_delay);
-        let simulated = if n == 0 {
-            u_delayed.iter().map(|&v| numer[0] * v).collect()
-        } else {
-            // ŷ = B(s) x, x = u / A(s): x and its derivatives from the (balanced) filter 1 / A(s)
-            let xf = Prefilter::new(&denom[1..], ts).apply(&u_delayed, InterSample::ZeroOrderHold);
-            (0..u.len())
-                .map(|k| (0..=m).fold(T::zero(), |acc, j| acc + numer[j] * xf[(k, m - j)]))
-                .collect()
-        };
+        if u.len() != y.len() {
+            return Err(ValidationError::LengthMismatch { input: u.len(), output: y.len() });
+        }
+        let simulated = model.into().simulate(ts, u)?;
         Self::new(u, simulated, y)
     }
 
@@ -244,9 +233,4 @@ fn monic<T: Float>(numerator: &Polynomial<T>, denominator: &Polynomial<T>) -> Re
     }
     let numer = if numer.is_empty() { vec![T::zero()] } else { numer };
     Ok((numer.iter().map(|&c| c / lead).collect(), denom.iter().map(|&c| c / lead).collect()))
-}
-
-/// `u` delayed by `delay` samples (zero before).
-fn delayed<T: Float>(u: &[T], delay: usize) -> Vec<T> {
-    (0..u.len()).map(|k| if k >= delay { u[k - delay] } else { T::zero() }).collect()
 }

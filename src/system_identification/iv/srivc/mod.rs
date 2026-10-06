@@ -7,16 +7,13 @@ use num_complex::Complex;
 use num_traits::Float;
 use thiserror::Error;
 
-use crate::{Continuous, Polynomial, TransferFunction, dka_method, vieta_formula};
+use crate::{Continuous, Polynomial, TransferFunction, TransferFunctionWithDelay, dka_method, vieta_formula};
+use crate::discretize::state_variable_filter::{StateVariableFilter, root_radius};
 
-/// Intersample behaviour of a sampled signal, used to filter it in continuous time.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum InterSample {
-    /// Constant between samples (an input applied through a D/A converter); exact for such inputs.
-    ZeroOrderHold,
-    /// Linear between samples (a smooth signal such as a measured output).
-    FirstOrderHold,
-}
+pub use crate::discretize::InterSample;
+
+pub mod search;
+pub use search::{search, Candidate, Outcome, SearchOptions, Structure, StructureSearch};
 
 /// Starting point of the SRIVC iterations.
 #[derive(Clone, Debug)]
@@ -56,8 +53,8 @@ impl<T: Float> Default for SrivcOptions<T> {
 /// Result of `identify`.
 #[derive(Clone, Debug)]
 pub struct SrivcResult<T> {
-    /// Identified `G(s) = B(s) / A(s)` (`A` monic; without the input delay).
-    pub model: TransferFunction<T, Continuous>,
+    /// Identified `e^(-nk ts s) B(s) / A(s)` (`A` monic; `tf` = `B / A`, `delay` = `nk ts`).
+    pub model: TransferFunctionWithDelay<T>,
     /// Parameters `θ = [a_1, ..., a_n, b_0, ..., b_m]` of `A(s) = s^n + a_1 s^(n-1) + ... + a_n`, `B(s) = b_0 s^m + ... + b_m`.
     pub parameter: DVector<T>,
     /// Number of IV iterations done.
@@ -151,7 +148,8 @@ where
 
     let mut denom = vec![T::one()];
     denom.extend_from_slice(&theta.as_slice()[..n]);
-    let model = TransferFunction::from_polynomials(Polynomial(theta.as_slice()[n..].to_vec()), Polynomial(denom));
+    let tf = TransferFunction::from_polynomials(Polynomial(theta.as_slice()[n..].to_vec()), Polynomial(denom));
+    let model = TransferFunctionWithDelay::new(tf, ts * T::from(nk).unwrap());
     Ok(SrivcResult { model, parameter: theta, iterations, converged })
 }
 
@@ -190,84 +188,9 @@ fn stabilized<T: Float + ComplexField>(a: &[T]) -> Vec<T> {
     vieta_formula(&reflected).0.iter().skip(1).enumerate().map(|(i, c)| c.re * Float::powi(rho, i as i32 + 1)).collect()
 }
 
-/// Filter `1 / A(s)` of a sampled signal `v`, giving `[x, x', ..., x^(n)]` of `x = v / A(s)` at the
-/// sampling instants (zero initial state).
-///
-/// The coefficients `a_i` grow like `ρ^i` (`ρ`: radius of the roots), so the companion matrix in
-/// the states `x^(i)` spans many decades at high orders and its exponential is inaccurate. The
-/// states are therefore scaled as in the normalized time `ρ t`: `z_i = x^(i) / ρ^i`, with the
-/// input `w = v / ρ^n`, `ż = ρ (A' z + B w)`, `A'` the companion matrix of `a_i / ρ^i`.
-pub(crate) struct Prefilter<T> {
-    a: Vec<T>,
-    rho: T,
-    phi: DMatrix<T>,
-    gamma0: DVector<T>,
-    gamma1: DVector<T>,
-}
-
-impl<T: Float + AddAssign + ComplexField + RealField> Prefilter<T> {
-    /// `a = [a_1, ..., a_n]` of the monic `A(s)`. Over a sampling period with the input
-    /// `w(t_k + τ) = w[k] + (w[k+1] - w[k]) τ / ts`,
-    /// `z[k+1] = Φ z[k] + Γ0 w[k] + Γ1 (w[k+1] - w[k])`: from the exponential of the augmented
-    /// matrix `[[ρ ts A', ρ ts B, 0], [0, 0, 1], [0, 0, 0]] = [[Φ, Γ0, Γ1], ...]`.
-    pub(crate) fn new(a: &[T], ts: T) -> Self {
-        let n = a.len();
-        let rho = root_radius(a);
-        let rho_ts = rho * ts;
-        let mut aug = DMatrix::<T>::zeros(n + 2, n + 2);
-        for i in 0..n - 1 {
-            aug[(i, i + 1)] = rho_ts;
-        }
-        for j in 0..n {
-            aug[(n - 1, j)] = -a[n - 1 - j] / Float::powi(rho, (n - j) as i32) * rho_ts;
-        }
-        aug[(n - 1, n)] = rho_ts;
-        aug[(n, n + 1)] = T::one();
-        let e = aug.exp();
-        Self {
-            a: a.to_vec(),
-            rho,
-            phi: e.view((0, 0), (n, n)).into_owned(),
-            gamma0: e.view((0, n), (n, 1)).column(0).into_owned(),
-            gamma1: e.view((0, n + 1), (n, 1)).column(0).into_owned(),
-        }
-    }
-
-    /// Row `k`: `[x[k], x'[k], ..., x^(n)[k]]`.
-    pub(crate) fn apply(&self, v: &[T], hold: InterSample) -> DMatrix<T> {
-        let n = self.a.len();
-        let scale: Vec<T> = (0..=n).map(|i| Float::powi(self.rho, i as i32)).collect();
-        let mut out = DMatrix::zeros(v.len(), n + 1);
-        let mut z = DVector::zeros(n);
-        for k in 0..v.len() {
-            // x^(n) = v - a_1 x^(n-1) - ... - a_n x
-            let mut highest = v[k];
-            for i in 0..n {
-                out[(k, i)] = z[i] * scale[i];
-                highest -= self.a[n - 1 - i] * out[(k, i)];
-            }
-            out[(k, n)] = highest;
-
-            let slope = match hold {
-                InterSample::FirstOrderHold if k + 1 < v.len() => v[k + 1] - v[k],
-                _ => T::zero(),
-            };
-            z = &self.phi * &z + &self.gamma0 * (v[k] / scale[n]) + &self.gamma1 * (slope / scale[n]);
-        }
-        out
-    }
-}
-
-/// Radius of the roots of the monic `s^n + a_1 s^(n-1) + ... + a_n`, `max_i |a_i|^(1/i)` (1 if all
-/// `a_i` are zero).
-fn root_radius<T: Float>(a: &[T]) -> T {
-    let rho = a.iter().enumerate().fold(T::zero(), |acc, (i, &c)| acc.max(c.abs().powf(T::one() / T::from(i + 1).unwrap())));
-    if rho > T::zero() { rho } else { T::one() }
-}
-
 /// One estimation step with the filter `1 / A(s)`.
 struct Step<T> {
-    filter: Prefilter<T>,
+    filter: StateVariableFilter<T>,
     uf: DMatrix<T>,
     yf: DMatrix<T>,
     m: usize,
@@ -275,7 +198,7 @@ struct Step<T> {
 
 impl<T: Float + AddAssign + MulAssign + ComplexField + RealField> Step<T> {
     fn new(a: &[T], ts: T, u: &[T], y: &[T], m: usize, input_intersample: InterSample) -> Self {
-        let filter = Prefilter::new(a, ts);
+        let filter = StateVariableFilter::new(a, ts);
         let uf = filter.apply(u, input_intersample);
         let yf = filter.apply(y, InterSample::FirstOrderHold);
         Self { filter, uf, yf, m }
@@ -283,7 +206,7 @@ impl<T: Float + AddAssign + MulAssign + ComplexField + RealField> Step<T> {
 
     /// Regressor `[-v^(n-1), ..., -v, u^(m), ..., u]` at sample `k` from the filtered `vf`.
     fn regressor(&self, vf: &DMatrix<T>, k: usize) -> DVector<T> {
-        let (n, m) = (self.filter.a.len(), self.m);
+        let (n, m) = (self.filter.order(), self.m);
         let mut phi = DVector::zeros(n + m + 1);
         for i in 0..n {
             phi[i] = -vf[(k, n - 1 - i)];
@@ -296,7 +219,7 @@ impl<T: Float + AddAssign + MulAssign + ComplexField + RealField> Step<T> {
 
     /// IV estimate with the auxiliary model `b / A(s)` (least squares if `None`).
     fn solve(&self, b: Option<&[T]>) -> Result<DVector<T>, SrivcError> {
-        let n = self.filter.a.len();
+        let n = self.filter.order();
         let xf = b.map(|b| {
             // x̂ = B̂(s) / A(s) u = Σ b_j u_f^(m-j)
             let x_hat: Vec<T> = (0..self.uf.nrows())
