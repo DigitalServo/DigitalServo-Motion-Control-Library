@@ -69,7 +69,8 @@ impl<T: Float + AddAssign + ComplexField + RealField> StateVariableFilter<T> {
         let n = self.a.len();
         let scale: Vec<T> = (0..=n).map(|i| Float::powi(self.rho, i as i32)).collect();
         let mut out = DMatrix::zeros(v.len(), n + 1);
-        let mut z = DVector::zeros(n);
+        // State and next state, reused (no allocation per sample)
+        let (mut z, mut next) = (DVector::zeros(n), DVector::zeros(n));
         for k in 0..v.len() {
             // x^(n) = v - a_1 x^(n-1) - ... - a_n x
             let mut highest = v[k];
@@ -83,7 +84,11 @@ impl<T: Float + AddAssign + ComplexField + RealField> StateVariableFilter<T> {
                 InterSample::FirstOrderHold if k + 1 < v.len() => v[k + 1] - v[k],
                 _ => T::zero(),
             };
-            z = &self.phi * &z + &self.gamma0 * (v[k] / scale[n]) + &self.gamma1 * (slope / scale[n]);
+            // z[k+1] = Φ z[k] + Γ0 w[k] + Γ1 (w[k+1] - w[k])
+            next.gemv(T::one(), &self.phi, &z, T::zero());
+            next.axpy(v[k] / scale[n], &self.gamma0, T::one());
+            next.axpy(slope / scale[n], &self.gamma1, T::one());
+            std::mem::swap(&mut z, &mut next);
         }
         out
     }

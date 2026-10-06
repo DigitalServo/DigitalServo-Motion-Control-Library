@@ -204,17 +204,20 @@ impl<T: Float + AddAssign + MulAssign + ComplexField + RealField> Step<T> {
         Self { filter, uf, yf, m }
     }
 
-    /// Regressor `[-v^(n-1), ..., -v, u^(m), ..., u]` at sample `k` from the filtered `vf`.
-    fn regressor(&self, vf: &DMatrix<T>, k: usize) -> DVector<T> {
+    /// Regressors `φ[k]ᵀ = [-v^(n-1), ..., -v, u^(m), ..., u]` at every sample as the rows of an
+    /// `N × (n + m + 1)` matrix, from the filtered `vf` (and the filtered input), by column copies.
+    fn regressors(&self, vf: &DMatrix<T>) -> DMatrix<T> {
         let (n, m) = (self.filter.order(), self.m);
-        let mut phi = DVector::zeros(n + m + 1);
+        let mut regressors = DMatrix::zeros(vf.nrows(), n + m + 1);
         for i in 0..n {
-            phi[i] = -vf[(k, n - 1 - i)];
+            let mut column = regressors.column_mut(i);
+            column.copy_from(&vf.column(n - 1 - i));
+            column.neg_mut();
         }
         for j in 0..=m {
-            phi[n + j] = self.uf[(k, m - j)];
+            regressors.column_mut(n + j).copy_from(&self.uf.column(m - j));
         }
-        phi
+        regressors
     }
 
     /// IV estimate with the auxiliary model `b / A(s)` (least squares if `None`).
@@ -230,14 +233,13 @@ impl<T: Float + AddAssign + MulAssign + ComplexField + RealField> Step<T> {
         let instrument = xf.as_ref().unwrap_or(&self.yf);
 
         let size = n + self.m + 1;
-        let mut zeta_phi_sum = DMatrix::zeros(size, size);
-        let mut zeta_y_sum = DVector::zeros(size);
-        for k in 0..self.yf.nrows() {
-            let phi = self.regressor(&self.yf, k);
-            let zeta = self.regressor(instrument, k);
-            zeta_y_sum += &zeta * self.yf[(k, n)];
-            zeta_phi_sum += &zeta * &phi.transpose();
-        }
+        // Σ_k ζ[k] φ[k]ᵀ = Zᵀ Φ and Σ_k ζ[k] y_f^(n)[k] = Zᵀ y_f^(n), with the regressors as rows
+        // (one matrix product each instead of an outer product per sample)
+        let phi = self.regressors(&self.yf);
+        let zeta_instrument = xf.as_ref().map(|_| self.regressors(instrument));
+        let zeta = zeta_instrument.as_ref().unwrap_or(&phi); // least squares: ζ = φ
+        let zeta_phi_sum = zeta.tr_mul(&phi);
+        let zeta_y_sum: DVector<T> = zeta.tr_mul(&self.yf.column(n));
         // Equilibration: rows and columns scaled to unit max norm
         let col: Vec<T> = (0..size).map(|j| zeta_phi_sum.column(j).amax()).collect();
         let row: Vec<T> = (0..size).map(|i| zeta_phi_sum.row(i).amax()).collect();

@@ -1,10 +1,12 @@
 //! Cross-correlation test of the residual and the input.
 
+use num_complex::Complex;
 use num_traits::Float;
+use rustfft::{FftNum, FftPlanner};
 
 use super::Validation;
 
-impl<T: Float> Validation<T> {
+impl<T: Float + FftNum> Validation<T> {
     /// Cross-correlation test of the residual and the input over the lags `τ = -max_lag ..= max_lag`.
     ///
     /// If the model is right, the residual is the measurement noise alone and is independent of the
@@ -30,18 +32,15 @@ impl<T: Float> Validation<T> {
         let e: Vec<T> = self.residual.iter().map(|&v| v - e_mean).collect();
         let u: Vec<T> = self.input.iter().map(|&v| v - u_mean).collect();
 
-        // Σ_{k in evaluated range, 0 <= k - τ < len} a[k] b[k - τ] / N
-        let correlate = |a: &[T], b: &[T], tau: isize, from: usize| {
-            let first = (start as isize).max(tau + from as isize) as usize;
-            let last = (end as isize).min(end as isize + tau).max(first as isize) as usize;
-            (first..last).fold(T::zero(), |acc, k| acc + a[k] * b[(k as isize - tau) as usize]) / n
-        };
+        // R_εu(τ) = Σ_{k in evaluated range, 0 <= k - τ < len} ε[k] u[k - τ] / N: the input before
+        // `start` is known (past of the evaluated samples); the residual is not used there
+        let e_evaluated: Vec<T> = (0..end).map(|k| if k >= start { e[k] } else { T::zero() }).collect();
+        let r_eu: Vec<T> = correlation(&e_evaluated, &u, max_lag).iter().map(|&c| c / n).collect();
+        // Autocorrelations over the evaluated samples only, at the lags 0 ..= max_lag
+        let autocorrelation = |x: &[T]| -> Vec<T> { correlation(x, x, max_lag)[max_lag..].iter().map(|&c| c / n).collect() };
+        let (r_e, r_u) = (autocorrelation(&e[start..]), autocorrelation(&u[start..]));
         let max_lag = max_lag as isize;
         let lags: Vec<isize> = (-max_lag..=max_lag).collect();
-        // The input before `start` is known (past of the evaluated samples); the residual is not used there
-        let r_eu: Vec<T> = lags.iter().map(|&tau| correlate(&e, &u, tau, 0)).collect();
-        let r_e: Vec<T> = (0..=max_lag).map(|k| correlate(&e, &e, k, start)).collect();
-        let r_u: Vec<T> = (0..=max_lag).map(|k| correlate(&u, &u, k, start)).collect();
 
         let scale = (r_e[0] * r_u[0]).sqrt();
         let p = (1..=max_lag as usize).fold(r_e[0] * r_u[0], |acc, k| {
@@ -84,5 +83,51 @@ impl<T: Float> CrossCorrelation<T> {
     /// expected by chance when many lags are tested.
     pub fn max_ratio(&self) -> T {
         self.lags.iter().zip(&self.correlation).filter(|(tau, _)| **tau >= 0).fold(T::zero(), |acc, (_, r)| acc.max(r.abs())) / self.bound
+    }
+}
+
+/// Linear correlation `c[τ] = Σ_k a[k] b[k - τ]` (zero outside the sequences) at the lags
+/// `τ = -max_lag ..= max_lag`, by FFT: `c = IFFT(A conj(B)) / L_fft` with `A`, `B` the FFTs of the
+/// zero-padded sequences, `L_fft >= len + max_lag` (a power of two) so that the circular
+/// correlation does not wrap around within the lags.
+fn correlation<T: Float + FftNum>(a: &[T], b: &[T], max_lag: usize) -> Vec<T> {
+    let len = a.len().max(b.len());
+    let size = (len + max_lag).next_power_of_two();
+    let mut planner = FftPlanner::new();
+    let (forward, inverse) = (planner.plan_fft_forward(size), planner.plan_fft_inverse(size));
+    let padded = |x: &[T]| {
+        let mut buffer = vec![Complex::new(T::zero(), T::zero()); size];
+        for (b, &v) in buffer.iter_mut().zip(x) {
+            b.re = v;
+        }
+        buffer
+    };
+    let (mut fa, mut fb) = (padded(a), padded(b));
+    forward.process(&mut fa);
+    forward.process(&mut fb);
+    let mut product: Vec<Complex<T>> = fa.iter().zip(&fb).map(|(x, y)| x * y.conj()).collect();
+    inverse.process(&mut product);
+    let scale = T::from(size).unwrap();
+    // Lag τ at index τ mod size
+    (0..=2 * max_lag).map(|i| product[(i + size - max_lag) % size].re / scale).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn correlation_by_fft_matches_the_direct_sum() {
+        let a: Vec<f64> = (0..300).map(|k| ((k * 7919) % 97) as f64 / 97.0 - 0.5).collect();
+        let b: Vec<f64> = (0..300).map(|k| ((k * 104729) % 89) as f64 / 89.0 - 0.5).collect();
+        let max_lag = 40;
+        let c = correlation(&a, &b, max_lag);
+        for (i, tau) in (-(max_lag as isize)..=max_lag as isize).enumerate() {
+            let direct: f64 = (0..a.len() as isize)
+                .filter(|&k| k - tau >= 0 && k - tau < b.len() as isize)
+                .map(|k| a[k as usize] * b[(k - tau) as usize])
+                .sum();
+            assert!((c[i] - direct).abs() < 1e-10, "τ = {tau}: {} vs {direct}", c[i]);
+        }
     }
 }

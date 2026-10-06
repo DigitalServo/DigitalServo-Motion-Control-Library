@@ -2,10 +2,11 @@
 
 use num_complex::Complex;
 use num_traits::Float;
+use rustfft::{FftNum, FftPlanner};
 
 use super::{Validation, ValidationError};
 
-impl<T: Float> Validation<T> {
+impl<T: Float + FftNum> Validation<T> {
     /// Test of the residual at the excited lines of a periodic input (e.g. a multisine) of `period`
     /// samples, over the whole periods from `start` on (set `start` after the transient of the
     /// plant from rest, e.g. one period, if the data are also used for the noise level).
@@ -33,15 +34,22 @@ impl<T: Float> Validation<T> {
         }
 
         let p = T::from(periods).unwrap();
-        // DFT of x over period `index` at `line`
-        let dft = |x: &[T], index: usize, line: usize| {
-            let offset = start + index * period;
-            (0..period).fold(Complex::new(T::zero(), T::zero()), |acc, i| {
-                let angle = -T::from(2.0 * std::f64::consts::PI * ((line * i) % period) as f64 / period as f64).unwrap();
-                acc + Complex::new(angle.cos(), angle.sin()) * x[offset + i]
-            })
-        };
         let measured: Vec<T> = self.simulated.iter().zip(&self.residual).map(|(&a, &b)| a + b).collect();
+
+        // DFT of every period by one FFT each (`E_p(f) = Σ_i x[i] e^(-j 2π f i / period)`, the
+        // forward FFT without scaling), the lines picked from the bins
+        let fft = FftPlanner::new().plan_fft_forward(period);
+        let spectra = |x: &[T]| -> Vec<Vec<Complex<T>>> {
+            (0..periods)
+                .map(|index| {
+                    let offset = start + index * period;
+                    let mut buffer: Vec<Complex<T>> = x[offset..offset + period].iter().map(|&v| Complex::new(v, T::zero())).collect();
+                    fft.process(&mut buffer);
+                    lines.iter().map(|&line| buffer[line]).collect()
+                })
+                .collect()
+        };
+        let (residual_lines, output_lines) = (spectra(&self.residual), spectra(&measured));
 
         let mut test = LineTest {
             lines: lines.to_vec(),
@@ -52,11 +60,11 @@ impl<T: Float> Validation<T> {
             statistic: Vec::with_capacity(lines.len()),
             bound: (p - T::one()) * ((T::one() - confidence).powf(-T::one() / (p - T::one())) - T::one()),
         };
-        for &line in lines {
-            let e: Vec<Complex<T>> = (0..periods).map(|index| dft(&self.residual, index, line)).collect();
-            let mean = e.iter().fold(Complex::new(T::zero(), T::zero()), |acc, &v| acc + v) / p;
-            let variance = e.iter().fold(T::zero(), |acc, &v| acc + (v - mean).norm_sqr()) / (p - T::one());
-            let output = (0..periods).fold(Complex::new(T::zero(), T::zero()), |acc, index| acc + dft(&measured, index, line)) / p;
+        let zero = Complex::new(T::zero(), T::zero());
+        for l in 0..lines.len() {
+            let mean = residual_lines.iter().fold(zero, |acc, e| acc + e[l]) / p;
+            let variance = residual_lines.iter().fold(T::zero(), |acc, e| acc + (e[l] - mean).norm_sqr()) / (p - T::one());
+            let output = output_lines.iter().fold(zero, |acc, y| acc + y[l]) / p;
             test.statistic.push(p * mean.norm_sqr() / variance);
             test.residual.push(mean);
             test.output.push(output);
