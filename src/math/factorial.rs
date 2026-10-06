@@ -15,22 +15,3 @@ pub fn factorial<T: PrimInt + Unsigned>(n: T) -> T {
     }
     result
 }
-
-/// Return nPr = n! / (n-r)!
-pub fn factorial_n_to_r<T: PrimInt + Unsigned>(n: T, r: T) -> T {
-    if n < r {
-        return T::zero();
-    }
-    if n == r || r == T::zero() {
-        return T::one();
-    }
-
-    let mut result = n;
-    let mut i = n - T::one();
-
-    while i >= r {
-        result = result * i;
-        i = i - T::one();
-    }
-    result
-}
