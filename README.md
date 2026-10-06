@@ -294,4 +294,13 @@ More examples are in [`tests/`](tests) and in the [API documentation](https://do
 
 ## License
 
-MIT
+This project is licensed under the [MIT License](LICENSE). You are free to use, copy, modify,
+merge, publish, distribute, sublicense and sell copies of the software, provided that the
+copyright notice and the permission notice are included in all copies or substantial portions
+of the software. The software is provided "as is", without warranty of any kind.
+
+### Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in
+this project by you shall be licensed under the MIT License, without any additional terms or
+conditions.
