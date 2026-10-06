@@ -1131,7 +1131,7 @@ mod srivc {
     use dsmc::{DiscreteSystem, StateSpace, TransferFunction};
     use dsmc::discretize::Zoh;
     use dsmc::system_identification::iv::srivc::{Initialization, SrivcOptions, identify};
-    use dsmc::system_identification::validation::Validation;
+    use dsmc::system_identification::validation::{Check, CheckResult, Report, Validation};
     use num_complex::Complex;
 
     const TS: f64 = 1e-4;
@@ -1337,28 +1337,30 @@ mod srivc {
     // ---------------------------------------------------------------------------------------------
 
     /// Joint search of `(n, m, nk)`: each candidate is identified on one experiment and validated on
-    /// another one (different multisine phases and noise) with `Validation`:
+    /// another one (different multisine phases and noise) by `Validation::check` at 99 %:
     ///
-    /// - BIC `N ln V + p ln N` (`V`: mean squared simulation error, `p = n + m + 1`),
-    /// - cross-correlation test of the residual and the input (`τ = -100 ..= 100`, 99 % per lag),
+    /// - information criteria (BIC `N ln V + p ln N`, `V` the mean squared simulation error,
+    ///   `p = n + m + 1`),
+    /// - whiteness of the residual (Ljung-Box over 20 lags),
+    /// - cross-correlation of the residual and the input (`τ = -100 ..= 100`, Bonferroni bound),
     /// - test at the excited lines of the multisine (model error against the noise level estimated
-    ///   per line from the period-to-period variation, 99 % per line).
+    ///   per line from the period-to-period variation),
+    /// - coherence of the residual and the input (1 s segments, excited bins).
     ///
-    /// The candidates passing both tests (at most 5 % of the lags / lines outside, for a nominal 1 %)
-    /// are compared by BIC, and the lowest is selected.
+    /// The converged candidates passing every test (`Report::passed`) are compared by BIC, and the
+    /// lowest is selected.
     ///
     /// - Missing poles are made up for by a longer delay, so the best delay depends on the order
     ///   (16 samples for `n = 3`, 13 for `n = 4`, the true 8 for `n = 5`): the delay cannot be fixed
     ///   first and the orders searched afterwards.
     /// - The validation errors `V` of all reasonable candidates agree to 3 digits, while the
-    ///   cross-correlation test rejects every lower order and every wrong delay (40 .. 80 % of the
-    ///   lags outside): the residual still depends on the input.
-    /// - The line test is less sharp with 5 periods at 99 % (a delay off by one sample passes with
-    ///   1 .. 3 % of the lines outside, mean F 1.2 .. 1.3 times its expectation), but rejects the lower
-    ///   orders by their mean F (2 .. 70 times its expectation).
+    ///   cross-correlation test rejects every lower order and every wrong delay: the residual still
+    ///   depends on the input.
+    /// - The line test also rejects the lower orders (mean F several times its expectation), but is
+    ///   less sharp for a delay off by one sample.
     /// - With too many parameters the delay is no longer identifiable (an extra zero absorbs a shift),
-    ///   and the iterations often do not converge; the converged ones pass both tests, and lose in BIC
-    ///   by about the penalty `ln N` of the extra parameter.
+    ///   and the iterations often do not converge; the converged ones pass every test, and lose in
+    ///   BIC by about the penalty `ln N` of the extra parameter.
     #[test]
     #[cfg_attr(debug_assertions, ignore = "slow without optimizations; run with `cargo test --release`")]
     fn test_srivc_structure_search() {
@@ -1366,7 +1368,7 @@ mod srivc {
         let period = (1.0 / TS).round() as usize;
         let noise_ratio = 0.05;
         let (u, y) = experiment(&plant, 4 * period, 0x1234_5678_9abc, noise_ratio, 0.0);
-        // Validation: 6 periods, the first one (transient from rest) not used by the line test
+        // Validation: 6 periods, the first one (transient from rest) not evaluated
         let (u_val, y_val) = experiment(&plant, 6 * period, 0x0fed_cba9_8765, noise_ratio, 0.0);
         let lines: Vec<usize> = BAND.collect();
 
@@ -1383,79 +1385,96 @@ mod srivc {
                 (5, 3, &[6, 8, 10]),
                 (6, 3, &[8]),
             ];
+        let checks = |parameters: usize| {
+            [
+                Check::InformationCriteria { parameters },
+                Check::Whiteness { max_lag: 20 },
+                Check::CrossCorrelation { max_lag: 100 },
+                Check::Lines { period, lines: lines.clone() },
+                Check::Coherence { segment_len: period, excited: 1e-2 },
+            ]
+        };
 
-        struct Row {
+        struct Candidate {
             n: usize,
             m: usize,
             fit: Fit,
-            bic: f64,
-            /// Cross-correlation test: fraction of the lags outside, max |r| / bound
-            correlation: (f64, f64),
-            /// Line test: fraction of the lines outside, mean F / expected F
-            lines: (f64, f64),
+            report: Report<f64>,
         }
-        impl Row {
-            fn passes(&self) -> bool {
-                self.fit.converged && self.correlation.0 <= 0.05 && self.lines.0 <= 0.05
+        impl Candidate {
+            fn delay(&self) -> usize {
+                self.fit.model.delay
+            }
+            fn selectable(&self) -> bool {
+                self.fit.converged && self.report.passed()
+            }
+            fn bic(&self) -> f64 {
+                match self.report.results[0] {
+                    CheckResult::InformationCriteria { bic, .. } => bic,
+                    _ => unreachable!(),
+                }
+            }
+            /// Pass / fail of the tests, in the order of `checks` (after the information criteria)
+            fn passed(&self) -> Vec<bool> {
+                self.report.results.iter().filter_map(CheckResult::passed).collect()
+            }
+            /// Mean F of the line test against its expectation
+            fn mean_f(&self) -> f64 {
+                match &self.report.results[3] {
+                    CheckResult::Lines { test, .. } => test.mean_statistic() / test.expected_statistic(),
+                    _ => unreachable!(),
+                }
             }
         }
-        let mut rows = Vec::new();
-        println!(" n  m nk |      BIC | corr. out  max |  lines out  mean F | max rel. err | max phase err | iterations");
+        let verdicts = |c: &Candidate| c.passed().iter().map(|&p| if p { "ok  " } else { "FAIL" }).collect::<Vec<_>>().join(" ");
+
+        let mut found = Vec::new();
+        println!(" n  m nk |       BIC | white corr lines coh. | mean F | max rel. err | max phase err | iterations");
         for (n, m, delays) in candidates {
             for &delay in delays {
                 let Some(fit) = identify_normalized(&u, &y, m, n, delay, svf, w0) else { continue };
                 let model = TransferFunction::continuous(&fit.model.numerator, &fit.model.denominator);
-                let validation = Validation::continuous(&model, delay, TS, &u_val, &y_val).unwrap();
+                let validation = Validation::continuous(&model, delay, TS, &u_val, &y_val).unwrap().evaluated_from(period);
                 if !validation.mse().is_finite() {
                     println!("{n:2} {m:2} {delay:2} | unstable model ({} iterations)", fit.iterations);
                     continue;
                 }
-                let bic = validation.bic(n + m + 1);
-                let correlation = validation.cross_correlation(100, 2.58);
-                let line_test = validation.clone().evaluated_from(period).line_test(period, &lines, 0.99).unwrap();
-                let row = Row {
-                    n,
-                    m,
-                    bic,
-                    correlation: (correlation.fraction_outside(), correlation.max_ratio()),
-                    lines: (line_test.fraction_outside(), line_test.mean_statistic() / line_test.expected_statistic()),
-                    fit,
-                };
-                let (relative, phase) = band_error(&row.fit.model, &plant, &antiresonance);
+                let report = validation.check(&checks(n + m + 1), 0.99).unwrap();
+                let candidate = Candidate { n, m, fit, report };
+                let (relative, phase) = band_error(&candidate.fit.model, &plant, &antiresonance);
                 println!(
-                    "{n:2} {m:2} {delay:2} | {bic:8.1} | {:7.1} % {:5.2} | {:7.1} % {:7.2} | {relative:12.4} | {phase:9.2} deg | {}{}{}",
-                    100.0 * row.correlation.0,
-                    row.correlation.1,
-                    100.0 * row.lines.0,
-                    row.lines.1,
-                    row.fit.iterations,
-                    if row.fit.converged { "" } else { " (not converged)" },
-                    if row.passes() { "" } else { " rejected" },
+                    "{n:2} {m:2} {delay:2} | {:9.1} | {} | {:6.2} | {relative:12.4} | {phase:9.2} deg | {}{}{}",
+                    candidate.bic(),
+                    verdicts(&candidate),
+                    candidate.mean_f(),
+                    candidate.fit.iterations,
+                    if candidate.fit.converged { "" } else { " (not converged)" },
+                    if candidate.selectable() { "" } else { " rejected" },
                 );
-                rows.push(row);
+                found.push(candidate);
             }
         }
 
-        // Selection: the lowest BIC among the candidates passing both tests
-        let selected = rows.iter().filter(|r| r.passes()).min_by(|a, b| a.bic.total_cmp(&b.bic)).unwrap();
-        println!("selected: n = {}, m = {}, nk = {}", selected.n, selected.m, selected.fit.model.delay);
-        assert_eq!((selected.n, selected.m, selected.fit.model.delay), (5, 2, 8));
+        // Selection: the lowest BIC among the converged candidates passing every test
+        let selected = found.iter().filter(|c| c.selectable()).min_by(|a, b| a.bic().total_cmp(&b.bic())).unwrap();
+        println!("selected: n = {}, m = {}, nk = {}\n{}", selected.n, selected.m, selected.delay(), selected.report);
+        assert_eq!((selected.n, selected.m, selected.delay()), (5, 2, 8));
 
         let (relative, phase) = band_error(&selected.fit.model, &plant, &antiresonance);
         assert!(relative < 0.02 && phase < 1.0, "selected model: relative error {relative:e}, phase error {phase} deg");
 
-        // The lower orders and the wrong delays are rejected by the cross-correlation test, the lower
-        // orders also by the mean F of the line test
-        for r in rows.iter().filter(|r| r.n < 5 || (r.m == 2 && r.fit.model.delay != 8)) {
-            assert!(r.correlation.0 > 0.3 && r.correlation.1 > 2.0, "({}, {}, {}) not rejected by the cross-correlation", r.n, r.m, r.fit.model.delay);
+        // The lower orders and the wrong delays fail the cross-correlation test (index 1 of the
+        // tests), the lower orders also the line test (index 2), by a mean F well above 1
+        for c in found.iter().filter(|c| c.n < 5 || (c.m == 2 && c.delay() != 8)) {
+            assert!(!c.passed()[1], "({}, {}, {}) not rejected by the cross-correlation", c.n, c.m, c.delay());
         }
-        for r in rows.iter().filter(|r| r.n < 5) {
-            assert!(r.lines.1 > 2.0, "({}, {}, {}): mean F {}", r.n, r.m, r.fit.model.delay, r.lines.1);
+        for c in found.iter().filter(|c| c.n < 5) {
+            assert!(!c.passed()[2] && c.mean_f() > 2.0, "({}, {}, {}): line test, mean F {}", c.n, c.m, c.delay(), c.mean_f());
         }
 
         // An extra zero passes the tests when converged, but loses in BIC
-        let extra: Vec<&Row> = rows.iter().filter(|r| r.m == 3 && r.passes()).collect();
-        assert!(!extra.is_empty() && extra.iter().all(|r| r.bic > selected.bic));
+        let extra: Vec<&Candidate> = found.iter().filter(|c| c.m == 3 && c.selectable()).collect();
+        assert!(!extra.is_empty() && extra.iter().all(|c| c.bic() > selected.bic()));
     }
 
     /// A constant input offset that is not in the recorded input (a torque bias in an open-loop test)
