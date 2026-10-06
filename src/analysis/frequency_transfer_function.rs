@@ -5,7 +5,7 @@ use std::rc::Rc;
 use num_complex::Complex;
 use num_traits::{Float, FloatConst};
 
-use crate::{Continuous, Discrete, TransferFunction};
+use crate::{Continuous, Discrete, TransferFunction, TransferFunctionWithDelay};
 
 use super::{FrequencyCharacteristics, FrequencyUnit};
 
@@ -98,6 +98,26 @@ impl<T: Float + FloatConst + 'static> From<&TransferFunction<T, Continuous>> for
 impl<T: Float + FloatConst + 'static> From<TransferFunction<T, Continuous>> for FrequencyTransferFunction<T> {
     fn from(tf: TransferFunction<T, Continuous>) -> Self {
         tf.frequency_transfer_function()
+    }
+}
+
+impl<T: Float + FloatConst + 'static> TransferFunctionWithDelay<T> {
+    /// G(jω) = e^{-jω delay} tf(jω).
+    pub fn frequency_transfer_function(&self) -> FrequencyTransferFunction<T> {
+        let g = self.clone();
+        FrequencyTransferFunction::new(move |omega| g.frequency_response(omega))
+    }
+}
+
+impl<T: Float + FloatConst + 'static> From<&TransferFunctionWithDelay<T>> for FrequencyTransferFunction<T> {
+    fn from(g: &TransferFunctionWithDelay<T>) -> Self {
+        g.frequency_transfer_function()
+    }
+}
+
+impl<T: Float + FloatConst + 'static> From<TransferFunctionWithDelay<T>> for FrequencyTransferFunction<T> {
+    fn from(g: TransferFunctionWithDelay<T>) -> Self {
+        FrequencyTransferFunction::new(move |omega| g.frequency_response(omega))
     }
 }
 

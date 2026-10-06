@@ -47,7 +47,7 @@ pub struct FrequencyCharacteristics<T, U = Hz>{
     pub frequency: T,
     /// Gain, in dB or as the magnitude depending on how it was computed (`log_scale`).
     pub gain: T,
-    /// Phase \[rad\], in `(-π, π]`.
+    /// Phase \[rad\], continuous along the frequency axis from `BodeDiagramPlotter` by default (see `BodeDiagramPlotter::unwrap_phase`), otherwise in `(-π, π]`.
     pub phase: T,
     #[serde(skip)]
     _unit: PhantomData<U>,

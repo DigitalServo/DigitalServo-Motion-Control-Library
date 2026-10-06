@@ -1,5 +1,5 @@
 use dsmc::discretize::Tustin;
-use dsmc::{BodeDiagramPlotter, FrequencyTransferFunction, Hz, NyquistPlotter, RadPerSec, tf};
+use dsmc::{BodeDiagramPlotter, FrequencyTransferFunction, Hz, NyquistPlotter, RadPerSec, TransferFunctionWithDelay, tf};
 use num_complex::Complex;
 
 #[test]
@@ -55,4 +55,30 @@ fn test_frequency_transfer_function() {
 
     let nyq = NyquistPlotter::<f64>::new(0.1, 100.0, 0.1).plot(&g_d);
     assert_eq!(nyq.len(), b.len());
+
+    // TransferFunctionWithDelay plots like the series connection above
+    let tf_d = TransferFunctionWithDelay::new(tf_s.clone(), l);
+    let nyq_d = NyquistPlotter::<f64>::new(0.1, 100.0, 0.1).plot(&tf_d);
+    for (a, b) in nyq.iter().zip(&nyq_d) {
+        assert!((a.value - b.value).norm() < 1e-12);
+    }
+    let bode_d = bode.plot(tf_d.clone());
+    let bode_g = bode.plot(&g_d);
+    for (a, b) in bode_d.iter().zip(&bode_g) {
+        assert!((a.gain - b.gain).abs() < 1e-12 && (a.phase - b.phase).abs() < 1e-12);
+    }
+
+    // Unwrapped phase: phase of tf_s minus omega * l, continuous over many turns
+    let bode_u = BodeDiagramPlotter::<f64>::new(0.1, 2000.0, 0.1, true).plot(&tf_d);
+    let bode_w = BodeDiagramPlotter::<f64>::new(0.1, 2000.0, 0.1, true).unwrap_phase(false).plot(&tf_d);
+    let bode_s = BodeDiagramPlotter::<f64>::new(0.1, 2000.0, 0.1, true).plot(&tf_s);
+    for ((u, w), s) in bode_u.iter().zip(&bode_w).zip(&bode_s) {
+        let omega = 2.0 * std::f64::consts::PI * u.frequency;
+        assert!((u.phase - (s.phase - omega * l)).abs() < 1e-9);
+        let turns = (u.phase - w.phase) / (2.0 * std::f64::consts::PI);
+        assert!((turns - turns.round()).abs() < 1e-9);
+        assert_eq!(u.gain, w.gain);
+        assert!(w.phase > -std::f64::consts::PI && w.phase <= std::f64::consts::PI);
+    }
+    assert!(bode_u.last().unwrap().phase < -4.0 * std::f64::consts::PI);
 }
