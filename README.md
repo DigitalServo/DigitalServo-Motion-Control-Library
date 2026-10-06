@@ -164,7 +164,7 @@ let ts = 1e-3;
 let mut plant = DiscreteSystem::try_from(&tf!("1000 / (s^2 + 20 s + 1000)").discretize(Zoh, ts).unwrap()).unwrap();
 
 // ARX model y[k] = a1 y[k-1] + a2 y[k-2] + b0 u[k-1] + b1 u[k-2]
-let mut arx = lsm::arx::DataBuffer::<f64>::new(1, 2).with_input_delay(1);
+let mut arx = lsm::arx::DataBuffer::<f64>::new(2, 1).with_input_delay(1);
 let mut y_prev = 0.0;
 for k in 0..1000 {
     let t = k as f64 * ts;
@@ -197,13 +197,13 @@ let y: Vec<f64> = u.iter().map(|&uk| plant.update(uk)).collect(); // + noise
 
 // ARX model by least squares, then 3 IV iterations (each with the previous estimate as the
 // auxiliary model generating the instruments)
-let model = iv::arx::identify(&u, &y, &Arx::new(1, 2).with_input_delay(1), 3).unwrap();
+let model = iv::arx::identify(&u, &y, &Arx::new(2, 1).with_input_delay(1), 3).unwrap();
 let g_z = model.transfer_function();
 
-// Continuous-time B(s) / A(s) with deg B = 0, deg A = 2, started from a state-variable filter
-// 1 / (s + 30)^2
+// Continuous-time B(s) / A(s) with deg A = 2, deg B = 0 (orders: denominator first), started
+// from a state-variable filter 1 / (s + 30)^2
 let result = iv::srivc::identify(
-    &u, &y, ts, 0, 2, &Initialization::StateVariableFilter(30.0), &SrivcOptions::default(),
+    &u, &y, ts, 2, 0, &Initialization::StateVariableFilter(30.0), &SrivcOptions::default(),
 ).unwrap();
 let g_s = result.model;
 ```
@@ -272,7 +272,7 @@ for k in 2..u.len() {
     y[k] = 1.5 * y[k - 1] - 0.7 * y[k - 2] + u[k - 1] + 0.5 * u[k - 2] + e;
 }
 
-let mut arx = lsm::arx::DataBuffer::<f64>::new(1, 2).with_input_delay(1);
+let mut arx = lsm::arx::DataBuffer::<f64>::new(2, 1).with_input_delay(1);
 for k in 0..u.len() {
     arx.add(u[k], if k > 0 { y[k - 1] } else { 0.0 }, y[k]);
 }
@@ -371,7 +371,7 @@ let options = SearchOptions {
 };
 let search = srivc::search((&u, &y), (&u_val, &y_val), ts, &structures, &options).unwrap();
 println!("{search}"); // one row per candidate: BIC, tests, iterations
-assert_eq!(search.selected().unwrap().structure, Structure::new(0, 2, 3));
+assert_eq!(search.selected().unwrap().structure, Structure::new(2, 0, 3));
 ```
 
 Data with a drift (e.g. an integrating plant driven by an unknown input offset) are high-passed

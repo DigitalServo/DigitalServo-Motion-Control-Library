@@ -22,10 +22,14 @@ pub struct KalmanFilter<T>
 
 impl<T: Float + AddAssign + SubAssign + MulAssign + DivAssign + Scalar> KalmanFilter<T>
 {
-    /// `input_order`: `nb`, `state_order`: `na`, `sigma_v`: variance of the parameter random walk,
+    /// `state_order`: `na`, `input_order`: `nb`, `sigma_v`: variance of the parameter random walk,
     /// `sigma_w`: variance of the measurement noise, `cov_0`: initial covariance of the parameters.
-    pub fn new(input_order: usize, state_order: usize, sigma_v: T, sigma_w: T, cov_0: T) -> Self {
-        Self::from_arx(Arx::new(input_order, state_order), sigma_v, sigma_w, cov_0)
+    ///
+    /// Argument order: the output (denominator) order `na` first, then the input (numerator)
+    /// order `nb`, as in the notation `(na, nb, nk)`; e.g. the model
+    /// `y[k] = a_1 y[k-1] + a_2 y[k-2] + b_0 u[k] + b_1 u[k-1]` is `(2, 1)`.
+    pub fn new(state_order: usize, input_order: usize, sigma_v: T, sigma_w: T, cov_0: T) -> Self {
+        Self::from_arx(Arx::new(state_order, input_order), sigma_v, sigma_w, cov_0)
     }
 
     /// Kalman filter of the given model structure (see `new` for the other arguments).

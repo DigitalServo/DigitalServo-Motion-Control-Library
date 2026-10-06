@@ -68,16 +68,16 @@ pub struct SrivcResult<T> {
 pub enum SrivcError {
     #[error("input and output lengths differ: {input} vs {output}")]
     LengthMismatch { input: usize, output: usize },
-    #[error("invalid orders: numerator {numerator}, denominator {denominator} (need 1 <= n, m <= n)")]
-    InvalidOrder { numerator: usize, denominator: usize },
-    #[error("initial model does not match the orders (numerator <= {numerator}, denominator = {denominator})")]
-    InitialModel { numerator: usize, denominator: usize },
+    #[error("invalid orders: denominator {denominator}, numerator {numerator} (need 1 <= n, m <= n)")]
+    InvalidOrder { denominator: usize, numerator: usize },
+    #[error("initial model does not match the orders (denominator = {denominator}, numerator <= {numerator})")]
+    InitialModel { denominator: usize, numerator: usize },
     #[error("singular normal equations")]
     Singular,
 }
 
-/// SRIVC identification of `G(s) = e^(-nk ts s) B(s) / A(s)` (`deg B = m = numerator_order`,
-/// `deg A = n = denominator_order`, `A` monic) from the input / output samples `u[k] = u(k ts)`,
+/// SRIVC identification of `G(s) = e^(-nk ts s) B(s) / A(s)` (`deg A = n = denominator_order`,
+/// `deg B = m = numerator_order`, `A` monic) from the input / output samples `u[k] = u(k ts)`,
 /// `y[k] = y(k ts)` of a system at rest at `k = 0`, with white measurement noise on the output.
 ///
 /// With the current estimate `Â`, `B̂`, every signal is filtered by `s^i / Â(s)` (`i = 0 ..= n`):
@@ -92,12 +92,15 @@ pub enum SrivcError {
 /// parameters converge. Unstable poles of `Â` are reflected to the left half-plane for filtering.
 /// The filters are discretized exactly for the given intersample behaviour (the output and `x̂` as
 /// `FirstOrderHold`), so `ts` should be small against the time constants of the plant.
+///
+/// Argument order: `denominator_order` (`n`) before `numerator_order` (`m`), as in the notation
+/// `(n, m, nk)`; e.g. `b_0 / (s^2 + a_1 s + a_2)` is `(2, 0)`.
 pub fn identify<T>(
     u: &[T],
     y: &[T],
     ts: T,
-    numerator_order: usize,
     denominator_order: usize,
+    numerator_order: usize,
     initialization: &Initialization<T>,
     options: &SrivcOptions<T>,
 ) -> Result<SrivcResult<T>, SrivcError>
@@ -109,7 +112,7 @@ where
         return Err(SrivcError::LengthMismatch { input: u.len(), output: y.len() });
     }
     if n == 0 || m > n {
-        return Err(SrivcError::InvalidOrder { numerator: m, denominator: n });
+        return Err(SrivcError::InvalidOrder { denominator: n, numerator: m });
     }
 
     let nk = options.input_delay;
@@ -158,7 +161,7 @@ fn initial_parameter<T: Float + ComplexField>(tf: &TransferFunction<T, Continuou
     let trim = |p: &Polynomial<T>| p.iter().copied().skip_while(|c| c.is_zero()).collect::<Vec<T>>();
     let (numer, denom) = (trim(&tf.numerator), trim(&tf.denominator));
     if denom.len() != n + 1 || numer.len() > m + 1 {
-        return Err(SrivcError::InitialModel { numerator: m, denominator: n });
+        return Err(SrivcError::InitialModel { denominator: n, numerator: m });
     }
     let lead = denom[0];
     let mut theta = DVector::zeros(n + m + 1);

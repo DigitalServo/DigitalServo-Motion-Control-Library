@@ -10,22 +10,24 @@ use rustfft::FftNum;
 use super::{identify, Initialization, SrivcError, SrivcOptions, SrivcResult};
 use crate::system_identification::validation::{Check, CheckResult, Report, Validation, ValidationError};
 
-/// Model structure `e^(-nk ts s) B(s) / A(s)` of SRIVC: `deg B = m = numerator_order`,
-/// `deg A = n = denominator_order`, `nk = input_delay` \[samples\].
+/// Model structure `e^(-nk ts s) B(s) / A(s)` of SRIVC: `deg A = n = denominator_order`,
+/// `deg B = m = numerator_order`, `nk = input_delay` \[samples\], always in this order
+/// `(n, m, nk)` (constructor, `grid`, display).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Structure {
-    /// `m`.
-    pub numerator_order: usize,
     /// `n`.
     pub denominator_order: usize,
+    /// `m`.
+    pub numerator_order: usize,
     /// `nk` \[samples\].
     pub input_delay: usize,
 }
 
 impl Structure {
-    /// `(m, n, nk)`.
-    pub fn new(numerator_order: usize, denominator_order: usize, input_delay: usize) -> Self {
-        Self { numerator_order, denominator_order, input_delay }
+    /// `(n, m, nk)`: the denominator order first, e.g. `b_0 / (s^2 + a_1 s + a_2)` with a delay of
+    /// 3 samples is `Structure::new(2, 0, 3)`.
+    pub fn new(denominator_order: usize, numerator_order: usize, input_delay: usize) -> Self {
+        Self { denominator_order, numerator_order, input_delay }
     }
 
     /// Number of estimated parameters of `B / A`, `n + m + 1` (the penalty of BIC / AIC).
@@ -34,7 +36,7 @@ impl Structure {
     }
 
     /// Every structure with `n` in `denominator_orders`, `m` in `numerator_orders` (`m <= n`) and
-    /// `nk` in `input_delays`.
+    /// `nk` in `input_delays` (arguments in the order `(n, m, nk)`).
     pub fn grid(
         denominator_orders: impl IntoIterator<Item = usize>,
         numerator_orders: impl IntoIterator<Item = usize> + Clone,
@@ -44,7 +46,7 @@ impl Structure {
         for n in denominator_orders {
             for m in numerator_orders.clone().into_iter().filter(|&m| m <= n) {
                 for nk in input_delays.clone() {
-                    structures.push(Self::new(m, n, nk));
+                    structures.push(Self::new(n, m, nk));
                 }
             }
         }
@@ -175,7 +177,7 @@ where
     let mut candidates = Vec::with_capacity(structures.len());
     for &structure in structures {
         let srivc = SrivcOptions { input_delay: structure.input_delay, ..options.srivc.clone() };
-        let outcome = match identify(u, y, ts, structure.numerator_order, structure.denominator_order, &options.initialization, &srivc) {
+        let outcome = match identify(u, y, ts, structure.denominator_order, structure.numerator_order, &options.initialization, &srivc) {
             Err(error) => Outcome::NotIdentified(error),
             Ok(result) if result.parameter.iter().any(|v| !Float::is_finite(*v)) => Outcome::Unstable(result),
             Ok(result) => {

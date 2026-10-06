@@ -21,9 +21,13 @@ pub struct DataBuffer<T> {
 }
 
 impl<T: Float + AddAssign + MulAssign + ComplexField> DataBuffer<T> {
-    /// `input_order`: `nb`, `state_order`: `na`.
-    pub fn new(input_order: usize, state_order: usize) -> Self {
-        Self::from_arx(Arx::new(input_order, state_order))
+    /// `state_order`: `na`, `input_order`: `nb`.
+    ///
+    /// Argument order: the output (denominator) order `na` first, then the input (numerator)
+    /// order `nb`, as in the notation `(na, nb, nk)`; e.g. the model
+    /// `y[k] = a_1 y[k-1] + a_2 y[k-2] + b_0 u[k] + b_1 u[k-1]` is `(2, 1)`.
+    pub fn new(state_order: usize, input_order: usize) -> Self {
+        Self::from_arx(Arx::new(state_order, input_order))
     }
 
     /// Least squares of the given model structure.
@@ -92,11 +96,13 @@ pub struct DelayEstimate<T> {
 /// prediction error is chosen. With `input_order` larger than needed, smaller delays fit equally
 /// well (their leading `b_i` are just zero), so among losses within `1e-9 mean(y^2)` of the minimum
 /// the largest delay is taken. Returns `None` if no delay gives a non-singular problem.
+///
+/// Argument order: `state_order` (`na`) before `input_order` (`nb`), as in `(na, nb, nk)`.
 pub fn estimate_input_delay<T>(
     u: &[T],
     y: &[T],
-    input_order: usize,
     state_order: usize,
+    input_order: usize,
     max_delay: usize,
 ) -> Option<DelayEstimate<T>>
 where
@@ -104,7 +110,7 @@ where
 {
     let mut buffers: Vec<DataBuffer<T>> = (0..=max_delay)
         .map(|nk| {
-            let mut buffer = DataBuffer::new(input_order, state_order).with_input_delay(nk);
+            let mut buffer = DataBuffer::new(state_order, input_order).with_input_delay(nk);
             for (k, (&uk, &yk)) in u.iter().zip(y).enumerate() {
                 let y_prev = if k > 0 { y[k - 1] } else { T::zero() };
                 buffer.add(uk, y_prev, yk);

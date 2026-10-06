@@ -26,22 +26,27 @@ pub enum LevyIdentificationError {
 }
 
 /// Levy's method (linear least squares on `B(jω) - G(jω) A(jω)` for `G(s) = B(s) / A(s)`):
-/// `G(s)` with numerator degree `numer_order` and denominator degree `denom_order`.
+/// `G(s)` with denominator degree `denom_order` and numerator degree `numer_order`.
 /// `omega` of the samples is in rad/s.
+///
+/// Argument order: `denom_order` (`n`) before `numer_order` (`m`), as in the notation `(n, m)`;
+/// e.g. `b_0 / (s^2 + a_1 s + a_2)` is `(2, 0)`.
 pub fn identify<T: Float + ComplexField + AddAssign + MulAssign>(
     samples: &[FrequencyResponse<T>],
-    numer_order: usize,
     denom_order: usize,
+    numer_order: usize,
 ) -> Result<TransferFunction<T, Continuous>, LevyIdentificationError> {
     levy_step(samples, numer_order, denom_order, None)
 }
 
 /// Levy's method followed by Sanathanan-Koerner reweighting, `iterations` steps in total
 /// (`iterations = 1` is Levy's method).
+///
+/// Argument order: `denom_order` (`n`) before `numer_order` (`m`), as in `identify`.
 pub fn sanathanan_koerner_identification<T: Float + ComplexField + AddAssign + MulAssign>(
     samples: &[FrequencyResponse<T>],
-    numer_order: usize,
     denom_order: usize,
+    numer_order: usize,
     iterations: usize,
 ) -> Result<TransferFunction<T, Continuous>, LevyIdentificationError> {
     let mut ret = None;

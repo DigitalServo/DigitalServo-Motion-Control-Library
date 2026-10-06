@@ -26,8 +26,12 @@ pub struct Arx<T> {
 }
 
 impl<T: Float + AddAssign + Scalar> Arx<T> {
-    /// `input_order`: `nb`, `state_order`: `na`.
-    pub fn new(input_order: usize, state_order: usize) -> Self {
+    /// `state_order`: `na`, `input_order`: `nb`.
+    ///
+    /// Argument order: the output (denominator) order `na` first, then the input (numerator)
+    /// order `nb`, as in the notation `(na, nb, nk)`; e.g. the model
+    /// `y[k] = a_1 y[k-1] + a_2 y[k-2] + b_0 u[k] + b_1 u[k-1]` is `(2, 1)`.
+    pub fn new(state_order: usize, input_order: usize) -> Self {
         Self {
             u: DVector::zeros(input_order + 1),
             x: DVector::zeros(state_order),

@@ -493,7 +493,7 @@ fn test_validation_one_step_prediction() {
 
     // y[k] = 1.5 y[k-1] - 0.7 y[k-2] + u[k-1] + 0.5 u[k-2] (+ noise): na = 2, nb = 1, nk = 1
     let n_samples = 20000;
-    let structure = Arx::<f64>::new(1, 2).with_input_delay(1);
+    let structure = Arx::<f64>::new(2, 1).with_input_delay(1);
     let mut truth = structure.clone();
     truth.parameter = DVector::from_vec(vec![1.5, -0.7, 1.0, 0.5]);
     let simulate = |u: &[f64], e: &[f64]| {

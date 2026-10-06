@@ -43,8 +43,8 @@ fn test_lsm_arx() {
 
     let (input_order, state_order) = (2, 2);
     // A plant driven through a zero-order hold has a one-sample delay (u[k] does not affect y[k]).
-    let mut lsm = lsm::arx::DataBuffer::<f64>::new(input_order, state_order).with_input_delay(1);
-    let mut kf = kalman_filter::arx::KalmanFilter::<f64>::new(input_order, state_order, 0.01, 0.01, 1.0e10).with_input_delay(1);
+    let mut lsm = lsm::arx::DataBuffer::<f64>::new(state_order, input_order).with_input_delay(1);
+    let mut kf = kalman_filter::arx::KalmanFilter::<f64>::new(state_order, input_order, 0.01, 0.01, 1.0e10).with_input_delay(1);
 
     let mut system = DiscreteSystem::from(StateSpace::try_from(&tf_c).unwrap().discretize(Zoh, ts).unwrap());
 
@@ -143,7 +143,7 @@ fn test_levy() {
         samples.push(FrequencyResponse { omega, value });
     }
 
-    let ret = levy::sanathanan_koerner_identification(&samples, numer_order, denom_order, 5).unwrap();
+    let ret = levy::sanathanan_koerner_identification(&samples, denom_order, numer_order, 5).unwrap();
 
     // True system: (-3s^2 + 10s + 100) / (2s^3 + 4s^2 + 200s + 10000)
     let expected = TransferFunction::continuous(&[-3.0, 10.0, 100.0], &[2.0, 4.0, 200.0, 10000.0]);
@@ -238,8 +238,8 @@ fn test_arx_mismatched_orders() {
     ];
     for (a, b, numer, denom) in cases {
         let expected = TransferFunction::<f64, Discrete>::from_polynomials(Polynomial(numer), Polynomial(denom));
-        let mut lsm = lsm::arx::DataBuffer::<f64>::new(b.len() - 1, a.len());
-        let mut kf = kalman_filter::arx::KalmanFilter::<f64>::new(b.len() - 1, a.len(), 0.01, 0.01, 1.0e10);
+        let mut lsm = lsm::arx::DataBuffer::<f64>::new(a.len(), b.len() - 1);
+        let mut kf = kalman_filter::arx::KalmanFilter::<f64>::new(a.len(), b.len() - 1, 0.01, 0.01, 1.0e10);
 
         let (mut ys, mut us) = (vec![0.0; a.len()], vec![0.0; b.len()]);
         for k in 0..2000 {
@@ -349,7 +349,7 @@ fn test_iv_arx() {
         let u = |i: usize| if k >= i { u[k - i] } else { 0.0 };
         y0[k] = a[0] * y(1) + a[1] * y(2) + b[0] * u(1) + b[1] * u(2);
     }
-    let structure = Arx::<f64>::new(1, 2).with_input_delay(1);
+    let structure = Arx::<f64>::new(2, 1).with_input_delay(1);
 
     // Noise-free: IV recovers the plant exactly, like least squares.
     let model = iv::arx::identify(&u, &y0, &structure, 1).unwrap();
@@ -418,16 +418,16 @@ fn test_srivc() {
         let u: Vec<f64> = (0..n_samples).map(|_| rand()).collect();
         let y0: Vec<f64> = u.iter().map(|&uk| system.update(&[uk]).unwrap()[0]).collect();
 
-        let result = identify(&u, &y0, ts, m, n, &init, &options).unwrap();
+        let result = identify(&u, &y0, ts, n, m, &init, &options).unwrap();
         let err = relative_error(&result.model.tf, &tf_c);
         assert!(result.converged && err < 1e-8, "noise-free: {} ({} iterations), error {err:e}", result.model, result.iterations);
 
         // Noise with a standard deviation of ~2.3 times the RMS of y0
         let rms = (y0.iter().map(|v| v * v).sum::<f64>() / n_samples as f64).sqrt();
         let y: Vec<f64> = y0.iter().map(|&v| v + 4.0 * rms * rand()).collect();
-        let ls = identify(&u, &y, ts, m, n, &init, &SrivcOptions { max_iterations: 0, ..options.clone() }).unwrap();
+        let ls = identify(&u, &y, ts, n, m, &init, &SrivcOptions { max_iterations: 0, ..options.clone() }).unwrap();
         let err_ls = relative_error(&ls.model.tf, &tf_c);
-        let result = identify(&u, &y, ts, m, n, &init, &options).unwrap();
+        let result = identify(&u, &y, ts, n, m, &init, &options).unwrap();
         let err_iv = relative_error(&result.model.tf, &tf_c);
         assert!(result.converged, "noisy: not converged in {} iterations", result.iterations);
         assert!(err_iv < 0.1, "SRIVC: {}, error {err_iv:e}", result.model);
@@ -474,7 +474,7 @@ fn test_srivc_with_delay() {
     let init = Initialization::Model(TransferFunction::continuous(&[500.0], &[1.0, 50.0, 700.0]));
     let options = SrivcOptions { input_delay: delay, ..options };
 
-    let result = identify(&u, &y0, ts, 1, 2, &init, &options).unwrap();
+    let result = identify(&u, &y0, ts, 2, 1, &init, &options).unwrap();
     let err = relative_error(&result.model.tf, &tf_c);
     println!("Noise-free: {:.3} ({} iterations), error {err:e}", result.model, result.iterations);
     assert!(result.converged && err < 1e-8, "with delay: {} ({} iterations), error {err:e}", result.model, result.iterations);
@@ -494,7 +494,7 @@ fn test_srivc_with_delay() {
     let rms = (y0.iter().map(|v| v * v).sum::<f64>() / n_samples as f64).sqrt();
     let y: Vec<f64> = y0.iter().map(|&v| v + noise_ratio * rms * gaussian()).collect();
 
-    let result = identify(&u, &y, ts, 1, 2, &init, &options).unwrap();
+    let result = identify(&u, &y, ts, 2, 1, &init, &options).unwrap();
     let err = relative_error(&result.model.tf, &tf_c);
     println!("Noisy ({noise_ratio} RMS): {:.3} ({} iterations), error {err:e}", result.model, result.iterations);
     assert!(result.converged && err < 1e-1, "with delay and noise: {} ({} iterations), error {err:e}", result.model, result.iterations);
@@ -718,9 +718,9 @@ mod srivc {
         let (u_val, y_val) = experiment(&plant, 6 * PERIOD, 0x0fed_cba9_8765, noise_ratio, 0.0);
         let antiresonance = 36..=44;
 
-        let structures: Vec<Structure> = [(2, 3, vec![14, 16, 18]), (2, 4, vec![12, 13, 14]), (2, 5, vec![6, 7, 8, 9, 10]), (3, 5, vec![6, 8, 10]), (3, 6, vec![8])]
+        let structures: Vec<Structure> = [(3, 2, vec![14, 16, 18]), (4, 2, vec![12, 13, 14]), (5, 2, vec![6, 7, 8, 9, 10]), (5, 3, vec![6, 8, 10]), (6, 3, vec![8])]
             .into_iter()
-            .flat_map(|(m, n, delays)| delays.into_iter().map(move |nk| Structure::new(m, n, nk)))
+            .flat_map(|(n, m, delays)| delays.into_iter().map(move |nk| Structure::new(n, m, nk)))
             .collect();
         let options = SearchOptions {
             evaluated_from: PERIOD,
@@ -746,7 +746,7 @@ mod srivc {
 
         let selected = search.selected().unwrap();
         println!("{}", selected.report().unwrap());
-        assert_eq!(selected.structure, Structure::new(2, 5, 8));
+        assert_eq!(selected.structure, Structure::new(5, 2, 8));
         let (relative, phase) = band_error(&selected.result().unwrap().model, &plant, &antiresonance);
         assert!(relative < 0.02 && phase < 1.0, "selected model: relative error {relative:e}, phase error {phase} deg");
 
@@ -786,11 +786,11 @@ mod srivc {
         for offset in [0.0, 0.001, 0.01] {
             let (u, y) = experiment(&plant, 4 * PERIOD, 0x1234_5678_9abc, 0.05, offset);
 
-            let raw = identify(&u, &y, TS, m, n, &init, &options).unwrap();
+            let raw = identify(&u, &y, TS, n, m, &init, &options).unwrap();
             let (raw_error, raw_phase) = band_error(&raw.model, &plant, &antiresonance);
 
             let (uf, yf) = high_pass(&u, &y, 3.0, TS, 2);
-            let filtered = identify(&uf, &yf, TS, m, n, &init, &options).unwrap();
+            let filtered = identify(&uf, &yf, TS, n, m, &init, &options).unwrap();
             let (error, phase) = band_error(&filtered.model, &plant, &antiresonance);
 
             println!("offset {offset}: raw {raw_error:.4} / {raw_phase:.2} deg, high-passed {error:.4} / {phase:.2} deg");
@@ -834,7 +834,7 @@ mod srivc {
             let scale = noise_ratio * rms(&y0);
             let y: Vec<f64> = y0.iter().map(|v| v + scale * rng.gaussian()).collect();
 
-            let result = identify(&u, &y, TS, m, n, &init, &options).unwrap();
+            let result = identify(&u, &y, TS, n, m, &init, &options).unwrap();
             let (error, phase) = band_error(&result.model, &plant, &nothing);
             println!(
                 "noise {noise_ratio}: {} iterations{}, relative error {error:.3e}, phase error {phase:.3} deg",
