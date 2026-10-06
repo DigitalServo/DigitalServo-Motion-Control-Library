@@ -1540,3 +1540,84 @@ mod srivc {
         }
     }
 }
+
+/// `Validation::check`: several tests at one confidence level with pass / fail rules. The true
+/// model passes, a wrong delay fails the input tests, colored noise fails the whiteness test only,
+/// and the true model is rejected by chance at about the nominal rate.
+#[test]
+fn test_validation_check() {
+    use dsmc::system_identification::validation::{Check, CheckResult, Validation};
+    use std::f64::consts::PI;
+
+    let mut state: u64 = 0x2545_f491_4f6c_dd1d;
+    let mut uniform = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        ((state >> 11) as f64 + 0.5) / (1u64 << 53) as f64
+    };
+    let mut gaussian = move || (-2.0 * uniform().ln()).sqrt() * (2.0 * PI * uniform()).cos();
+
+    let ts: f64 = 1e-3;
+    let period = 1000;
+    let n_samples = 6 * period;
+    let delay = 3;
+    let plant = TransferFunction::continuous(&[1000.0], &[1.0, 20.0, 1000.0]);
+    let lines: Vec<usize> = (1..=40).collect();
+    // Periodic multisine (also used by the non-periodic tests)
+    let phases: Vec<f64> = lines.iter().map(|_| 2.0 * PI * uniform()).collect();
+    let u: Vec<f64> = (0..n_samples)
+        .map(|k| lines.iter().zip(&phases).map(|(&l, p)| (2.0 * PI * l as f64 * k as f64 / period as f64 + p).sin()).sum::<f64>())
+        .collect();
+    let mut system = exact_discretize::DiscretizedSystem::from_tf(&plant, ts).unwrap();
+    let y0: Vec<f64> = (0..n_samples)
+        .map(|k| system.update(&[if k >= delay { u[k - delay] } else { 0.0 }]).unwrap()[0])
+        .collect();
+    let rms = (y0.iter().map(|v| v * v).sum::<f64>() / n_samples as f64).sqrt();
+
+    let checks = [
+        Check::InformationCriteria { parameters: 3 },
+        Check::Whiteness { max_lag: 20 },
+        Check::CrossCorrelation { max_lag: 50 },
+        Check::Coherence { segment_len: 500, excited: 1e-2 },
+        Check::Lines { period, lines: lines.clone() },
+    ];
+    let mut noisy = |colored: bool| {
+        let mut v = 0.0;
+        y0.iter()
+            .map(|y| {
+                v = if colored { 0.9 * v + (1.0 - 0.81f64).sqrt() * 0.1 * rms * gaussian() } else { 0.1 * rms * gaussian() };
+                y + v
+            })
+            .collect::<Vec<f64>>()
+    };
+    let run = |nk: usize, y: &[f64]| {
+        Validation::continuous(&plant, nk, ts, &u, y).unwrap().evaluated_from(period).check(&checks, 0.99).unwrap()
+    };
+    let passed = |report: &dsmc::system_identification::validation::Report<f64>| -> Vec<Option<bool>> {
+        report.results.iter().map(CheckResult::passed).collect()
+    };
+
+    let white = noisy(false);
+    let right = run(delay, &white);
+    println!("true model, white noise:\n{right}");
+    assert!(right.passed() && passed(&right) == [None, Some(true), Some(true), Some(true), Some(true)]);
+
+    let wrong = run(delay + 1, &white);
+    println!("wrong delay:\n{wrong}");
+    assert!(!wrong.passed());
+    assert_eq!(passed(&wrong)[2..4], [Some(false), Some(false)], "cross-correlation and coherence");
+
+    let colored = run(delay, &noisy(true));
+    println!("true model, colored noise:\n{colored}");
+    assert_eq!(passed(&colored), [None, Some(false), Some(true), Some(true), Some(true)]);
+
+    // False rejections of the true model over independent noise records. Measured over 400
+    // records (release build): whiteness 3, cross-correlation 0 (Bonferroni, conservative with
+    // correlated lags; counting the lags outside against a binomial quantile instead gave 48),
+    // coherence 1, lines 5, i.e. about the nominal 1 % per test.
+    let trials = 40;
+    let rejected = (0..trials).filter(|_| !run(delay, &noisy(false)).passed()).count();
+    println!("true model rejected in {rejected} of {trials} trials (4 tests at 99 %)");
+    assert!(rejected <= 6, "{rejected} of {trials}");
+}

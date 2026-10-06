@@ -248,10 +248,17 @@ For an ARX model, the one-step prediction error must be white and independent of
 ```rust
 use dsmc::system_identification::{lsm, validation::Validation};
 
-let u: Vec<f64> = (0..2000).map(|k| ((k * 7919) % 101) as f64 / 50.0 - 1.0).collect();
+let noise = |k: usize| {
+    // splitmix64: uniform in [-0.5, 0.5)
+    let mut z = (k as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+};
+let u: Vec<f64> = (0..2000).map(|k| noise(k + 10_000)).collect();
 let mut y = vec![0.0; u.len()];
 for k in 2..u.len() {
-    let e = 0.01 * (((k * 104729) % 97) as f64 / 48.0 - 1.0); // equation error
+    let e = 0.01 * noise(k); // equation error
     y[k] = 1.5 * y[k - 1] - 0.7 * y[k - 2] + u[k - 1] + 0.5 * u[k - 2] + e;
 }
 
@@ -266,11 +273,50 @@ let whiteness = validation.autocorrelation(20, 2.58);
 let white = whiteness.ljung_box <= whiteness.ljung_box_bound(2.33); // χ²(20) at 99 %
 let independent = validation.cross_correlation(50, 2.58).fraction_outside() < 0.05;
 let bic = validation.bic(arx.arx.parameter_len());
+assert!(white && independent);
+```
+
+The tests can be run together with one confidence level by `Validation::check`, which also
+decides pass / fail (whiteness by Ljung-Box, cross-correlation with a Bonferroni bound over the
+lags, coherence and lines by the number outside against a binomial quantile) and prints a report:
+
+```rust
+use dsmc::tf;
+use dsmc::system_identification::validation::{Check, Validation};
+
+let ts = 1e-3;
+let g_s = tf!("1000 / (s^2 + 20 s + 1000)");
+let noise = |k: usize| {
+    // splitmix64: uniform in [-0.5, 0.5)
+    let mut z = (k as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+};
+let u: Vec<f64> = (0..10000).map(|k| noise(k + 100_000)).collect();
+let y0 = Validation::continuous(&g_s, 0, ts, &u, &u).unwrap().simulated; // plant output
+let y: Vec<f64> = y0.iter().enumerate().map(|(k, v)| v + 0.01 * noise(k)).collect();
+
+let report = Validation::continuous(&g_s, 0, ts, &u, &y)
+    .unwrap()
+    .check(
+        &[
+            Check::InformationCriteria { parameters: 3 },
+            Check::Whiteness { max_lag: 20 },
+            Check::CrossCorrelation { max_lag: 50 },
+            Check::Coherence { segment_len: 1000, excited: 1e-2 },
+        ],
+        0.99,
+    )
+    .unwrap();
+println!("{report}"); // one line per check, then "overall: passed"
+assert!(report.passed());
 ```
 
 With a periodic input (e.g. a multisine of `period` samples, excited at the harmonics `lines`),
 `validation.evaluated_from(period).line_test(period, &lines, 0.99)` compares the model error at
-every excited line with the noise level estimated from the period-to-period variation.
+every excited line with the noise level estimated from the period-to-period variation
+(`Check::Lines { period, lines }` in `check`).
 
 From measured frequency responses (e.g. `dsmc::fft::welch`), a continuous-time model can be fitted:
 

@@ -13,6 +13,41 @@
 //! | `frequency_response` | `frequency_response` (diagnostic) | `FrequencyResponseComparison` |
 //!
 //! (`spectra`: the segment spectra shared by `coherence` and `frequency_response`.)
+//!
+//! `check` runs several of them at once with one confidence level and pass / fail rules
+//! (`Validation::check`, `Check`, `Report`):
+//!
+//! ```
+//! use dsmc::tf;
+//! use dsmc::system_identification::validation::{Check, Validation};
+//!
+//! let g = tf!("1000 / (s^2 + 20 s + 1000)");
+//! let u: Vec<f64> = (0..4000).map(|k| ((k * 7919) % 101) as f64 / 50.0 - 1.0).collect();
+//! let y0 = Validation::continuous(&g, 0, 1e-3, &u, &vec![0.0; u.len()]).unwrap().simulated;
+//! let noise = |k: usize| {
+//!     // splitmix64: uniform in [-0.5, 0.5)
+//!     let mut z = (k as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+//!     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+//!     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+//!     ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+//! };
+//! // Plant output with pseudo-random measurement noise
+//! let y: Vec<f64> = y0.iter().enumerate().map(|(k, v)| v + 0.02 * noise(k)).collect();
+//!
+//! let report = Validation::continuous(&g, 0, 1e-3, &u, &y)
+//!     .unwrap()
+//!     .check(
+//!         &[
+//!             Check::InformationCriteria { parameters: 3 },
+//!             Check::CrossCorrelation { max_lag: 50 },
+//!             Check::Coherence { segment_len: 500, excited: 1e-2 },
+//!         ],
+//!         0.99,
+//!     )
+//!     .unwrap();
+//! println!("{report}");
+//! assert!(report.passed());
+//! ```
 
 use std::ops::AddAssign;
 
@@ -24,6 +59,7 @@ use crate::{Continuous, Discrete, Polynomial, TransferFunction};
 use crate::system_identification::arx::Arx;
 use crate::system_identification::iv::srivc::{InterSample, Prefilter};
 
+mod check;
 mod coherence;
 mod information_criteria;
 mod cross_correlation;
@@ -32,6 +68,7 @@ mod line_test;
 mod spectra;
 mod whiteness;
 
+pub use check::{Check, CheckResult, Report};
 pub use coherence::CoherenceTest;
 pub use cross_correlation::CrossCorrelation;
 pub use frequency_response::FrequencyResponseComparison;
