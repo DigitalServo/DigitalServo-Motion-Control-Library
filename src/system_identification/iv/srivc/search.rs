@@ -74,7 +74,8 @@ impl fmt::Display for Structure {
 pub struct SearchOptions<T> {
     /// Starting point of the SRIVC iterations of every candidate.
     pub initialization: Initialization<T>,
-    /// SRIVC options (`input_delay` is taken from each structure).
+    /// SRIVC options (`input_delay` is taken from each structure; their `evaluated_from` applies to
+    /// the identification data, `SearchOptions::evaluated_from` to the validation data).
     pub srivc: SrivcOptions<T>,
     /// Tests run on the validation data; the information criteria (with `Structure::parameters`)
     /// are added before them.

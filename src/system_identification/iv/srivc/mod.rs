@@ -37,6 +37,11 @@ pub struct SrivcOptions<T> {
     pub max_iterations: usize,
     /// Convergence threshold of the relative parameter change `‖Δθ‖ / ‖θ‖`.
     pub tolerance: T,
+    /// First sample of the IV sums (the filters still start at rest at `k = 0`): leaves out a
+    /// transient the model does not explain, e.g. that of an input offset not in the recorded
+    /// input (a step at `k = 0`, decaying with the prefilter and the plant's slowest mode), or of
+    /// an initial state not at rest. E.g. one period of a periodic input.
+    pub evaluated_from: usize,
 }
 
 impl<T: Float> Default for SrivcOptions<T> {
@@ -46,6 +51,7 @@ impl<T: Float> Default for SrivcOptions<T> {
             input_intersample: InterSample::ZeroOrderHold,
             max_iterations: 20,
             tolerance: T::from(1e-8).unwrap(),
+            evaluated_from: 0,
         }
     }
 }
@@ -80,6 +86,8 @@ pub enum SrivcError {
     InvalidPrefilter,
     #[error("{integrators} integrators need a prefilter")]
     NoPrefilter { integrators: usize },
+    #[error("too few samples: {samples}, evaluated from {evaluated_from}, for {parameters} parameters")]
+    TooFewSamples { samples: usize, evaluated_from: usize, parameters: usize },
 }
 
 /// SRIVC identification of `G(s) = e^(-nk ts s) B(s) / A(s)` (`deg A = n = denominator_order`,
@@ -188,6 +196,10 @@ impl<T: Float> Prefilter<T> {
 /// the origin, valid in the excited band; replace `1 / s^q` by e.g. `1 / (s + p)` from a separate
 /// test of the rigid-body mode if needed), the parameters those of `R`; `R(0) = b_m / a_n` is the
 /// gain of the rigid-body mode (`1 / J` for torque -> velocity).
+///
+/// An input offset not in the recorded input (integrated by the plant into a drift of the output)
+/// is removed by the prefilter but for its transient from `k = 0`, which biases the estimate in
+/// proportion to the offset; `options.evaluated_from` (e.g. one period) leaves it out.
 #[allow(clippy::too_many_arguments)]
 pub fn identify_with_prefilter<T>(
     u: &[T],
@@ -209,6 +221,9 @@ where
     if n == 0 || m > n {
         return Err(SrivcError::InvalidOrder { denominator: n, numerator: m });
     }
+    if u.len() < options.evaluated_from + n + m + 1 {
+        return Err(SrivcError::TooFewSamples { samples: u.len(), evaluated_from: options.evaluated_from, parameters: n + m + 1 });
+    }
 
     let nk = options.input_delay;
     let u: Vec<T> = (0..u.len()).map(|k| if k >= nk { u[k - nk] } else { T::zero() }).collect();
@@ -216,7 +231,7 @@ where
     let mut theta = match initialization {
         Initialization::StateVariableFilter(lambda) => {
             // (s + λ)^n
-            Step::new(&times_power(&[], *lambda, n), prefilter, ts, &u, y, m, options.input_intersample).solve(None)?
+            Step::new(&times_power(&[], *lambda, n), prefilter, ts, &u, y, m, options).solve(None)?
         }
         Initialization::Model(tf) => initial_parameter(tf, m, n)?,
     };
@@ -226,7 +241,7 @@ where
     while iterations < options.max_iterations {
         let a = stabilized(&theta.as_slice()[..n]);
         let b = &theta.as_slice()[n..];
-        let next = Step::new(&a, prefilter, ts, &u, y, m, options.input_intersample).solve(Some(b))?;
+        let next = Step::new(&a, prefilter, ts, &u, y, m, options).solve(Some(b))?;
         iterations += 1;
 
         let change = (&next - &theta).norm() / next.norm();
@@ -307,31 +322,35 @@ struct Step<T> {
     /// Columns of `uf` / `yf` where `w^(0)` / `z^(0)` start (`k - integrators` / `k`).
     u_shift: usize,
     y_shift: usize,
+    /// First sample of the sums.
+    start: usize,
 }
 
 impl<T: Float + AddAssign + MulAssign + ComplexField + RealField> Step<T> {
-    fn new(a: &[T], prefilter: &Prefilter<T>, ts: T, u: &[T], y: &[T], m: usize, input_intersample: InterSample) -> Self {
+    #[allow(clippy::too_many_arguments)]
+    fn new(a: &[T], prefilter: &Prefilter<T>, ts: T, u: &[T], y: &[T], m: usize, options: &SrivcOptions<T>) -> Self {
         let filter = StateVariableFilter::new(&times_power(a, prefilter.cutoff, prefilter.order), ts);
         let instrument_filter = (prefilter.order > 0).then(|| StateVariableFilter::new(a, ts));
-        let uf = filter.apply(u, input_intersample);
+        let uf = filter.apply(u, options.input_intersample);
         let yf = filter.apply(y, InterSample::FirstOrderHold);
         let (u_shift, y_shift) = (prefilter.order - prefilter.integrators, prefilter.order);
-        Self { filter, instrument_filter, uf, yf, n: a.len(), m, u_shift, y_shift }
+        Self { filter, instrument_filter, uf, yf, n: a.len(), m, u_shift, y_shift, start: options.evaluated_from }
     }
 
-    /// Regressors `φ[k]ᵀ = [-v^(n-1), ..., -v, w^(m), ..., w]` at every sample as the rows of an
-    /// `N × (n + m + 1)` matrix, from the filtered `vf` (`v^(i)` in its column `shift + i`) and the
-    /// filtered input, by column copies.
+    /// Regressors `φ[k]ᵀ = [-v^(n-1), ..., -v, w^(m), ..., w]` at every sample from `start` on as
+    /// the rows of an `(N - start) × (n + m + 1)` matrix, from the filtered `vf` (`v^(i)` in its
+    /// column `shift + i`) and the filtered input, by column copies.
     fn regressors(&self, vf: &DMatrix<T>, shift: usize) -> DMatrix<T> {
         let (n, m) = (self.n, self.m);
-        let mut regressors = DMatrix::zeros(vf.nrows(), n + m + 1);
+        let rows = vf.nrows() - self.start;
+        let mut regressors = DMatrix::zeros(rows, n + m + 1);
         for i in 0..n {
             let mut column = regressors.column_mut(i);
-            column.copy_from(&vf.column(shift + n - 1 - i));
+            column.copy_from(&vf.column(shift + n - 1 - i).rows(self.start, rows));
             column.neg_mut();
         }
         for j in 0..=m {
-            regressors.column_mut(n + j).copy_from(&self.uf.column(self.u_shift + m - j));
+            regressors.column_mut(n + j).copy_from(&self.uf.column(self.u_shift + m - j).rows(self.start, rows));
         }
         regressors
     }
@@ -355,7 +374,7 @@ impl<T: Float + AddAssign + MulAssign + ComplexField + RealField> Step<T> {
         let zeta_instrument = xf.as_ref().map(|_| self.regressors(instrument, 0));
         let zeta = zeta_instrument.as_ref().unwrap_or(&phi); // least squares: ζ = φ
         let zeta_phi_sum = zeta.tr_mul(&phi);
-        let zeta_y_sum: DVector<T> = zeta.tr_mul(&self.yf.column(self.y_shift + n));
+        let zeta_y_sum: DVector<T> = zeta.tr_mul(&self.yf.column(self.y_shift + n).rows(self.start, self.yf.nrows() - self.start));
         // Equilibration: rows and columns scaled to unit max norm
         let col: Vec<T> = (0..size).map(|j| zeta_phi_sum.column(j).amax()).collect();
         let row: Vec<T> = (0..size).map(|i| zeta_phi_sum.row(i).amax()).collect();
