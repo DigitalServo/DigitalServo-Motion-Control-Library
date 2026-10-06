@@ -669,9 +669,9 @@ mod srivc {
     /// `n = 5`, `m = 2`, `nk = 8`.
     fn two_inertia_plant() -> TransferFunctionWithDelay<f64> {
         let (antiresonance, resonance, low_pass) = (second_order(40.0, 0.02), second_order(65.0, 0.02), second_order(300.0, 0.5f64.sqrt()));
-        // Rigid-body gain 100 / s at low frequency
-        let gain = 100.0 * resonance[2] / antiresonance[2] * low_pass[2];
-        let numerator = &antiresonance * gain;
+        let dc_gain = 100.0;
+        let gain_adjuster = resonance[2] / antiresonance[2] * low_pass[2];
+        let numerator = &antiresonance * dc_gain * gain_adjuster;
         let denominator = &(&Polynomial(vec![1.0, 0.0]) * &resonance) * &low_pass;
         TransferFunctionWithDelay::new(TransferFunction::from_polynomials(numerator, denominator), 8.0 * TS)
     }
@@ -682,8 +682,9 @@ mod srivc {
         let zeros = &second_order(40.0, 0.02) * &second_order(90.0, 0.02);
         let poles = &second_order(65.0, 0.02) * &second_order(120.0, 0.02);
         let low_pass = second_order(300.0, 0.5f64.sqrt());
-        let gain = 1e4 * poles[4] / zeros[4] * low_pass[2];
-        let numerator = &zeros * gain;
+        let dc_gain = 1e4;
+        let gain_adjuster = poles[4] / zeros[4] * low_pass[2];
+        let numerator = &zeros * dc_gain * gain_adjuster;
         let denominator = &(&Polynomial(vec![1.0, 0.0, 0.0]) * &poles) * &low_pass;
         TransferFunctionWithDelay::new(TransferFunction::from_polynomials(numerator, denominator), 8.0 * TS)
     }
@@ -846,4 +847,3 @@ mod srivc {
         }
     }
 }
-
