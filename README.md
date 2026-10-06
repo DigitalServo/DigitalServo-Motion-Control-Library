@@ -19,7 +19,7 @@ space models, discretization, frequency analysis, trajectory generation, feedfor
 | **Trajectories** | Modified trapezoid / sine / constant velocity, cycloid, harmonic, smoothstep of any smoothness |
 | **Feedforward** | Multirate perfect tracking control (PTC), with pre-actuation for nonminimum-phase plants |
 | **Signal processing** | Pseudo-differentiator, delay |
-| **System identification** | ARX models and linear regressions by least squares or Kalman filter, instrumental variables (IV) for ARX models, SRIVC for continuous-time models, model validation (BIC, residual-input cross-correlation, test at the excited lines of a periodic input), Levy / Sanathanan-Koerner, vector fitting, Gaussian process regression |
+| **System identification** | ARX models and linear regressions by least squares or Kalman filter, instrumental variables (IV) for ARX models, SRIVC for continuous-time models, model validation (BIC / AIC, whiteness, residual-input cross-correlation and coherence, test at the excited lines of a periodic input, comparison with the nonparametric frequency response; output error or one-step prediction error), Levy / Sanathanan-Koerner, vector fitting, Gaussian process regression |
 | **Logging** | CSV output of any `Serialize` value |
 
 ## Installation
@@ -199,9 +199,19 @@ let result = iv::srivc::identify(
 let g_s = result.model;
 ```
 
-An identified model is validated on another experiment by simulating it with the measured input:
-BIC for comparing model structures, and tests of the residual (it must not depend on the input,
-and, with a periodic input, must be at the noise level at every excited line):
+An identified model is validated on another experiment (`system_identification::validation`)
+by its residual `ε = y - ŷ`, with `ŷ` the output of the model simulated with the measured input
+(output error: `Validation::continuous`, `Validation::discrete`) or, for an ARX model with its
+noise model, the one-step prediction (`Validation::one_step_prediction`):
+
+| Method | What it checks | Input |
+| --- | --- | --- |
+| `bic`, `aic`, `aicc` | fit against the number of parameters, to compare model structures | any |
+| `cross_correlation` | the residual does not depend on past inputs (wrong dynamics or delay) | any |
+| `coherence_test` | the same, per frequency | any |
+| `line_test` | the model error is at the noise level at every excited line | periodic |
+| `autocorrelation` | the residual is white (Ljung-Box); for the output error, it tests the noise, not `G` | any |
+| `frequency_response` | gain / phase error against the nonparametric estimate and its uncertainty (diagnostic) | any |
 
 ```rust
 use dsmc::tf;
@@ -209,21 +219,58 @@ use dsmc::discretize::exact_discretize::DiscretizedSystem;
 use dsmc::system_identification::validation::Validation;
 
 let ts = 1e-3;
-let period = 1000; // multisine of period 1 s, lines at 1 .. 40 Hz
-let lines: Vec<usize> = (1..=40).collect();
-let u: Vec<f64> = (0..6 * period)
-    .map(|k| lines.iter().map(|&l| (2.0 * std::f64::consts::PI * (l * k) as f64 / period as f64 + l as f64).sin()).sum())
+// Chirp 0.5 .. 50 Hz over 20 s (non-periodic)
+let u: Vec<f64> = (0..20000)
+    .map(|k| {
+        let t = k as f64 * ts;
+        (2.0 * std::f64::consts::PI * (0.5 * t + 49.5 * t * t / 40.0)).sin()
+    })
     .collect();
 let g_s = tf!("1000 / (s^2 + 20 s + 1000)");
 let mut plant = DiscretizedSystem::from_tf(&g_s, ts).unwrap();
 let y: Vec<f64> = u.iter().map(|&uk| plant.update(&[uk]).unwrap()[0]).collect(); // + noise
 
 let validation = Validation::continuous(&g_s, 0, ts, &u, &y).unwrap();
-let bic = validation.bic(3); // N ln V + p ln N, p = n + m + 1
+let (bic, aic) = (validation.bic(3), validation.aic(3)); // p = n + m + 1
 let correlation = validation.cross_correlation(50, 2.58); // r(τ) within ±bound at 99 % per lag
-let line_test = validation.evaluated_from(period).line_test(period, &lines, 0.99).unwrap();
-println!("BIC {bic}, lags outside {}, lines outside {}", correlation.fraction_outside(), line_test.fraction_outside());
+let coherence = validation.coherence_test(1000, 0.99).unwrap().excited(1e-2); // 1 Hz bins
+let response = validation.frequency_response(1000).unwrap().excited(1e-2);
+println!(
+    "BIC {bic}, AIC {aic}, lags outside {}, bins outside {}, max gain error {} dB",
+    correlation.fraction_outside(),
+    coherence.fraction_outside(),
+    response.gain_error_db().iter().fold(0.0f64, |m, e| m.max(e.abs())),
+);
 ```
+
+For an ARX model, the one-step prediction error must be white and independent of the input:
+
+```rust
+use dsmc::system_identification::{lsm, validation::Validation};
+
+let u: Vec<f64> = (0..2000).map(|k| ((k * 7919) % 101) as f64 / 50.0 - 1.0).collect();
+let mut y = vec![0.0; u.len()];
+for k in 2..u.len() {
+    let e = 0.01 * (((k * 104729) % 97) as f64 / 48.0 - 1.0); // equation error
+    y[k] = 1.5 * y[k - 1] - 0.7 * y[k - 2] + u[k - 1] + 0.5 * u[k - 2] + e;
+}
+
+let mut arx = lsm::arx::DataBuffer::<f64>::new(1, 2).with_input_delay(1);
+for k in 0..u.len() {
+    arx.add(u[k], if k > 0 { y[k - 1] } else { 0.0 }, y[k]);
+}
+arx.identify().unwrap();
+
+let validation = Validation::one_step_prediction(&arx.arx, &u, &y).unwrap();
+let whiteness = validation.autocorrelation(20, 2.58);
+let white = whiteness.ljung_box <= whiteness.ljung_box_bound(2.33); // χ²(20) at 99 %
+let independent = validation.cross_correlation(50, 2.58).fraction_outside() < 0.05;
+let bic = validation.bic(arx.arx.parameter_len());
+```
+
+With a periodic input (e.g. a multisine of `period` samples, excited at the harmonics `lines`),
+`validation.evaluated_from(period).line_test(period, &lines, 0.99)` compares the model error at
+every excited line with the noise level estimated from the period-to-period variation.
 
 From measured frequency responses (e.g. `dsmc::fft::welch`), a continuous-time model can be fitted:
 
