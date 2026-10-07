@@ -40,7 +40,7 @@
 //!         &[
 //!             Check::InformationCriteria { parameters: 3 },
 //!             Check::CrossCorrelation { max_lag: 50 },
-//!             Check::Coherence { segment_len: 500, excited: 1e-2 },
+//!             Check::Coherence { segment_s: 0.5, excited: 1e-2 },
 //!         ],
 //!         0.99,
 //!     )
@@ -56,6 +56,7 @@ use num_traits::Float;
 use thiserror::Error;
 
 use crate::{Discrete, Polynomial, SimulationError, TransferFunction, TransferFunctionWithDelay};
+use crate::sampling::{samples_per_period, whole_samples, DurationError};
 use crate::system_identification::arx::Arx;
 
 mod check;
@@ -89,6 +90,14 @@ pub enum ValidationError {
     InvalidLine { line: usize, half: usize },
     #[error("{segments} segment(s) of {segment_len} samples evaluated; at least 2 are needed")]
     TooFewSegments { segments: usize, segment_len: usize },
+    #[error("duration {duration} s is negative or not finite, or sampling period {ts} s not positive and finite")]
+    InvalidDuration { duration: f64, ts: f64 },
+    #[error("duration {duration} s is not a whole number of sampling periods {ts} s")]
+    FractionalDuration { duration: f64, ts: f64 },
+    #[error("fundamental frequency {fundamental_frequency} Hz is not positive and finite")]
+    InvalidFundamental { fundamental_frequency: f64, ts: f64 },
+    #[error("the period of the fundamental frequency {fundamental_frequency} Hz is not a whole number of sampling periods {ts} s")]
+    FractionalPeriod { fundamental_frequency: f64, ts: f64 },
     #[error(transparent)]
     Simulation(#[from] SimulationError),
 }
@@ -107,6 +116,11 @@ pub enum ValidationError {
 /// The residual is evaluated from sample `start` on (0 unless set by `evaluated_from`): to validate
 /// on the second half of one experiment whose first half was used for the identification, simulate
 /// the whole record (so that the state at the split is reproduced) and evaluate the second half.
+///
+/// Durations (`evaluated_from`, the segments of `coherence_test` and `frequency_response`) are
+/// given in seconds and the fundamental frequency of `line_test` in Hz; they must be whole numbers
+/// of the sampling period `ts` (the period `1 / f0` for the fundamental; relative tolerance
+/// `max(1e-9, 4 eps)`). The lags of `autocorrelation` and `cross_correlation` are in samples.
 #[derive(Clone, Debug)]
 pub struct Validation<T> {
     /// Measured input `u[k]` over the whole record.
@@ -117,6 +131,8 @@ pub struct Validation<T> {
     pub residual: Vec<T>,
     /// First evaluated sample.
     pub start: usize,
+    /// Sampling period \[s\].
+    pub ts: T,
 }
 
 impl<T: Float> Validation<T> {
@@ -132,7 +148,7 @@ impl<T: Float> Validation<T> {
             return Err(ValidationError::LengthMismatch { input: u.len(), output: y.len() });
         }
         let simulated = model.into().simulate(ts, u)?;
-        Self::new(u, simulated, y)
+        Self::new(ts, u, simulated, y)
     }
 
     /// One-step prediction error of an ARX model (its parameters `arx.parameter`, orders and input
@@ -149,7 +165,9 @@ impl<T: Float> Validation<T> {
     /// (`cross_correlation`). With white noise on the output instead (`y = G u + v`), even the true
     /// `A`, `B` leave the colored error `A(z) v`: the ARX noise model does not fit, and the IV
     /// method (validated by the output error, `discrete`) is the one to use.
-    pub fn one_step_prediction(arx: &Arx<T>, u: &[T], y: &[T]) -> Result<Self, ValidationError>
+    ///
+    /// `ts` \[s\] is the sampling period of the data (for the durations of the tests).
+    pub fn one_step_prediction(arx: &Arx<T>, ts: T, u: &[T], y: &[T]) -> Result<Self, ValidationError>
     where
         T: AddAssign + Scalar,
     {
@@ -164,11 +182,12 @@ impl<T: Float> Validation<T> {
                 model.predict()
             })
             .collect();
-        Self::new(u, predicted, y)
+        Self::new(ts, u, predicted, y)
     }
 
-    /// Discrete-time model `G(z)` driven by `u`.
-    pub fn discrete(model: &TransferFunction<T, Discrete>, u: &[T], y: &[T]) -> Result<Self, ValidationError> {
+    /// Discrete-time model `G(z)` driven by `u`, sampled with period `ts` \[s\] (for the durations
+    /// of the tests).
+    pub fn discrete(model: &TransferFunction<T, Discrete>, ts: T, u: &[T], y: &[T]) -> Result<Self, ValidationError> {
         let (numer, denom) = monic(&model.numerator, &model.denominator)?;
         // G = z^-r (Σ n_i z^-i) / (1 + Σ d_i z^-i), r = deg D - deg N
         let r = denom.len() - numer.len();
@@ -187,21 +206,52 @@ impl<T: Float> Validation<T> {
             }
             simulated.push(yk);
         }
-        Self::new(u, simulated, y)
+        Self::new(ts, u, simulated, y)
     }
 
-    fn new(u: &[T], simulated: Vec<T>, y: &[T]) -> Result<Self, ValidationError> {
+    fn new(ts: T, u: &[T], simulated: Vec<T>, y: &[T]) -> Result<Self, ValidationError> {
         if u.len() != y.len() {
             return Err(ValidationError::LengthMismatch { input: u.len(), output: y.len() });
         }
         let residual = y.iter().zip(&simulated).map(|(&a, &b)| a - b).collect();
-        Ok(Self { input: u.to_vec(), simulated, residual, start: 0 })
+        // Checked here, so that the durations of the tests can only be wrong themselves
+        whole_samples(T::zero(), ts).map_err(|_| ValidationError::InvalidDuration { duration: 0.0, ts: ts.to_f64().unwrap_or(f64::NAN) })?;
+        Ok(Self { input: u.to_vec(), simulated, residual, start: 0, ts })
     }
 
-    /// Evaluate the residual from sample `start` on.
-    pub fn evaluated_from(mut self, start: usize) -> Self {
+    /// Evaluate the residual from the time `from_s` \[s\] on (sample `from_s / ts`), e.g. after the
+    /// transient from rest (one period of a periodic input).
+    pub fn evaluated_from(mut self, from_s: T) -> Result<Self, ValidationError> {
+        self.start = self.duration_samples(from_s)?;
+        Ok(self)
+    }
+
+    /// Evaluate the residual from sample `start` on (for the options in samples of SRIVC).
+    pub(crate) fn evaluated_from_sample(mut self, start: usize) -> Self {
         self.start = start;
         self
+    }
+
+    /// Period `1 / (fundamental_frequency ts)` as a whole number of samples.
+    pub(crate) fn period_samples(&self, fundamental_frequency: T) -> Result<usize, ValidationError> {
+        samples_per_period(fundamental_frequency, self.ts).map_err(|kind| {
+            let (fundamental_frequency, ts) = (fundamental_frequency.to_f64().unwrap_or(f64::NAN), self.ts.to_f64().unwrap_or(f64::NAN));
+            match kind {
+                DurationError::Invalid => ValidationError::InvalidFundamental { fundamental_frequency, ts },
+                DurationError::Fractional => ValidationError::FractionalPeriod { fundamental_frequency, ts },
+            }
+        })
+    }
+
+    /// `duration / ts` as a whole number of samples.
+    pub(crate) fn duration_samples(&self, duration: T) -> Result<usize, ValidationError> {
+        whole_samples(duration, self.ts).map_err(|kind| {
+            let (duration, ts) = (duration.to_f64().unwrap_or(f64::NAN), self.ts.to_f64().unwrap_or(f64::NAN));
+            match kind {
+                DurationError::Invalid => ValidationError::InvalidDuration { duration, ts },
+                DurationError::Fractional => ValidationError::FractionalDuration { duration, ts },
+            }
+        })
     }
 
     /// Evaluated residual `ε[start..]`.

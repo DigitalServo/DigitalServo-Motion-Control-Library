@@ -15,7 +15,8 @@ impl<T: Float> Validation<T> {
     /// is asymptotically normal with zero mean and variance `1 / N` for a white residual, so each
     /// lag is tested against `±z / sqrt(N)` (`z = 2.58` for 99 % per lag). All lags together are
     /// tested by the Ljung-Box statistic `Q = N (N + 2) Σ_τ r(τ)^2 / (N - τ)`, distributed as
-    /// `χ²(max_lag)` for a white residual (`WhitenessTest::ljung_box_bound`).
+    /// `χ²(max_lag)` for a white residual (`WhitenessTest::ljung_box_bound`). For a residual that is
+    /// identically zero after the mean is removed, `r(τ)` and `Q` are zero.
     ///
     /// What a colored residual means depends on the residual:
     /// - output error (a simulated model, e.g. SRIVC): the residual is the measurement noise itself
@@ -32,9 +33,11 @@ impl<T: Float> Validation<T> {
         let e: Vec<T> = e.iter().map(|&v| v - mean).collect();
         let r = |tau: usize| (tau..e.len()).fold(T::zero(), |acc, k| acc + e[k] * e[k - tau]) / n;
 
+        // A residual that is identically zero (or constant) has no correlation to test: zero
+        // rather than 0 / 0
         let r0 = r(0);
         let lags: Vec<usize> = (1..=max_lag).collect();
-        let correlation: Vec<T> = lags.iter().map(|&tau| r(tau) / r0).collect();
+        let correlation: Vec<T> = lags.iter().map(|&tau| if r0 > T::zero() { r(tau) / r0 } else { T::zero() }).collect();
         let ljung_box = n * (n + T::from(2).unwrap())
             * lags.iter().zip(&correlation).fold(T::zero(), |acc, (&tau, &c)| acc + c * c / (n - T::from(tau).unwrap()));
         WhitenessTest { lags, correlation, bound: z / n.sqrt(), ljung_box }

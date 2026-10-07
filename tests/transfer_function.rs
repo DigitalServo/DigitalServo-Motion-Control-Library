@@ -41,3 +41,20 @@ fn test_closed_tf() {
         assert!((a / scale - b).abs() < 1e-9);
     }
 }
+
+/// Dead time in samples: whole numbers (within the rounding of f32 too), and errors instead of a
+/// panic for a sampling period that is not positive, or a delay that is not finite.
+#[test]
+fn test_delay_samples() {
+    use dsmc::{SimulationError, TransferFunction, TransferFunctionWithDelay};
+    let delayed = |delay: f64| TransferFunctionWithDelay::new(TransferFunction::continuous(&[1.0], &[1.0, 1.0]), delay);
+    assert_eq!(delayed(3e-3).delay_samples(1e-3), Ok(3));
+    assert_eq!(delayed(0.0).delay_samples(1e-3), Ok(0));
+    assert_eq!(TransferFunctionWithDelay::new(TransferFunction::continuous(&[1.0f32], &[1.0, 1.0]), 0.05).delay_samples(1e-4), Ok(500));
+    assert!(matches!(delayed(3.5e-3).delay_samples(1e-3), Err(SimulationError::FractionalDelay { .. })));
+    assert!(matches!(delayed(-3e-3).delay_samples(1e-3), Err(SimulationError::NegativeDelay { .. })));
+    assert!(matches!(delayed(f64::NAN).delay_samples(1e-3), Err(SimulationError::FractionalDelay { .. })));
+    for ts in [0.0, -1e-3, f64::NAN] {
+        assert!(matches!(delayed(3e-3).delay_samples(ts), Err(SimulationError::InvalidSamplingPeriod { .. })), "{ts}");
+    }
+}

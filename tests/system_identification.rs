@@ -221,6 +221,28 @@ fn test_vector_fitting() {
 
 }
 
+/// Conversion of a vector fitting result into a transfer function: the leading numerator
+/// coefficients that cancel are dropped relative to the size of the other terms, whatever the gain
+/// (units of G) and the frequency scale.
+#[test]
+fn test_vector_fitting_into_transfer_function_scale() {
+    use dsmc::system_identification::frequency_response::vector_fitting::VectorFittingResult;
+    use num_complex::Complex64;
+
+    // G = k wn^2 / (s^2 + 2 ζ wn s + wn^2) = r / (s - p) + r* / (s - p*), r = k wn^2 / (p - p*)
+    for (k, wn) in [(1.0, 1.0), (1e-10, 100.0), (1e-10, 1e4), (1e3, 1e-3), (1.0, 1e5)] {
+        let zeta = 0.1;
+        let p = Complex64::new(-zeta * wn, wn * (1.0 - zeta * zeta).sqrt());
+        let r = k * wn * wn / (p - p.conj());
+        let result = VectorFittingResult { poles: vec![p, p.conj()], residues: vec![r, r.conj()], d: 0.0, e: 0.0, rms_errors: vec![] };
+        let tf: TransferFunction<f64> = result.into();
+        let expected = TransferFunction::continuous(&[k * wn * wn], &[1.0, 2.0 * zeta * wn, wn * wn]);
+        assert_eq!(tf.numerator.len(), 1, "k = {k}, wn = {wn}: {tf:?}");
+        assert!((tf.numerator[0] / tf.denominator[0] - k * wn * wn).abs() < 1e-9 * k * wn * wn, "k = {k}, wn = {wn}: {tf:?}");
+        assert!(tf_distance(&tf, &expected) < 1e-9 * wn * wn, "k = {k}, wn = {wn}: {tf:?}");
+    }
+}
+
 /// ARX models with input order != state order: `y[k] = Σ a_i y[k-i] + Σ b_i u[k-i]` is
 /// `(b_0 + b_1 z^-1 + ...) / (1 - a_1 z^-1 - ...)`, i.e. polynomials in z of degree max(na, nb).
 #[test]
@@ -594,13 +616,14 @@ mod srivc {
     use std::f64::consts::PI;
 
     use dsmc::{Polynomial, TransferFunction, TransferFunctionWithDelay};
-    use dsmc::signal::excitation::multisine;
     use dsmc::system_identification::iv::srivc::{self, identify, identify_with_prefilter, Initialization, Outcome, Prefilter, SearchOptions, SrivcError, SrivcOptions, Structure};
     use dsmc::system_identification::preprocessing::high_pass;
     use dsmc::system_identification::validation::{Check, CheckKind};
 
     const TS: f64 = 1e-4;
-    /// Samples per period of the multisine (1 s, so the lines are 1 Hz apart).
+    /// Fundamental frequency of the multisine \[Hz\] (period 1 s).
+    const F0: f64 = 1.0;
+    /// Samples per period of the multisine (for the options of SRIVC, in samples).
     const PERIOD: usize = 10_000;
     /// Excited band of the multisine \[Hz\] (harmonics of the period).
     const BAND: std::ops::RangeInclusive<usize> = 10..=200;
@@ -637,13 +660,41 @@ mod srivc {
         (v.iter().map(|x| x * x).sum::<f64>() / v.len() as f64).sqrt()
     }
 
-    /// Open-loop experiment from rest: multisine input `u` over `BAND`, and the output of `plant` to
+    /// Multisine over `BAND` (fundamental `F0`) of `n_samples` samples with equal amplitudes and
+    /// random phases `φ_h` started at `t = 0`, scaled to unit RMS:
+    /// `u[k] = sqrt(2 / H) Σ_h sin(2π h k / PERIOD + φ_h)`.
+    ///
+    /// Not `signal::excitation::multisine`, which shifts the start so that a double integrator
+    /// does not drift: the tests below were calibrated with this signal, under which the rigid-body
+    /// mode of the plants drifts like a ramp (its large low-frequency content helps SRIVC in these
+    /// simulations, which have no sensor range nor nonlinearity; with the drift-free start, the iterations of
+    /// `test_srivc_high_order` converge less often and the low orders of
+    /// `test_srivc_structure_search` are not always rejected by the cross-correlation).
+    fn random_phase_multisine(n_samples: usize, seed: u64) -> Vec<f64> {
+        let harmonics: Vec<usize> = BAND.collect();
+        // splitmix64: uniform in [0, 1)
+        let mut state = seed;
+        let mut uniform = || {
+            state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let phases: Vec<f64> = harmonics.iter().map(|_| 2.0 * PI * uniform()).collect();
+        let scale = (2.0 / harmonics.len() as f64).sqrt();
+        (0..n_samples)
+            .map(|k| scale * harmonics.iter().zip(&phases).map(|(&h, &phase)| (2.0 * PI * ((h * k) % PERIOD) as f64 / PERIOD as f64 + phase).sin()).sum::<f64>())
+            .collect()
+    }
+
+    /// Open-loop experiment from rest: multisine input `u` over `BAND` (`random_phase_multisine`), and the output of `plant` to
     /// `u + input_offset` plus white noise of standard deviation `noise_ratio` times the RMS of the
     /// noise-free output *without the offset* (about its mean), so that the noise does not grow
     /// with the drift of the offset (`~ t^2` for a position output). The offset is not part of the
     /// recorded input.
     fn experiment(plant: &TransferFunctionWithDelay<f64>, n_samples: usize, seed: u64, noise_ratio: f64, input_offset: f64) -> (Vec<f64>, Vec<f64>) {
-        let u: Vec<f64> = multisine(n_samples, PERIOD, &BAND.collect::<Vec<_>>(), seed);
+        let u = random_phase_multisine(n_samples, seed);
         let applied: Vec<f64> = u.iter().map(|x| x + input_offset).collect();
         let y0 = plant.simulate(TS, &applied).unwrap();
         let without_offset = plant.simulate(TS, &u).unwrap();
@@ -740,8 +791,8 @@ mod srivc {
                 vec![
                     Check::Whiteness { max_lag: 20 },
                     Check::CrossCorrelation { max_lag: 100 },
-                    Check::Lines { period: PERIOD, lines: BAND.collect() },
-                    Check::Coherence { segment_len: PERIOD, excited: 1e-2 },
+                    Check::Lines { fundamental_frequency: F0, lines: BAND.collect() },
+                    Check::Coherence { segment_s: 1.0 / F0, excited: 1e-2 },
                 ],
                 0.99,
             )
@@ -816,8 +867,8 @@ mod srivc {
                 vec![
                     Check::Whiteness { max_lag: 20 },
                     Check::CrossCorrelation { max_lag: 100 },
-                    Check::Lines { period: PERIOD, lines: BAND.collect() },
-                    Check::Coherence { segment_len: PERIOD, excited: 1e-2 },
+                    Check::Lines { fundamental_frequency: F0, lines: BAND.collect() },
+                    Check::Coherence { segment_s: 1.0 / F0, excited: 1e-2 },
                 ],
                 0.99,
             )

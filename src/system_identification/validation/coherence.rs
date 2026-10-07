@@ -4,19 +4,22 @@ use num_traits::Float;
 use rustfft::FftNum;
 
 use super::{Validation, ValidationError};
+use crate::analysis::fft::{coherence_of, power_floor};
 
 impl<T: Float + FftNum> Validation<T> {
     /// Coherence test of the residual and the input, for any input (non-periodic: random, chirp,
     /// measured operation data, ...).
     ///
-    /// The evaluated samples are split into segments of `segment_len` samples (Hann window, 50 %
-    /// overlap, mean removed per segment), and with the DFTs `E_l(f)`, `U_l(f)` of segment `l`
+    /// The evaluated samples are split into segments of `segment_s` \[s\] (`segment_len =
+    /// segment_s / ts` samples, a whole number; Hann window, 50 % overlap, mean removed per
+    /// segment), and with the DFTs `E_l(f)`, `U_l(f)` of segment `l`
     ///
     /// ```text
     /// γ²(f) = |Σ_l E_l(f) U_l(f)*|^2 / (Σ_l |E_l(f)|^2  Σ_l |U_l(f)|^2)
     /// ```
     ///
-    /// at the bins `f = 1 ..= segment_len / 2` (frequency `f / (segment_len ts)`). If the model is
+    /// at the bins `f = 1 ..= segment_len / 2` (frequency `f / segment_s` \[Hz\]) where the input
+    /// has power (see below). If the model is
     /// right, the residual is noise independent of the input, and for `L` independent segments
     /// `γ²(f)` follows the Beta distribution `Beta(1, L - 1)` whatever the input (it is the squared
     /// projection of the Gaussian vector `E_l(f)` on the fixed direction `U_l(f)`): the bound at
@@ -28,22 +31,22 @@ impl<T: Float + FftNum> Validation<T> {
     /// `γ²(f)` outside the bound means the residual still depends on the input at that frequency.
     /// Longer segments give a finer frequency resolution but fewer segments, so a higher bound
     /// (less power); at the frequencies where the input has no power the test cannot detect
-    /// anything (see `CoherenceTest::excited`).
-    pub fn coherence_test(&self, segment_len: usize, confidence: T) -> Result<CoherenceTest<T>, ValidationError> {
+    /// anything (see `CoherenceTest::excited`). The bins where the input power is at most `1e-12`
+    /// times its maximum over the bins (numerical noise) are left out, and `γ²(f)` is zero where
+    /// the power of the residual is at most `1e-12` times its maximum (e.g. a residual that is
+    /// identically zero).
+    pub fn coherence_test(&self, segment_s: T, confidence: T) -> Result<CoherenceTest<T>, ValidationError> {
+        let segment_len = self.duration_samples(segment_s)?;
         let spectra = self.spectra(segment_len)?;
         let l = spectra.effective_segments;
-        let bins: Vec<usize> = (1..=segment_len / 2).collect();
+        let (floor_e, floor_u) = (power_floor(&spectra.ee), power_floor(&spectra.uu));
+        let bins: Vec<usize> = (1..=segment_len / 2).filter(|&f| spectra.uu[f] > floor_u).collect();
         Ok(CoherenceTest {
-            coherence: bins
-                .iter()
-                .map(|&f| {
-                    let denom = spectra.ee[f] * spectra.uu[f];
-                    if denom > T::zero() { spectra.eu[f].norm_sqr() / denom } else { T::zero() }
-                })
-                .collect(),
+            coherence: bins.iter().map(|&f| coherence_of(spectra.eu[f], spectra.ee[f], spectra.uu[f], floor_e, floor_u)).collect(),
             input_power: bins.iter().map(|&f| spectra.uu[f]).collect(),
             bins,
             segment_len,
+            ts: self.ts,
             segments: spectra.segments,
             effective_segments: l,
             bound: T::one() - (T::one() - confidence).powf(T::one() / (l - T::one())),
@@ -54,7 +57,7 @@ impl<T: Float + FftNum> Validation<T> {
 /// Result of `Validation::coherence_test`.
 #[derive(Clone, Debug)]
 pub struct CoherenceTest<T> {
-    /// Frequency bins `f` (frequency `f / (segment_len ts)`).
+    /// Frequency bins `f` (frequency `f / (segment_len ts)` \[Hz\]) where the input has power.
     pub bins: Vec<usize>,
     /// Coherence `γ²(f)` of the residual and the input at each bin.
     pub coherence: Vec<T>,
@@ -62,6 +65,8 @@ pub struct CoherenceTest<T> {
     pub input_power: Vec<T>,
     /// Segment length \[samples\].
     pub segment_len: usize,
+    /// Sampling period \[s\].
+    pub ts: T,
     /// Number of (overlapping) segments `K`.
     pub segments: usize,
     /// Equivalent number of independent segments `L`.
@@ -71,9 +76,9 @@ pub struct CoherenceTest<T> {
 }
 
 impl<T: Float> CoherenceTest<T> {
-    /// Frequencies \[Hz\] of the bins for the sampling period `ts`.
-    pub fn frequencies(&self, ts: T) -> Vec<T> {
-        let df = T::one() / (T::from(self.segment_len).unwrap() * ts);
+    /// Frequencies \[Hz\] of the bins.
+    pub fn frequencies(&self) -> Vec<T> {
+        let df = T::one() / (T::from(self.segment_len).unwrap() * self.ts);
         self.bins.iter().map(|&f| T::from(f).unwrap() * df).collect()
     }
 

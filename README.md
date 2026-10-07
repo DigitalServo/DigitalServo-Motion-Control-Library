@@ -18,7 +18,7 @@ space models, discretization, frequency analysis, trajectory generation, feedfor
 | **Laplace transform** | Inverse Laplace transform, stable (non-causal) inverse of nonminimum-phase systems, piecewise-polynomial signals |
 | **Trajectories** | Modified trapezoid / sine / constant velocity, cycloid, harmonic, smoothstep of any smoothness |
 | **Feedforward** | Multirate perfect tracking control (PTC), with pre-actuation for nonminimum-phase plants |
-| **Signal processing** | Pseudo-differentiator, delay; excitation signals (random-phase multisine, chirp) |
+| **Signal processing** | Pseudo-differentiator, delay; excitation signals (random-phase multisine with given amplitudes, e.g. by the inverse gain of a model for a flat output spectrum, started so that a double integrator does not drift; chirp) |
 | **System identification** | ARX models and linear regressions by least squares or Kalman filter, instrumental variables (IV) for ARX models, SRIVC for continuous-time models, model validation (BIC / AIC, whiteness, residual-input cross-correlation and coherence, test at the excited lines of a periodic input, comparison with the nonparametric frequency response; output error or one-step prediction error; several tests at once with pass / fail), search of the SRIVC model structure (orders and delay) by validation, high-pass preprocessing against drifts, Levy / Sanathanan-Koerner, vector fitting, Gaussian process regression |
 | **Logging** | CSV output of any `Serialize` value |
 
@@ -226,16 +226,11 @@ noise model, the one-step prediction (`Validation::one_step_prediction`):
 use dsmc::tf;
 use dsmc::DiscreteSystem;
 use dsmc::discretize::Zoh;
+use dsmc::signal::excitation::chirp;
 use dsmc::system_identification::validation::Validation;
 
 let ts = 1e-3;
-// Chirp 0.5 .. 50 Hz over 20 s (non-periodic)
-let u: Vec<f64> = (0..20000)
-    .map(|k| {
-        let t = k as f64 * ts;
-        (2.0 * std::f64::consts::PI * (0.5 * t + 49.5 * t * t / 40.0)).sin()
-    })
-    .collect();
+let u: Vec<f64> = chirp(20.0, ts, 0.5, 50.0).unwrap(); // 0.5 .. 50 Hz over 20 s (non-periodic)
 let g_s = tf!("1000 / (s^2 + 20 s + 1000)");
 let mut plant = DiscreteSystem::try_from(&g_s.discretize(Zoh, ts).unwrap()).unwrap();
 let y: Vec<f64> = u.iter().map(|&uk| plant.update(uk)).collect(); // + noise
@@ -243,8 +238,8 @@ let y: Vec<f64> = u.iter().map(|&uk| plant.update(uk)).collect(); // + noise
 let validation = Validation::continuous(&g_s, ts, &u, &y).unwrap();
 let (bic, aic) = (validation.bic(3), validation.aic(3)); // p = n + m + 1
 let correlation = validation.cross_correlation(50, 2.58); // r(τ) within ±bound at 99 % per lag
-let coherence = validation.coherence_test(1000, 0.99).unwrap().excited(1e-2); // 1 Hz bins
-let response = validation.frequency_response(1000).unwrap().excited(1e-2);
+let coherence = validation.coherence_test(1.0, 0.99).unwrap().excited(1e-2); // 1 s segments: 1 Hz bins
+let response = validation.frequency_response(1.0).unwrap().excited(1e-2);
 println!(
     "BIC {bic}, AIC {aic}, lags outside {}, bins outside {}, max gain error {} dB",
     correlation.fraction_outside(),
@@ -278,7 +273,8 @@ for k in 0..u.len() {
 }
 arx.identify().unwrap();
 
-let validation = Validation::one_step_prediction(&arx.arx, &u, &y).unwrap();
+let ts = 1e-3; // sampling period of the data
+let validation = Validation::one_step_prediction(&arx.arx, ts, &u, &y).unwrap();
 let whiteness = validation.autocorrelation(20, 2.58);
 let white = whiteness.ljung_box <= whiteness.ljung_box_bound(2.33); // χ²(20) at 99 %
 let independent = validation.cross_correlation(50, 2.58).fraction_outside() < 0.05;
@@ -314,7 +310,7 @@ let report = Validation::continuous(&g_s, ts, &u, &y)
             Check::InformationCriteria { parameters: 3 },
             Check::Whiteness { max_lag: 20 },
             Check::CrossCorrelation { max_lag: 50 },
-            Check::Coherence { segment_len: 1000, excited: 1e-2 },
+            Check::Coherence { segment_s: 1.0, excited: 1e-2 },
         ],
         0.99,
     )
@@ -323,10 +319,15 @@ println!("{report}"); // one line per check, then "overall: passed"
 assert!(report.passed());
 ```
 
-With a periodic input (e.g. a multisine of `period` samples, excited at the harmonics `lines`),
-`validation.evaluated_from(period).line_test(period, &lines, 0.99)` compares the model error at
-every excited line with the noise level estimated from the period-to-period variation
-(`Check::Lines { period, lines }` in `check`).
+Durations (`evaluated_from`, the segments of `coherence_test` and `frequency_response`) are in
+seconds and the fundamental frequency of `line_test` in Hz, whole numbers of the sampling period
+(the period `1 / f0` for the fundamental); the lags of `autocorrelation` and `cross_correlation`
+are in samples.
+
+With a periodic input (e.g. a multisine of fundamental frequency `f0` \[Hz\], excited at the
+harmonics `lines`), `validation.evaluated_from(1.0 / f0)?.line_test(f0, &lines, 0.99)` compares
+the model error at every excited line with the noise level estimated from the period-to-period
+variation (`Check::Lines { fundamental_frequency: f0, lines }` in `check`).
 
 The structure of a continuous-time model (orders `n`, `m`, integrators `q` and input delay `nk`,
 searched together: missing poles are made up for by a longer delay) is chosen by `srivc::search`: every candidate is
@@ -340,7 +341,7 @@ use dsmc::system_identification::iv::srivc::{self, Initialization, SearchOptions
 use dsmc::system_identification::validation::Check;
 
 let ts = 1e-3;
-let period = 1000; // multisine of period 1 s over 1 .. 40 Hz
+let f0 = 1.0; // multisine of fundamental 1 Hz (period 1 s) over 1 .. 40 Hz
 let lines: Vec<usize> = (1..=40).collect();
 let plant = TransferFunctionWithDelay::new(tf!("1000 / (s^2 + 20 s + 1000)"), 3.0 * ts);
 let noise = |k: u64| {
@@ -350,22 +351,22 @@ let noise = |k: u64| {
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64 - 0.5
 };
-let experiment = |periods: usize, seed: u64| {
-    let u: Vec<f64> = multisine(periods * period, period, &lines, seed);
+let experiment = |periods: f64, seed: u64| {
+    let u: Vec<f64> = multisine(periods / f0, ts, f0, &lines, |_| 1.0, seed).unwrap();
     let y = plant.simulate(ts, &u).unwrap(); // plant output, plus measurement noise:
     let y: Vec<f64> = y.iter().enumerate().map(|(k, v)| v + 0.02 * noise(k as u64 + (seed << 32))).collect();
     (u, y)
 };
-let (u, y) = experiment(3, 1);
-let (u_val, y_val) = experiment(5, 2);
+let (u, y) = experiment(3.0, 1);
+let (u_val, y_val) = experiment(5.0, 2);
 
 // n = 1 ..= 3, m = 0 ..= 1, q = 0 (no pole at the origin), nk = 2 ..= 4
 let structures = Structure::grid(1..=3, 0..=1, 0..=0, 2..=4);
 let options = SearchOptions {
-    evaluated_from: period, // leave out the transient of the first period
+    evaluated_from: 1000, // samples: leave out the transient of the first period
     ..SearchOptions::new(
         Initialization::StateVariableFilter(30.0),
-        vec![Check::CrossCorrelation { max_lag: 50 }, Check::Lines { period, lines: lines.clone() }],
+        vec![Check::CrossCorrelation { max_lag: 50 }, Check::Lines { fundamental_frequency: f0, lines: lines.clone() }],
         0.99,
     )
 };

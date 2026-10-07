@@ -55,7 +55,7 @@ fn test_validation_bic() {
     assert!(wrong_order.bic(2) > validation.bic(3) + 10.0 * n.ln());
 
     // Evaluation on the second half only
-    let second_half = validation.clone().evaluated_from(n_samples / 2);
+    let second_half = validation.clone().evaluated_from(n_samples as f64 / 2.0 * ts).unwrap();
     assert_eq!(second_half.samples(), n_samples / 2);
     assert!((second_half.mse() / (sigma * sigma) - 1.0).abs() < 0.1);
 
@@ -66,7 +66,7 @@ fn test_validation_bic() {
         let past = |x: &[f64], i: usize| if k >= i { x[k - i] } else { 0.0 };
         y_arx[k] = 1.5 * past(&y_arx, 1) - 0.7 * past(&y_arx, 2) + past(&u, 1) + 0.5 * past(&u, 2);
     }
-    let validation = Validation::discrete(&g_z, &u, &y_arx).unwrap();
+    let validation = Validation::discrete(&g_z, ts, &u, &y_arx).unwrap();
     let max_residual = validation.residual.iter().fold(0.0, |acc: f64, v| acc.max(v.abs()));
     assert!(max_residual < 1e-10, "discrete: residual {max_residual:e}");
 
@@ -144,6 +144,8 @@ fn test_validation_line_test() {
 
     let ts: f64 = 1e-3;
     let period = 1000; // 1 s: lines at 1 Hz spacing
+    let period_s = period as f64 * ts;
+    let f0 = 1.0 / period_s;
     let lines: Vec<usize> = (1..=40).collect();
     let n_samples = 6 * period; // the first period (transient) is not evaluated: P = 5
     let delay = 3;
@@ -170,7 +172,7 @@ fn test_validation_line_test() {
     for (name, noise) in [("white", &white), ("colored", &colored)] {
         let y: Vec<f64> = y0.iter().zip(noise.iter()).map(|(a, b)| a + b).collect();
         let test = |model: &TransferFunction<f64>, nk: usize| {
-            Validation::continuous(TransferFunctionWithDelay::new(model.clone(), nk as f64 * ts), ts, &u, &y).unwrap().evaluated_from(period).line_test(period, &lines, 0.99).unwrap()
+            Validation::continuous(TransferFunctionWithDelay::new(model.clone(), nk as f64 * ts), ts, &u, &y).unwrap().evaluated_from(period_s).unwrap().line_test(f0, &lines, 0.99).unwrap()
         };
         let (right, wrong_delay, wrong_order) = (test(&plant, delay), test(&plant, delay + 1), test(&first_order, delay));
         for (model, t) in [("true", &right), ("wrong delay", &wrong_delay), ("first order", &wrong_order)] {
@@ -191,8 +193,8 @@ fn test_validation_line_test() {
 
     // Errors
     let validation = Validation::continuous(TransferFunctionWithDelay::new(plant.clone(), delay as f64 * ts), ts, &u, &y0).unwrap();
-    assert!(matches!(validation.clone().evaluated_from(5 * period).line_test(period, &lines, 0.99), Err(ValidationError::TooFewPeriods { periods: 1 })));
-    assert!(matches!(validation.line_test(period, &[600], 0.99), Err(ValidationError::InvalidLine { line: 600, .. })));
+    assert!(matches!(validation.clone().evaluated_from(5.0 * period_s).unwrap().line_test(f0, &lines, 0.99), Err(ValidationError::TooFewPeriods { periods: 1 })));
+    assert!(matches!(validation.line_test(f0, &[600], 0.99), Err(ValidationError::InvalidLine { line: 600, .. })));
 }
 
 /// Coherence test of the residual and the input with non-periodic inputs (chirp, low-passed random
@@ -217,7 +219,7 @@ fn test_validation_coherence_test() {
     let delay = 3;
     let plant = TransferFunction::continuous(&[1000.0], &[1.0, 20.0, 1000.0]);
     let first_order = TransferFunction::continuous(&[50.0], &[1.0, 50.0]);
-    let segment_len = 1000; // 1 Hz resolution
+    let segment_s = 1.0; // 1 Hz resolution
 
     // Linear chirp 0.5 .. 50 Hz over the record, and random noise low-passed at ~30 Hz
     let duration = n_samples as f64 * ts;
@@ -246,7 +248,7 @@ fn test_validation_coherence_test() {
         let y: Vec<f64> = y0.iter().zip(&noise).map(|(a, b)| a + b).collect();
 
         let test = |model: &TransferFunction<f64>, nk: usize, confidence: f64| {
-            Validation::continuous(TransferFunctionWithDelay::new(model.clone(), nk as f64 * ts), ts, &u, &y).unwrap().coherence_test(segment_len, confidence).unwrap().excited(1e-2)
+            Validation::continuous(TransferFunctionWithDelay::new(model.clone(), nk as f64 * ts), ts, &u, &y).unwrap().coherence_test(segment_s, confidence).unwrap().excited(1e-2)
         };
         let (right, wrong_delay, wrong_order) = (test(&plant, delay, 0.99), test(&plant, delay + 1, 0.99), test(&first_order, delay, 0.99));
         for (model, t) in [("true", &right), ("wrong delay", &wrong_delay), ("first order", &wrong_order)] {
@@ -274,7 +276,7 @@ fn test_validation_coherence_test() {
     // Errors
     let u = vec![0.0; 1400]; // one segment of 1000 (the next would start at 500)
     let validation = Validation::continuous(&plant, ts, &u, &u).unwrap();
-    assert!(matches!(validation.coherence_test(1000, 0.99), Err(ValidationError::TooFewSegments { segments: 1, .. })));
+    assert!(matches!(validation.coherence_test(1.0, 0.99), Err(ValidationError::TooFewSegments { segments: 1, .. })));
 }
 
 /// Frequency response of the model against the nonparametric estimate (random input, colored
@@ -300,7 +302,7 @@ fn test_validation_frequency_response() {
     let delay = 3;
     let plant = TransferFunction::continuous(&[1000.0], &[1.0, 20.0, 1000.0]);
     let first_order = TransferFunction::continuous(&[50.0], &[1.0, 50.0]);
-    let segment_len = 1000;
+    let segment_s = 1.0;
 
     let mut u = vec![0.0; n_samples];
     for k in 1..n_samples {
@@ -318,7 +320,7 @@ fn test_validation_frequency_response() {
     let y: Vec<f64> = y0.iter().zip(&noise).map(|(a, b)| a + b).collect();
 
     let compare = |model: &TransferFunction<f64>, nk: usize| {
-        Validation::continuous(TransferFunctionWithDelay::new(model.clone(), nk as f64 * ts), ts, &u, &y).unwrap().frequency_response(segment_len).unwrap().excited(1e-2)
+        Validation::continuous(TransferFunctionWithDelay::new(model.clone(), nk as f64 * ts), ts, &u, &y).unwrap().frequency_response(segment_s).unwrap().excited(1e-2)
     };
     let (right, wrong_delay, wrong_order) = (compare(&plant, delay), compare(&plant, delay + 1), compare(&first_order, delay));
     for (name, c) in [("true", &right), ("wrong delay", &wrong_delay), ("first order", &wrong_order)] {
@@ -345,8 +347,8 @@ fn test_validation_frequency_response() {
     // response of the plant (~0.1 s here)
     let g_z = plant.discretize(Zoh, ts).unwrap();
     let bias = |segment_len: usize| {
-        let c = Validation::continuous(TransferFunctionWithDelay::new(plant.clone(), delay as f64 * ts), ts, &u, &y).unwrap().frequency_response(segment_len).unwrap();
-        c.frequencies(ts)
+        let c = Validation::continuous(TransferFunctionWithDelay::new(plant.clone(), delay as f64 * ts), ts, &u, &y).unwrap().frequency_response(segment_len as f64 * ts).unwrap();
+        c.frequencies()
             .iter()
             .enumerate()
             .filter(|&(_, &f)| (2.0..=20.0).contains(&f))
@@ -363,7 +365,7 @@ fn test_validation_frequency_response() {
     assert!(fine < 0.05 && fine < 0.5 * coarse, "bias {coarse} -> {fine}");
 
     // One sample of delay: phase error -ω ts, gain unchanged, where the data are accurate
-    let frequencies = wrong_delay.frequencies(ts);
+    let frequencies = wrong_delay.frequencies();
     for &i in &accurate {
         let f = frequencies[i];
         let expected = -2.0 * PI * f * ts;
@@ -403,7 +405,7 @@ fn test_validation_aic() {
     assert!((validation.aic(4) - validation.aic(3) - 2.0).abs() < 1e-9);
     assert!((validation.bic(4) - validation.bic(3) - n.ln()).abs() < 1e-9);
     // AICc diverges when the parameters approach the samples
-    let short = validation.clone().evaluated_from(995);
+    let short = validation.clone().evaluated_from(0.995).unwrap();
     assert!(short.aicc(3).is_finite() && short.aicc(4).is_infinite());
 }
 
@@ -523,19 +525,19 @@ fn test_validation_one_step_prediction() {
 
     // Equation error: the prediction error of the true model is e itself
     let y = simulate(&u, &e);
-    let validation = Validation::one_step_prediction(&truth, &u, &y).unwrap();
+    let validation = Validation::one_step_prediction(&truth, 1e-3, &u, &y).unwrap();
     let max_difference = validation.residual.iter().zip(&e).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max);
     assert!(max_difference < 1e-12, "prediction error of the true model differs from e by {max_difference:e}");
 
     // ... and the least-squares estimate is white and independent of the input
-    let estimate = Validation::one_step_prediction(&least_squares(&structure, &u, &y), &u, &y).unwrap();
+    let estimate = Validation::one_step_prediction(&least_squares(&structure, &u, &y), 1e-3, &u, &y).unwrap();
     let (q, bound) = white(&estimate);
     println!("equation error, LS: Ljung-Box {q:.1} (bound {bound:.1}), mse {:.4e}", estimate.mse());
     assert!(q <= bound && estimate.cross_correlation(50, z).fraction_outside() < 0.05);
     assert!((estimate.mse() / 0.01 - 1.0).abs() < 0.05);
 
     // ... while a missing pole leaves a colored prediction error
-    let low = Validation::one_step_prediction(&least_squares(&Arx::new(1, 1).with_input_delay(1), &u, &y), &u, &y).unwrap();
+    let low = Validation::one_step_prediction(&least_squares(&Arx::new(1, 1).with_input_delay(1), &u, &y), 1e-3, &u, &y).unwrap();
     let (q_low, _) = white(&low);
     println!("equation error, na = 1: Ljung-Box {q_low:.1}");
     assert!(q_low > 10.0 * bound);
@@ -543,11 +545,11 @@ fn test_validation_one_step_prediction() {
     // Output error y = G u + v: even the true A, B leave the colored error A(z) v
     let y0 = simulate(&u, &vec![0.0; n_samples]);
     let y: Vec<f64> = y0.iter().map(|v| v + 0.3 * gaussian()).collect();
-    let (q_true, _) = white(&Validation::one_step_prediction(&truth, &u, &y).unwrap());
-    let (q_ls, _) = white(&Validation::one_step_prediction(&least_squares(&structure, &u, &y), &u, &y).unwrap());
+    let (q_true, _) = white(&Validation::one_step_prediction(&truth, 1e-3, &u, &y).unwrap());
+    let (q_ls, _) = white(&Validation::one_step_prediction(&least_squares(&structure, &u, &y), 1e-3, &u, &y).unwrap());
     // ... the IV estimate is validated by its output error instead: white, as v
     let iv_model = iv::arx::identify(&u, &y, &structure, 3).unwrap();
-    let output_error = Validation::discrete(&iv_model.transfer_function(), &u, &y).unwrap();
+    let output_error = Validation::discrete(&iv_model.transfer_function(), 1e-3, &u, &y).unwrap();
     let (q_iv, _) = white(&output_error);
     println!("output error: prediction error of the true model {q_true:.1}, of LS {q_ls:.1}; output error of IV {q_iv:.1}");
     assert!(q_true > 10.0 * bound && q_ls > 10.0 * bound);
@@ -592,8 +594,8 @@ fn test_validation_check() {
         Check::InformationCriteria { parameters: 3 },
         Check::Whiteness { max_lag: 20 },
         Check::CrossCorrelation { max_lag: 50 },
-        Check::Coherence { segment_len: 500, excited: 1e-2 },
-        Check::Lines { period, lines: lines.clone() },
+        Check::Coherence { segment_s: 0.5, excited: 1e-2 },
+        Check::Lines { fundamental_frequency: 1.0 / (period as f64 * ts), lines: lines.clone() },
     ];
     let mut noisy = |colored: bool| {
         let mut v = 0.0;
@@ -605,7 +607,7 @@ fn test_validation_check() {
             .collect::<Vec<f64>>()
     };
     let run = |nk: usize, y: &[f64]| {
-        Validation::continuous(TransferFunctionWithDelay::new(plant.clone(), nk as f64 * ts), ts, &u, y).unwrap().evaluated_from(period).check(&checks, 0.99).unwrap()
+        Validation::continuous(TransferFunctionWithDelay::new(plant.clone(), nk as f64 * ts), ts, &u, y).unwrap().evaluated_from(period as f64 * ts).unwrap().check(&checks, 0.99).unwrap()
     };
     let passed = |report: &dsmc::system_identification::validation::Report<f64>| -> Vec<Option<bool>> {
         report.results.iter().map(CheckResult::passed).collect()
@@ -633,4 +635,130 @@ fn test_validation_check() {
     let rejected = (0..trials).filter(|_| !run(delay, &noisy(false)).passed()).count();
     println!("true model rejected in {rejected} of {trials} trials (4 tests at 99 %)");
     assert!(rejected <= 6, "{rejected} of {trials}");
+}
+
+/// The tests do not depend on the units of the signals (input and output scaled by 1e-4 and
+/// 1e-5, the model by their ratio), and a residual or an input that is identically zero gives zero
+/// statistics rather than NaN.
+#[test]
+fn test_validation_scale_and_zero_signals() {
+    use dsmc::system_identification::validation::Validation;
+    use std::f64::consts::PI;
+
+    let mut state: u64 = 0x2545_f491_4f6c_dd1d;
+    let mut uniform = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        ((state >> 11) as f64 + 0.5) / (1u64 << 53) as f64
+    };
+    let mut gaussian = move || (-2.0 * uniform().ln()).sqrt() * (2.0 * PI * uniform()).cos();
+
+    let ts: f64 = 1e-3;
+    let n_samples = 20000;
+    let plant = TransferFunction::continuous(&[1000.0], &[1.0, 20.0, 1000.0]);
+    let mut u = vec![0.0; n_samples];
+    for k in 1..n_samples {
+        u[k] = 0.83 * u[k - 1] + gaussian();
+    }
+    let y0 = Validation::continuous(&plant, ts, &u, &vec![0.0; n_samples]).unwrap().simulated;
+    let y: Vec<f64> = y0.iter().map(|v| v + 0.05 * gaussian()).collect();
+    // Wrong order, so that the residual depends on the input
+    let model = TransferFunction::continuous(&[50.0], &[1.0, 50.0]);
+
+    let (cu, cy) = (1e-4, 1e-5);
+    let (u_small, y_small): (Vec<f64>, Vec<f64>) = (u.iter().map(|v| v * cu).collect(), y.iter().map(|v| v * cy).collect());
+    let model_small = TransferFunction::continuous(&[50.0 * cy / cu], &[1.0, 50.0]);
+    let unit = Validation::continuous(&model, ts, &u, &y).unwrap();
+    let small = Validation::continuous(&model_small, ts, &u_small, &y_small).unwrap();
+
+    let close = |a: &[f64], b: &[f64], what: &str| {
+        assert_eq!(a.len(), b.len());
+        for (i, (x, z)) in a.iter().zip(b).enumerate() {
+            assert!((x - z).abs() <= 1e-9 * x.abs().max(1e-12), "{what}[{i}]: {x} vs {z}");
+        }
+    };
+    let (c1, c2) = (unit.coherence_test(0.5, 0.99).unwrap(), small.coherence_test(0.5, 0.99).unwrap());
+    close(&c1.coherence, &c2.coherence, "coherence");
+    assert!(c1.mean_coherence() > 5.0 * c1.expected_coherence());
+    let (f1, f2) = (unit.frequency_response(0.5).unwrap(), small.frequency_response(0.5).unwrap());
+    close(&f1.coherence, &f2.coherence, "frequency response coherence");
+    close(&f1.relative_error(), &f2.relative_error(), "relative error");
+    let (x1, x2) = (unit.cross_correlation(20, 3.0), small.cross_correlation(20, 3.0));
+    close(&x1.correlation, &x2.correlation, "cross-correlation");
+    close(&[x1.bound], &[x2.bound], "cross-correlation bound");
+    assert!(!x1.outside().is_empty());
+    let (w1, w2) = (unit.autocorrelation(20, 2.58), small.autocorrelation(20, 2.58));
+    close(&w1.correlation, &w2.correlation, "autocorrelation");
+
+    // Residual identically zero: the output is the simulated output itself
+    let exact = Validation::continuous(&plant, ts, &u, &y0).unwrap();
+    assert!(exact.residual.iter().all(|&e| e == 0.0));
+    let w = exact.autocorrelation(20, 2.58);
+    assert!(w.correlation.iter().all(|&r| r == 0.0) && w.ljung_box == 0.0, "{w:?}");
+    let x = exact.cross_correlation(20, 3.0);
+    assert!(x.correlation.iter().all(|&r| r == 0.0) && x.bound.is_finite() && x.outside().is_empty(), "{x:?}");
+    let c = exact.coherence_test(0.5, 0.99).unwrap();
+    assert!(c.coherence.iter().all(|&g| g == 0.0) && c.outside().is_empty());
+    let l = exact.line_test(2.0, &[1, 2, 3], 0.99).unwrap();
+    assert!(l.statistic.iter().all(|&f| f == 0.0), "{l:?}");
+
+    // Input identically zero: nothing to correlate, no NaN
+    let silent = Validation::continuous(&plant, ts, &vec![0.0; n_samples], &y).unwrap();
+    let x = silent.cross_correlation(20, 3.0);
+    assert!(x.correlation.iter().all(|&r| r == 0.0) && x.bound.is_finite(), "{x:?}");
+    assert!(silent.frequency_response(0.5).unwrap().bins.is_empty());
+    assert!(silent.coherence_test(0.5, 0.99).unwrap().bins.is_empty());
+
+    // Band-limited input (lines 1 ..= 50 of the segment): the bins without input power are left
+    // out, so the errors are finite at every bin returned
+    let band: Vec<f64> = (0..n_samples)
+        .map(|k| (1..=50).map(|l| (2.0 * PI * (l * k) as f64 / 500.0 + 0.3 * (l * l) as f64).cos()).sum())
+        .collect();
+    let y_band: Vec<f64> = Validation::continuous(&plant, ts, &band, &vec![0.0; n_samples]).unwrap().simulated.iter().map(|v| v + 0.01 * gaussian()).collect();
+    let limited = Validation::continuous(&model, ts, &band, &y_band).unwrap();
+    let f = limited.frequency_response(0.5).unwrap();
+    let c = limited.coherence_test(0.5, 0.99).unwrap();
+    for bins in [&f.bins, &c.bins] {
+        assert!((1..=50).all(|l| bins.contains(&l)), "{bins:?}");
+        assert!(bins.iter().all(|&b| b < 200), "{bins:?}");
+    }
+    assert!(f.relative_error().iter().chain(&f.gain_error_db()).chain(&f.phase_error()).chain(&f.normalized_error()).all(|v| v.is_finite()));
+    assert!(f.rms_relative_error().is_finite() && f.mean_normalized_error().is_finite() && c.mean_coherence().is_finite());
+}
+
+/// Durations in seconds: whole numbers of the sampling period, converted to samples; the
+/// frequencies of the results in Hz.
+#[test]
+fn test_validation_durations_in_seconds() {
+    use dsmc::system_identification::validation::{Validation, ValidationError};
+
+    let ts = 1e-3;
+    let plant = TransferFunction::continuous(&[1000.0], &[1.0, 20.0, 1000.0]);
+    let u: Vec<f64> = (0..4000).map(|k| ((k * 7919) % 101) as f64 / 50.0 - 1.0).collect();
+    let y: Vec<f64> = u.iter().enumerate().map(|(k, v)| 0.5 * v + 0.01 * ((k * 104729 % 997) as f64 / 498.5 - 1.0)).collect();
+    let validation = Validation::continuous(&plant, ts, &u, &y).unwrap();
+
+    let from = validation.clone().evaluated_from(1.5).unwrap();
+    assert_eq!((from.start, from.samples()), (1500, 2500));
+    let coherence = validation.coherence_test(0.5, 0.99).unwrap();
+    assert_eq!(coherence.segment_len, 500);
+    assert!(coherence.bins.iter().zip(coherence.frequencies()).all(|(&f, hz)| (hz - f as f64 * 2.0).abs() < 1e-9));
+    let response = validation.frequency_response(0.25).unwrap();
+    assert!(response.bins.iter().zip(response.frequencies()).all(|(&f, hz)| (hz - f as f64 * 4.0).abs() < 1e-9));
+    let lines = validation.line_test(2.0, &[1, 3, 10], 0.99).unwrap(); // period 0.5 s
+    assert_eq!(lines.periods, 8);
+    assert_eq!(lines.frequencies(), vec![2.0, 6.0, 20.0]);
+
+    let fractional = |duration: f64| ValidationError::FractionalDuration { duration, ts };
+    assert_eq!(validation.clone().evaluated_from(1.0005).unwrap_err(), fractional(1.0005));
+    assert_eq!(validation.coherence_test(0.5005, 0.99).unwrap_err(), fractional(0.5005));
+    assert_eq!(validation.frequency_response(0.5005).unwrap_err(), fractional(0.5005));
+    // 3 Hz at 1 kHz: 333.3 samples per period
+    assert_eq!(validation.line_test(3.0, &[1], 0.99).unwrap_err(), ValidationError::FractionalPeriod { fundamental_frequency: 3.0, ts });
+    assert!(matches!(validation.line_test(0.0, &[1], 0.99), Err(ValidationError::InvalidFundamental { .. })));
+    assert!(matches!(validation.clone().evaluated_from(-1.0), Err(ValidationError::InvalidDuration { .. })));
+    assert!(matches!(Validation::continuous(&plant, 0.0, &u, &y), Err(ValidationError::Simulation(dsmc::SimulationError::InvalidSamplingPeriod { .. }))));
+    let g_z = TransferFunction::<f64, dsmc::Discrete>::discrete(&[1.0], &[1.0, -0.5]);
+    assert!(matches!(Validation::discrete(&g_z, -1e-3, &u, &y), Err(ValidationError::InvalidDuration { .. })));
 }

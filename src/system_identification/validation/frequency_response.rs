@@ -5,6 +5,7 @@ use num_traits::Float;
 use rustfft::FftNum;
 
 use super::{Validation, ValidationError};
+use crate::analysis::fft::{coherence_of, power_floor};
 
 impl<T: Float + FftNum> Validation<T> {
     /// Frequency response of the model compared with the nonparametric estimate from the data,
@@ -28,37 +29,32 @@ impl<T: Float + FftNum> Validation<T> {
     ///
     /// This is a diagnostic rather than another test (it carries the same information as
     /// `coherence_test`): it shows the model error as a gain \[dB\] and a phase error against the
-    /// uncertainty of the data, e.g. for a Bode plot of both.
-    pub fn frequency_response(&self, segment_len: usize) -> Result<FrequencyResponseComparison<T>, ValidationError> {
+    /// uncertainty of the data, e.g. for a Bode plot of both. The bins where the input power is at
+    /// most `1e-12` times its maximum over the bins (numerical noise) are left out: the data do not
+    /// define the response there.
+    pub fn frequency_response(&self, segment_s: T) -> Result<FrequencyResponseComparison<T>, ValidationError> {
+        let segment_len = self.duration_samples(segment_s)?;
         let spectra = self.spectra(segment_len)?;
         let l = spectra.effective_segments;
-        let zero = Complex::new(T::zero(), T::zero());
-        let bins: Vec<usize> = (1..=segment_len / 2).collect();
-        let ratio = |a: Complex<T>, f: usize| if spectra.uu[f] > T::zero() { a / spectra.uu[f] } else { zero };
+        let (floor_u, floor_y) = (power_floor(&spectra.uu), power_floor(&spectra.yy));
+        let bins: Vec<usize> = (1..=segment_len / 2).filter(|&f| spectra.uu[f] > floor_u).collect();
+        let ratio = |a: Complex<T>, f: usize| a / spectra.uu[f];
         Ok(FrequencyResponseComparison {
             measured: bins.iter().map(|&f| ratio(spectra.yu[f], f)).collect(),
             model: bins.iter().map(|&f| ratio(spectra.yu[f] - spectra.eu[f], f)).collect(),
-            coherence: bins
-                .iter()
-                .map(|&f| {
-                    let denom = spectra.uu[f] * spectra.yy[f];
-                    if denom > T::zero() { spectra.yu[f].norm_sqr() / denom } else { T::zero() }
-                })
-                .collect(),
+            coherence: bins.iter().map(|&f| coherence_of(spectra.yu[f], spectra.uu[f], spectra.yy[f], floor_u, floor_y)).collect(),
             stdev: bins
                 .iter()
                 .map(|&f| {
-                    if spectra.uu[f] > T::zero() {
-                        let noise = spectra.yy[f] - spectra.yu[f].norm_sqr() / spectra.uu[f]; // (1 - γ²) S_yy
-                        (noise.max(T::zero()) / (l * spectra.uu[f])).sqrt()
-                    } else {
-                        T::infinity()
-                    }
+                    let coherent = spectra.yu[f].norm() / spectra.uu[f].sqrt();
+                    let noise = spectra.yy[f] - coherent * coherent; // (1 - γ²) S_yy
+                    (noise.max(T::zero()) / (l * spectra.uu[f])).sqrt()
                 })
                 .collect(),
             input_power: bins.iter().map(|&f| spectra.uu[f]).collect(),
             bins,
             segment_len,
+            ts: self.ts,
             effective_segments: l,
         })
     }
@@ -67,7 +63,7 @@ impl<T: Float + FftNum> Validation<T> {
 /// Result of `Validation::frequency_response`.
 #[derive(Clone, Debug)]
 pub struct FrequencyResponseComparison<T> {
-    /// Frequency bins `f` (frequency `f / (segment_len ts)`).
+    /// Frequency bins `f` (frequency `f / (segment_len ts)` \[Hz\]) where the input has power.
     pub bins: Vec<usize>,
     /// Nonparametric estimate `G(f) = S_yu / S_uu` from the data.
     pub measured: Vec<Complex<T>>,
@@ -81,14 +77,16 @@ pub struct FrequencyResponseComparison<T> {
     pub input_power: Vec<T>,
     /// Segment length \[samples\].
     pub segment_len: usize,
+    /// Sampling period \[s\].
+    pub ts: T,
     /// Equivalent number of independent segments `L`.
     pub effective_segments: T,
 }
 
 impl<T: Float> FrequencyResponseComparison<T> {
-    /// Frequencies \[Hz\] of the bins for the sampling period `ts`.
-    pub fn frequencies(&self, ts: T) -> Vec<T> {
-        let df = T::one() / (T::from(self.segment_len).unwrap() * ts);
+    /// Frequencies \[Hz\] of the bins.
+    pub fn frequencies(&self) -> Vec<T> {
+        let df = T::one() / (T::from(self.segment_len).unwrap() * self.ts);
         self.bins.iter().map(|&f| T::from(f).unwrap() * df).collect()
     }
 

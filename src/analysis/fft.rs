@@ -47,23 +47,33 @@ pub fn fft<T: FftNum + Float>(data: &[T], ts: T) -> Vec<FrequencyResponse<T>> {
 
 /// Frequency response `G = P_yu / P_uu` from input `u` and output `y` (sampled with period `ts`) by
 /// Welch's method: Hann-windowed segments of about `len / n_segments` samples (rounded up to a power
-/// of two) with 50% overlap, mean removed per segment.
+/// of two, but at most `len`) with 50% overlap, mean removed per segment.
 ///
-/// Returns the response at `omega` \[rad/s\] (zero where the input has no power) and the coherence
-/// `|P_yu|^2 / (P_uu P_yy)` per frequency. The response can be passed to the identification methods
-/// in [`system_identification::frequency_response`](crate::system_identification::frequency_response).
+/// Returns the response at `omega` \[rad/s\] and the coherence `|P_yu|^2 / (P_uu P_yy)` per
+/// frequency. A bin counts as unexcited, with zero response and coherence, where `P_uu` is at most
+/// `1e-12` times its maximum over the bins (and the coherence is also zero where `P_yy` is at most
+/// `1e-12` times its maximum): the thresholds are relative, so the result does not depend on the
+/// units of `u` and `y`. Both are empty if `u` has fewer than 2 samples. The response can be passed
+/// to the identification methods in
+/// [`system_identification::frequency_response`](crate::system_identification::frequency_response).
+///
+/// # Panics
+///
+/// If `u` and `y` have different lengths.
 pub fn welch<T: FftNum + Float + Sum + AddAssign + SubAssign + DivAssign + MulAssign + RemAssign + ToPrimitive>(
     u: &[T],
     y: &[T],
     ts: T,
     n_segments: usize,
 ) -> (Vec<FrequencyResponse<T>>, Vec<T>) {
+    assert_eq!(u.len(), y.len(), "welch: input and output lengths differ");
     let n = u.len();
+    if n < 2 {
+        return (vec![], vec![]);
+    }
     let fs = T::one() / ts;
-    let nperseg = {
-        let x = (T::from(n).unwrap() / T::from(n_segments).unwrap()).log2().ceil();
-        2usize.pow(x.to_u32().unwrap())
-    };
+    // 2^ceil(log2(n / n_segments)), at least 2 (for the window) and at most n
+    let nperseg = n.div_ceil(n_segments.max(1)).next_power_of_two().clamp(2, n);
     let noverlap = nperseg / 2;
 
     let create_hann_window = |len: usize| -> Vec<T> {
@@ -132,16 +142,33 @@ pub fn welch<T: FftNum + Float + Sum + AddAssign + SubAssign + DivAssign + MulAs
     let mut ret: Vec<FrequencyResponse<T>> = Vec::with_capacity(nperseg / 2 + 1);
     let mut coherence = vec![T::zero(); nperseg / 2 + 1];
 
-    let tol = T::from(1e-12).unwrap();
+    let (floor_u, floor_y) = (power_floor(&puu), power_floor(&pyy));
 
     for k in 0..=nperseg / 2 {
         let omega = T::from(2.0 * PI).unwrap() * T::from(k).unwrap() * fs / T::from(nperseg).unwrap();
-        let value = if puu[k] > tol { pyu[k] / puu[k] } else { Complex::from(T::zero()) };
+        let value = if puu[k] > floor_u { pyu[k] / puu[k] } else { Complex::from(T::zero()) };
         ret.push(FrequencyResponse { omega, value });
-
-        let denom = puu[k] * pyy[k];
-        coherence[k] = if denom > tol { pyu[k].norm_sqr() / denom } else { T::zero() };
+        coherence[k] = coherence_of(pyu[k], puu[k], pyy[k], floor_u, floor_y);
     }
 
     (ret, coherence)
+}
+
+/// Power below which a bin of the spectrum `p` counts as unexcited: `1e-12` times its maximum over
+/// the bins (the numerical noise of the window leakage). Relative, so that it does not depend on the
+/// units of the signal; zero for a signal that is identically zero, so that `p > floor` still
+/// rejects every bin.
+pub(crate) fn power_floor<T: Float>(p: &[T]) -> T {
+    T::from(1e-12).unwrap() * p.iter().copied().fold(T::zero(), T::max)
+}
+
+/// Coherence `|P_ab|^2 / (P_aa P_bb)`, zero where `P_aa` or `P_bb` is at most its floor. Computed as
+/// `(|P_ab| / sqrt(P_aa) / sqrt(P_bb))^2` so that the products of small powers do not underflow.
+pub(crate) fn coherence_of<T: Float>(ab: Complex<T>, aa: T, bb: T, floor_a: T, floor_b: T) -> T {
+    if aa > floor_a && bb > floor_b {
+        let c = ab.norm() / aa.sqrt() / bb.sqrt();
+        c * c
+    } else {
+        T::zero()
+    }
 }

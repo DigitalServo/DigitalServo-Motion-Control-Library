@@ -24,6 +24,8 @@ impl<T: Float + FftNum> Validation<T> {
     ///
     /// `r(τ)` outside the bound at `τ > 0` (past inputs) indicates unmodeled dynamics or a wrong
     /// delay; at `τ < 0` (future inputs), feedback from the output to the input in the data.
+    /// If the residual or the input is identically zero after the mean is removed, `r(τ)` is zero
+    /// and the bound is that of a white residual, `z / sqrt(N)`.
     pub fn cross_correlation(&self, max_lag: usize, z: T) -> CrossCorrelation<T> {
         let (start, end) = (self.start.min(self.residual.len()), self.residual.len());
         let n = T::from(end - start).unwrap();
@@ -42,15 +44,23 @@ impl<T: Float + FftNum> Validation<T> {
         let max_lag = max_lag as isize;
         let lags: Vec<isize> = (-max_lag..=max_lag).collect();
 
-        let scale = (r_e[0] * r_u[0]).sqrt();
-        let p = (1..=max_lag as usize).fold(r_e[0] * r_u[0], |acc, k| {
-            let w = T::one() - T::from(k).unwrap() / T::from(max_lag + 1).unwrap();
-            acc + (T::one() + T::one()) * w * r_e[k] * r_u[k]
+        // Normalized signal by signal (ρ_ε(k) = R_ε(k) / R_ε(0), P / (R_ε(0) R_u(0)) = Σ_k ρ_ε(k) ρ_u(k)),
+        // so that the products of small powers do not underflow
+        let (scale_e, scale_u) = (r_e[0].sqrt(), r_u[0].sqrt());
+        if !(scale_e > T::zero() && scale_u > T::zero() && n > T::zero()) {
+            // A residual or an input that is identically zero (or constant): no correlation to
+            // test, zero rather than 0 / 0, with the bound of a white residual
+            return CrossCorrelation { correlation: vec![T::zero(); lags.len()], lags, bound: z / n.max(T::one()).sqrt() };
+        }
+        let (rho_e, rho_u) = (r_e.iter().map(|&r| r / r_e[0]), r_u.iter().map(|&r| r / r_u[0]));
+        let p = rho_e.zip(rho_u).skip(1).enumerate().fold(T::one(), |acc, (i, (re, ru))| {
+            let w = T::one() - T::from(i + 1).unwrap() / T::from(max_lag + 1).unwrap();
+            acc + (T::one() + T::one()) * w * re * ru
         });
         CrossCorrelation {
             lags,
-            correlation: r_eu.iter().map(|&r| r / scale).collect(),
-            bound: z * (p.max(T::zero()) / n).sqrt() / scale,
+            correlation: r_eu.iter().map(|&r| r / scale_e / scale_u).collect(),
+            bound: z * (p.max(T::zero()) / n).sqrt(),
         }
     }
 }

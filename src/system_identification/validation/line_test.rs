@@ -7,9 +7,12 @@ use rustfft::{FftNum, FftPlanner};
 use super::{Validation, ValidationError};
 
 impl<T: Float + FftNum> Validation<T> {
-    /// Test of the residual at the excited lines of a periodic input (e.g. a multisine) of `period`
-    /// samples, over the whole periods from `start` on (set `start` after the transient of the
-    /// plant from rest, e.g. one period, if the data are also used for the noise level).
+    /// Test of the residual at the excited lines of a periodic input (e.g. a multisine) of
+    /// fundamental frequency `fundamental_frequency` \[Hz\] (period `1 / f0`, a whole number of
+    /// samples), over the whole periods from `start` on (set it by `evaluated_from` after the
+    /// transient of the plant from rest, e.g. one period, if the data are also used for the noise
+    /// level). The lines are the harmonic numbers of the fundamental (frequencies `line f0` \[Hz\]),
+    /// as for `multisine`.
     ///
     /// With `E_p(f)` the DFT of the residual over period `p` at line `f` (harmonic of the period),
     /// the model error `(G - Ĝ) U` is the same in every period while the noise varies, so
@@ -23,7 +26,8 @@ impl<T: Float + FftNum> Validation<T> {
     /// F distribution `F(2, 2(P-1))`, whose `confidence` quantile is
     /// `bound = (P-1) ((1 - confidence)^(-1/(P-1)) - 1)`. Every line weighs alike, whatever the
     /// gain of the plant there (unlike the time-domain `mse`).
-    pub fn line_test(&self, period: usize, lines: &[usize], confidence: T) -> Result<LineTest<T>, ValidationError> {
+    pub fn line_test(&self, fundamental_frequency: T, lines: &[usize], confidence: T) -> Result<LineTest<T>, ValidationError> {
+        let period = self.period_samples(fundamental_frequency)?;
         let start = self.start.min(self.residual.len());
         let periods = (self.residual.len() - start) / period.max(1);
         if periods < 2 {
@@ -53,6 +57,7 @@ impl<T: Float + FftNum> Validation<T> {
 
         let mut test = LineTest {
             lines: lines.to_vec(),
+            fundamental_frequency,
             periods,
             residual: Vec::with_capacity(lines.len()),
             output: Vec::with_capacity(lines.len()),
@@ -65,7 +70,16 @@ impl<T: Float + FftNum> Validation<T> {
             let mean = residual_lines.iter().fold(zero, |acc, e| acc + e[l]) / p;
             let variance = residual_lines.iter().fold(T::zero(), |acc, e| acc + (e[l] - mean).norm_sqr()) / (p - T::one());
             let output = output_lines.iter().fold(zero, |acc, y| acc + y[l]) / p;
-            test.statistic.push(p * mean.norm_sqr() / variance);
+            // Without noise (variance zero) a model error is infinitely significant, and no
+            // error at all is zero rather than 0 / 0
+            let statistic = if variance > T::zero() {
+                p * mean.norm_sqr() / variance
+            } else if mean.norm_sqr() > T::zero() {
+                T::infinity()
+            } else {
+                T::zero()
+            };
+            test.statistic.push(statistic);
             test.residual.push(mean);
             test.output.push(output);
             test.noise_variance.push(variance);
@@ -79,6 +93,8 @@ impl<T: Float + FftNum> Validation<T> {
 pub struct LineTest<T> {
     /// Excited lines (harmonic numbers of the period).
     pub lines: Vec<usize>,
+    /// Fundamental frequency \[Hz\].
+    pub fundamental_frequency: T,
     /// Number of whole periods `P` evaluated.
     pub periods: usize,
     /// Residual spectrum averaged over the periods, `Ē(f) = Σ_p E_p(f) / P`, at each line.
@@ -94,6 +110,11 @@ pub struct LineTest<T> {
 }
 
 impl<T: Float> LineTest<T> {
+    /// Frequencies \[Hz\] of the lines, `line f0`.
+    pub fn frequencies(&self) -> Vec<T> {
+        self.lines.iter().map(|&l| T::from(l).unwrap() * self.fundamental_frequency).collect()
+    }
+
     /// Lines with `F(f) > bound`.
     pub fn outside(&self) -> Vec<usize> {
         self.lines.iter().zip(&self.statistic).filter(|(_, f)| **f > self.bound).map(|(&l, _)| l).collect()

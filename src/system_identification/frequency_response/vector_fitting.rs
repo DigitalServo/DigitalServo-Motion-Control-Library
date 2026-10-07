@@ -159,8 +159,17 @@ impl<T: Float + RealField> From<VectorFittingResult<T>> for TransferFunction<T, 
 
             let mut numer: Vec<T> = numer_complex.iter().map(|c| c.re).collect();
 
-            let first_valid = numer.iter()
-                .position(|x| x.abs() >= T::from(1e-5).unwrap())
+            // Drop the leading coefficients that are negligible (d, e not fitted, or a residue sum
+            // that cancels): the term c_i s^m is compared at the largest pole magnitude ω_ref with
+            // the largest term, so that the threshold does not depend on the units of G nor on the
+            // frequency scale
+            let omega_ref = val.poles.iter().map(|p| p.norm()).fold(T::zero(), Float::max);
+            let omega_ref = if omega_ref > T::zero() { omega_ref } else { T::one() };
+            let degree = numer.len() - 1;
+            let terms: Vec<T> = numer.iter().enumerate().map(|(i, c)| Float::abs(*c) * Float::powi(omega_ref, (degree - i) as i32)).collect();
+            let largest = terms.iter().copied().fold(T::zero(), Float::max);
+            let first_valid = terms.iter()
+                .position(|&t| t > T::from(1e-5).unwrap() * largest)
                 .unwrap_or(numer.len());
 
             numer.drain(..first_valid);

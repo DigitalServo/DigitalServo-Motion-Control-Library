@@ -18,12 +18,15 @@ pub enum Check<T> {
     /// Independence of the residual and the input over the lags `-max_lag ..= max_lag`
     /// (`cross_correlation`).
     CrossCorrelation { max_lag: usize },
-    /// Coherence of the residual and the input (`coherence_test`) over the bins where the input
-    /// power is at least `excited` times its maximum (e.g. `1e-2`; 0 for all bins).
-    Coherence { segment_len: usize, excited: T },
-    /// Test at the excited `lines` of a periodic input of `period` samples (`line_test`), over the
-    /// whole periods from `Validation::start` on (set it after the transient, e.g. one period).
-    Lines { period: usize, lines: Vec<usize> },
+    /// Coherence of the residual and the input (`coherence_test`) with segments of `segment_s`
+    /// \[s\], over the bins where the input power is at least `excited` times its maximum (e.g.
+    /// `1e-2`; 0 for all bins with input power).
+    Coherence { segment_s: T, excited: T },
+    /// Test at the excited `lines` of a periodic input of fundamental frequency
+    /// `fundamental_frequency` \[Hz\] (`line_test`),
+    /// over the whole periods from `Validation::start` on (set it after the transient, e.g. one
+    /// period).
+    Lines { fundamental_frequency: T, lines: Vec<usize> },
 }
 
 /// Result of one `Check`.
@@ -213,14 +216,14 @@ impl<T: Float + FftNum> Validation<T> {
                         let passed = test.outside().is_empty();
                         CheckResult::CrossCorrelation { test, passed }
                     }
-                    Check::Coherence { segment_len, excited } => {
-                        let test = self.coherence_test(*segment_len, confidence)?.excited(*excited);
+                    Check::Coherence { segment_s, excited } => {
+                        let test = self.coherence_test(*segment_s, confidence)?.excited(*excited);
                         let allowed = binomial_quantile(test.bins.len(), alpha, confidence);
                         let passed = test.outside().len() <= allowed;
                         CheckResult::Coherence { test, allowed, passed }
                     }
-                    Check::Lines { period, lines } => {
-                        let test = self.line_test(*period, lines, confidence)?;
+                    Check::Lines { fundamental_frequency, lines } => {
+                        let test = self.line_test(*fundamental_frequency, lines, confidence)?;
                         let allowed = binomial_quantile(test.lines.len(), alpha, confidence);
                         let passed = test.outside().len() <= allowed;
                         CheckResult::Lines { test, allowed, passed }

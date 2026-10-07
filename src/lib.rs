@@ -21,6 +21,8 @@ pub mod feedforward;
 
 pub mod signal;
 
+mod sampling;
+
 pub mod system_identification;
 
 pub mod status;

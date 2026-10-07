@@ -82,8 +82,9 @@ pub struct SearchOptions<T> {
     pub checks: Vec<Check<T>>,
     /// Confidence level of the tests.
     pub confidence: T,
-    /// First evaluated sample of the validation data (e.g. one period of a periodic input, to
-    /// leave out the transient from rest; required by `Check::Lines`).
+    /// First evaluated sample of the validation data \[samples\] (`Validation::evaluated_from` takes
+    /// seconds), e.g. one period of a periodic input to leave out the transient from rest (required
+    /// by `Check::Lines`).
     pub evaluated_from: usize,
     /// Cutoff `ω_c` \[rad/s\] of the prefilters, needed by the structures with `q > 0`: each
     /// candidate is identified with `Prefilter::new(q, ω_c)`, and the validation data are
@@ -213,7 +214,7 @@ where
             Err(error) => Outcome::NotIdentified(error),
             Ok(result) if result.parameter.iter().any(|v| !Float::is_finite(*v)) => Outcome::Unstable(result),
             Ok(result) => {
-                let validation = Validation::continuous(&result.model, ts, &u_val, &y_val)?.evaluated_from(options.evaluated_from);
+                let validation = Validation::continuous(&result.model, ts, &u_val, &y_val)?.evaluated_from_sample(options.evaluated_from);
                 if !Float::is_finite(validation.mse()) {
                     Outcome::Unstable(result)
                 } else {

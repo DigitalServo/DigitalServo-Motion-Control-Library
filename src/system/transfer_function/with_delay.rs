@@ -8,6 +8,7 @@ use num_traits::Float;
 use thiserror::Error;
 
 use crate::{Continuous, Polynomial, TransferFunction};
+use crate::sampling::whole_samples;
 use crate::discretize::InterSample;
 use crate::discretize::state_variable_filter::StateVariableFilter;
 
@@ -22,6 +23,8 @@ pub enum SimulationError {
     FractionalDelay { delay: f64 },
     #[error("negative delay {delay} (a time advance) cannot be simulated")]
     NegativeDelay { delay: f64 },
+    #[error("sampling period {ts} is not positive and finite")]
+    InvalidSamplingPeriod { ts: f64 },
 }
 
 /// `G(s) = e^(-delay s) tf(s)`: a rational transfer function with a time shift (dead time for
@@ -52,18 +55,18 @@ impl<T: Float> TransferFunctionWithDelay<T> {
 }
 
 impl<T: Float + AddAssign + ComplexField + RealField> TransferFunctionWithDelay<T> {
-    /// Dead time in sampling periods `delay / ts`, if it is a whole number (relative tolerance 1e-9).
+    /// Dead time in sampling periods `delay / ts`, if it is a whole number (relative tolerance
+    /// `max(1e-9, 4 eps)`).
     pub fn delay_samples(&self, ts: T) -> Result<usize, SimulationError> {
-        let samples = self.delay / ts;
-        let whole = Float::round(samples);
         let delay = self.delay.to_f64().unwrap_or(f64::NAN);
-        if Float::abs(samples - whole) > T::from(1e-9).unwrap() * Float::max(T::one(), Float::abs(samples)) {
-            return Err(SimulationError::FractionalDelay { delay });
+        if !(ts > T::zero() && Float::is_finite(ts)) {
+            return Err(SimulationError::InvalidSamplingPeriod { ts: ts.to_f64().unwrap_or(f64::NAN) });
         }
-        if whole < T::zero() {
+        if self.delay < T::zero() {
             return Err(SimulationError::NegativeDelay { delay });
         }
-        Ok(whole.to_usize().unwrap())
+        // Not a whole number, or not finite
+        whole_samples(self.delay, ts).map_err(|_| SimulationError::FractionalDelay { delay })
     }
 
     /// Sampled response `y[k] = y(k ts)` to the input `u[k]` applied through a zero-order hold,
