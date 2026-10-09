@@ -49,6 +49,9 @@ fn unstable_complex_poles() {
     let inv = tf!("(s^2 - 2s + 5) / (s + 1)^2").stable_inverse().unwrap();
     check(inv.impulse_function(), |t| if t < 0.0 { -4.0 * t.exp() * (2.0 * t).cos() } else { 0.0 });
     println!("{:.3}", inv.time_domain());
+    let sin = format!("{:.3}", inv.time_domain().trig_form(dsmc::laplace_transform::TrigForm::Sin));
+    assert!(sin.contains("4.000 * exp(1.000t) * sin(2.000t - 1.571)"), "{sin}");
+    println!("{sin}");
 }
 
 #[test]

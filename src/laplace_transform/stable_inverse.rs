@@ -1,6 +1,7 @@
 //! Stable inverse of a continuous-time system by the bilateral (two-sided) Laplace transform.
 
-use super::inverse_laplace::{eval_terms, format_time_terms};
+use super::inverse_laplace::eval_terms;
+use super::{TimeExpression, TrigForm};
 use crate::{Continuous, PartialFraction, PoleTerm, Polynomial, TransferFunction};
 use num_traits::Float;
 use std::ops::AddAssign;
@@ -140,18 +141,29 @@ impl<T: Float> StableInverse<T> {
     }
 
     /// `h(t)` as a closure, e.g. `let h = inv.impulse_function(); h(-0.5)`. Same as
-    /// `impulse_response`; the closure owns a copy, so it may outlive `self`.
+    /// `impulse_response`; the closure owns the real modes of both sides, so it may outlive `self`.
     pub fn impulse_function(&self) -> impl Fn(T) -> T + use<T>
     where
         T: 'static,
     {
-        let inv = self.clone();
-        move |t| inv.impulse_response(t)
+        let (causal, anticausal) = (self.causal_expression(), self.anticausal_expression());
+        move |t| if t < T::zero() { anticausal.eval(t) } else { causal.eval(t) }
     }
 
-    /// Displayable `h(t)`, e.g. `println!("{:.3}", inv.time_domain())`.
+    /// `h(t)` for `t >= 0` (impulses from `causal.direct` and the stable modes).
+    pub fn causal_expression(&self) -> TimeExpression<T> {
+        self.causal.time_expression()
+    }
+
+    /// `h(t)` for `t < 0`: minus the causal inverse transform of the unstable poles.
+    pub fn anticausal_expression(&self) -> TimeExpression<T> {
+        -self.anticausal.time_expression()
+    }
+
+    /// Displayable `h(t)`, e.g. `println!("{:.3}", inv.time_domain())`, or with the oscillations
+    /// as amplitude and phase, `inv.time_domain().trig_form(TrigForm::Cos)`.
     pub fn time_domain(&self) -> StableInverseTimeDomain<'_, T> {
-        StableInverseTimeDomain(self)
+        StableInverseTimeDomain { inverse: self, form: TrigForm::default() }
     }
 }
 
@@ -160,7 +172,17 @@ fn to_f64<T: Float>(x: T) -> f64 {
 }
 
 /// `Display` wrapper for the two-sided time-domain expression of a `StableInverse`.
-pub struct StableInverseTimeDomain<'a, T>(&'a StableInverse<T>);
+pub struct StableInverseTimeDomain<'a, T> {
+    inverse: &'a StableInverse<T>,
+    form: TrigForm,
+}
+
+impl<T> StableInverseTimeDomain<'_, T> {
+    /// Write oscillations in `form`.
+    pub fn trig_form(self, form: TrigForm) -> Self {
+        Self { form, ..self }
+    }
+}
 
 impl<T: Float + std::fmt::Display> std::fmt::Display for StableInverseTimeDomain<'_, T> {
     /// e.g.
@@ -170,18 +192,8 @@ impl<T: Float + std::fmt::Display> std::fmt::Display for StableInverseTimeDomain
     /// ```
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let prec = f.precision();
-        let negated = PartialFraction {
-            direct: Polynomial(vec![]),
-            terms: self
-                .0
-                .anticausal
-                .terms
-                .iter()
-                .map(|term| PoleTerm { pole: term.pole, residues: term.residues.iter().map(|&r| -r).collect() })
-                .collect(),
-        };
-        let causal = format_time_terms(&self.0.causal, prec);
-        let anticausal = format_time_terms(&negated, prec);
+        let causal = self.inverse.causal_expression().format(self.form, prec);
+        let anticausal = self.inverse.anticausal_expression().format(self.form, prec);
         let width = causal.chars().count().max(anticausal.chars().count());
         writeln!(f, "h(t) = {:<width$}    (t >= 0)", causal)?;
         write!(f, "h(t) = {:<width$}    (t < 0)", anticausal)

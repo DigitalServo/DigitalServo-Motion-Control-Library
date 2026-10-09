@@ -1,7 +1,9 @@
 //! Laplace transform: inverse transforms and signals given in the Laplace domain.
 
 mod inverse_laplace;
-pub use inverse_laplace::TimeDomain;
+
+mod time_expression;
+pub use time_expression::{TimeDomain, TimeExpression, TimeMode, TrigForm};
 
 mod stable_inverse;
 pub use stable_inverse::{StableInverse, StableInverseError, StableInverseTimeDomain};

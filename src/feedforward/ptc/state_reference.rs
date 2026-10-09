@@ -1,7 +1,9 @@
 //! State reference for perfect tracking control by stable inversion.
 
 use crate::system::principal_part;
-use crate::laplace_transform::{jump_rational, DelayedRationalSum, PiecewisePolynomial, StableInverse, StableInverseError};
+use crate::laplace_transform::{
+    jump_rational, DelayedRationalSum, PiecewisePolynomial, StableInverse, StableInverseError, TimeExpression,
+};
 use crate::{vieta_formula, Continuous, PartialFraction, PoleTerm, Polynomial, TransferFunction};
 use num_complex::Complex;
 use num_traits::{Float, Zero};
@@ -21,12 +23,39 @@ use std::ops::AddAssign;
 /// (pre-actuation before the trajectory starts). Everything is evaluated in closed form (no convolution).
 #[derive(Clone, Debug)]
 pub struct StateReference<T> {
-    /// `states[j]` = `[(τ_i, bilateral inverse of F_j(s) R_i(s))]` for `Y_d = Σ e^(-s τ_i) R_i(s)`.
-    states: Vec<Vec<(T, StableInverse<T>)>>,
+    /// `states[j]` = `[bilateral inverse of F_j(s) R_i(s), delayed by τ_i]` for `Y_d = Σ e^(-s τ_i) R_i(s)`.
+    states: Vec<Vec<Component<T>>>,
     /// For piecewise-polynomial references, the part of `ξ_d^(j)` from the poles of `Y_d` at
     /// `s = 0` is `Σ_k f_{j,k} y_d^(k)(t)` (`f_{j,k}`: Taylor coefficients of `F_j` at 0),
     /// evaluated from the local piece; `states` then holds only the zeros-of-N terms.
     polynomial: Option<(PiecewisePolynomial<T>, Vec<Vec<T>>)>,
+}
+
+/// `h(t - delay)` of a `StableInverse`, kept as real modes (conjugate poles merged) so that
+/// sampling the reference needs no complex arithmetic.
+#[derive(Clone, Debug)]
+struct Component<T> {
+    delay: T,
+    /// `h(t)` for `t >= 0`
+    causal: TimeExpression<T>,
+    /// `h(t)` for `t < 0`
+    anticausal: TimeExpression<T>,
+}
+
+impl<T: Float> Component<T> {
+    fn new(delay: T, inv: StableInverse<T>) -> Self {
+        Self { delay, causal: inv.causal_expression(), anticausal: inv.anticausal_expression() }
+    }
+
+    /// Same as `StableInverse::impulse_response(t - delay)`.
+    fn eval(&self, t: T) -> T {
+        let t = t - self.delay;
+        if t < T::zero() {
+            self.anticausal.eval(t)
+        } else {
+            self.causal.eval(t)
+        }
+    }
 }
 
 /// Desired outputs `y_d` that can be turned into a state reference: `DelayedRationalSum` (any delayed
@@ -121,7 +150,7 @@ impl<T: Float + AddAssign> ReferenceSignal<T> for DelayedRationalSum<T> {
                         if !pf.direct.is_empty() {
                             return Err(StableInverseError::NotSmoothEnough { state: j });
                         }
-                        Ok((c.delay, StableInverse::bilateral_with_abscissa(pf, sigma)?))
+                        Ok(Component::new(c.delay, StableInverse::bilateral_with_abscissa(pf, sigma)?))
                     })
                     .collect::<Result<Vec<_>, _>>()
             })
@@ -196,7 +225,7 @@ impl<T: Float + AddAssign> ReferenceSignal<T> for PiecewisePolynomial<T> {
                             })
                             .collect();
                         let pf = PartialFraction { direct: Polynomial(vec![]), terms };
-                        Ok((jump.time, StableInverse::bilateral(pf)?))
+                        Ok(Component::new(jump.time, StableInverse::bilateral(pf)?))
                     })
                     .collect::<Result<Vec<_>, _>>()
             })
@@ -218,9 +247,7 @@ impl<T: Float> StateReference<T> {
             .states
             .iter()
             .map(|components| {
-                components
-                    .iter()
-                    .fold(T::zero(), |acc, (delay, inv)| acc + inv.impulse_response(t - *delay))
+                components.iter().fold(T::zero(), |acc, c| acc + c.eval(t))
             })
             .collect();
         if let Some((y_d, series)) = &self.polynomial {

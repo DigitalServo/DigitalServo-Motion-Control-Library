@@ -15,6 +15,7 @@ mod state_space;
 mod stable_inverse;
 mod status;
 mod system_identification;
+mod time_expression;
 mod trajectory;
 mod transfer_function;
 mod validation;
