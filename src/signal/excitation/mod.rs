@@ -2,6 +2,7 @@
 //!
 //! - periodic: `multisine`, `shaped_multisine`, `flat_output_multisine` (see `multisine.rs`)
 //! - swept sine: `chirp`, `shaped_chirp` (see `chirp.rs`)
+//! - pseudo-random binary: `MSequence`, `ShapedMSequence` (see `m_sequence.rs`)
 
 use num_traits::Float;
 use thiserror::Error;
@@ -9,9 +10,11 @@ use thiserror::Error;
 use crate::sampling::DurationError;
 
 mod chirp;
+mod m_sequence;
 mod multisine;
 
 pub use chirp::{chirp, shaped_chirp};
+pub use m_sequence::{MSequence, ShapedMSequence};
 pub use multisine::{flat_output_multisine, multisine, shaped_multisine};
 
 /// Error of a duration `duration / ts` that is not a whole number of samples.
@@ -42,4 +45,8 @@ pub enum ExcitationError {
     InvalidAmplitude { harmonic: usize },
     #[error("no harmonics or samples, or their total power is zero or not finite")]
     NoPower,
+    #[error("order {order} of the M-sequence is not within 2 ..= 32")]
+    InvalidOrder { order: usize },
+    #[error("clock {clock} is zero, or the period of (2^{order} - 1) bits of {clock} samples overflows usize")]
+    InvalidClock { clock: usize, order: usize },
 }

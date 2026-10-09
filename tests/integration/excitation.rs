@@ -183,3 +183,80 @@ fn shaped_chirp_follows_the_gain_at_the_instantaneous_frequency() {
     assert_eq!(shaped_chirp(&zero, 1.0, 1e-3, 1.0, 11.0), Err(ExcitationError::NoPower));
     assert_eq!(shaped_chirp(&constant, 0.0, 1e-3, 1.0, 11.0), Err(ExcitationError::NoPower));
 }
+
+// --- m_sequence ---
+
+#[test]
+fn m_sequence_is_a_maximum_length_sequence() {
+    // The periodic autocorrelation is O(n^2); the taps of the higher orders were checked to give
+    // the period 2^n - 1 when the table was written
+    for order in 2..=12 {
+        let n = (1usize << order) - 1;
+        let mut ms = MSequence::<f64>::new(1, order).unwrap();
+        assert_eq!(ms.period(), n, "order {order}");
+        let u: Vec<f64> = ms.by_ref().take(2 * n).collect();
+        // Periodic, with one more +1 than -1 in a period
+        assert!((0..n).all(|k| u[k] == u[k + n]), "order {order}");
+        assert_eq!(u[..n].iter().sum::<f64>(), 1.0, "order {order}");
+        // Periodic autocorrelation: n at lag 0, -1 at every other lag (only for a maximum length)
+        for lag in 1..n {
+            let r: f64 = (0..n).map(|k| u[k] * u[k + lag]).sum();
+            assert_eq!(r, -1.0, "order {order}, lag {lag}");
+        }
+    }
+}
+
+#[test]
+fn m_sequence_holds_each_bit_for_the_clock() {
+    let mut single = MSequence::<f32>::new(1, 7).unwrap();
+    let bits: Vec<bool> = (0..127).map(|_| single.step_bit()).collect();
+    let mut ms = MSequence::<f32>::new(3, 7).unwrap();
+    assert_eq!(ms.period(), 3 * 127);
+    let held: Vec<f32> = ms.by_ref().take(3 * 127).collect();
+    assert!(held.iter().enumerate().all(|(j, &v)| v == if bits[j / 3] { 1.0 } else { -1.0 }));
+    // From the state 1 ... 1: order 2 (x^2 + x + 1) gives 1 1 0
+    let mut order2 = MSequence::<f64>::new(1, 2).unwrap();
+    assert_eq!((0..3).map(|_| order2.step_bit()).collect::<Vec<_>>(), vec![true, true, false]);
+    // reset goes back to the start, also in the middle of a held bit
+    ms.step();
+    ms.reset();
+    assert_eq!(ms.take(3 * 127).collect::<Vec<_>>(), held);
+}
+
+#[test]
+fn m_sequence_rejects_invalid_arguments() {
+    let new = MSequence::<f64>::new;
+    assert_eq!(new(1, 1).unwrap_err(), ExcitationError::InvalidOrder { order: 1 });
+    assert_eq!(new(1, 33).unwrap_err(), ExcitationError::InvalidOrder { order: 33 });
+    assert_eq!(new(0, 5).unwrap_err(), ExcitationError::InvalidClock { clock: 0, order: 5 });
+    assert_eq!(new(usize::MAX, 32).unwrap_err(), ExcitationError::InvalidClock { clock: usize::MAX, order: 32 });
+    // The highest order allocates nothing
+    assert_eq!(new(1, 32).unwrap().period(), u32::MAX as usize);
+}
+
+#[test]
+fn shaped_m_sequence_is_the_filter_output() {
+    use dsmc::{tf, DiscreteSystem, discretize::Tustin};
+    let filter = tf!("100 / (s + 100)").discretize(Tustin, 1e-3).unwrap();
+    let mut shaped = ShapedMSequence::new(2, 8, DiscreteSystem::try_from(&filter).unwrap()).unwrap();
+    assert_eq!(shaped.period(), 2 * 255);
+
+    // The same as feeding the ±1 samples to the filter by hand
+    let mut by_hand = DiscreteSystem::try_from(&filter).unwrap();
+    let expected: Vec<f64> = MSequence::new(2, 8).unwrap().take(3 * 510).map(|u| by_hand.update(u)).collect();
+    let y: Vec<f64> = (0..3 * 510).map(|_| shaped.step()).collect();
+    assert_eq!(y, expected);
+    // Periodic after the transient (the pole e^(-0.1) decays by 1e-22 over a period)
+    assert!((510..2 * 510).all(|k| (y[k] - y[k + 510]).abs() < 1e-12));
+
+    // reset: the sequence to its start and the filter to rest
+    shaped.reset();
+    assert_eq!((0..510).map(|_| shaped.step()).collect::<Vec<_>>(), expected[..510]);
+
+    // A filter passed with a state starts from rest too
+    let mut moved = DiscreteSystem::try_from(&filter).unwrap();
+    moved.update(5.0);
+    let mut shaped = ShapedMSequence::new(2, 8, moved).unwrap();
+    assert_eq!(shaped.step(), expected[0]);
+    assert!(ShapedMSequence::new(0, 8, DiscreteSystem::try_from(&filter).unwrap()).is_err());
+}
