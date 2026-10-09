@@ -11,6 +11,7 @@ mod partial_fraction;
 mod ptc_output;
 mod root_locus;
 mod signal;
+mod spectrum;
 mod state_space;
 mod stable_inverse;
 mod status;
