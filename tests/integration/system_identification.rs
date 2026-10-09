@@ -609,15 +609,16 @@ mod srivc {
     //! 6. `test_srivc_integrator_search`: the number of integrators `q` is searched with `(n, m, nk)`
     //!    and picked by BIC, a wrong `q` costing a parameter (a pole or a zero near the origin).
     //!
-    //! The tests take ~10 s with optimizations and several minutes without, so they are ignored in
-    //! debug builds: run `cargo test --release --test system_identification srivc:: -- --nocapture` (the
-    //! tables of the candidates are printed), or force them with `-- --ignored`.
+    //! The tests take a few seconds with optimizations and several minutes without, so they are
+    //! ignored in debug builds: run `cargo test --release --test integration srivc:: -- --nocapture`
+    //! (the tables of the candidates are printed), or force them with `-- --ignored`.
 
     use std::f64::consts::PI;
 
     use dsmc::{Polynomial, TransferFunction, TransferFunctionWithDelay};
     use dsmc::system_identification::iv::srivc::{self, identify, identify_with_prefilter, Initialization, Outcome, Prefilter, SearchOptions, SrivcError, SrivcOptions, Structure};
     use dsmc::system_identification::preprocessing::high_pass;
+    use dsmc::signal::excitation::multisine;
     use dsmc::system_identification::validation::{Check, CheckKind};
 
     const TS: f64 = 1e-4;
@@ -660,41 +661,15 @@ mod srivc {
         (v.iter().map(|x| x * x).sum::<f64>() / v.len() as f64).sqrt()
     }
 
-    /// Multisine over `BAND` (fundamental `F0`) of `n_samples` samples with equal amplitudes and
-    /// random phases `φ_h` started at `t = 0`, scaled to unit RMS:
-    /// `u[k] = sqrt(2 / H) Σ_h sin(2π h k / PERIOD + φ_h)`.
-    ///
-    /// Not `signal::excitation::multisine`, which shifts the start so that a double integrator
-    /// does not drift: the tests below were calibrated with this signal, under which the rigid-body
-    /// mode of the plants drifts like a ramp (its large low-frequency content helps SRIVC in these
-    /// simulations, which have no sensor range nor nonlinearity; with the drift-free start, the iterations of
-    /// `test_srivc_high_order` converge less often and the low orders of
-    /// `test_srivc_structure_search` are not always rejected by the cross-correlation).
-    fn random_phase_multisine(n_samples: usize, seed: u64) -> Vec<f64> {
-        let harmonics: Vec<usize> = BAND.collect();
-        // splitmix64: uniform in [0, 1)
-        let mut state = seed;
-        let mut uniform = || {
-            state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-            let mut z = state;
-            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-            ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64
-        };
-        let phases: Vec<f64> = harmonics.iter().map(|_| 2.0 * PI * uniform()).collect();
-        let scale = (2.0 / harmonics.len() as f64).sqrt();
-        (0..n_samples)
-            .map(|k| scale * harmonics.iter().zip(&phases).map(|(&h, &phase)| (2.0 * PI * ((h * k) % PERIOD) as f64 / PERIOD as f64 + phase).sin()).sum::<f64>())
-            .collect()
-    }
-
-    /// Open-loop experiment from rest: multisine input `u` over `BAND` (`random_phase_multisine`), and the output of `plant` to
+    /// Open-loop experiment from rest: multisine input `u` over `BAND` (`signal::excitation::multisine`,
+    /// equal amplitudes, unit RMS), and the output of `plant` to
     /// `u + input_offset` plus white noise of standard deviation `noise_ratio` times the RMS of the
     /// noise-free output *without the offset* (about its mean), so that the noise does not grow
     /// with the drift of the offset (`~ t^2` for a position output). The offset is not part of the
     /// recorded input.
     fn experiment(plant: &TransferFunctionWithDelay<f64>, n_samples: usize, seed: u64, noise_ratio: f64, input_offset: f64) -> (Vec<f64>, Vec<f64>) {
-        let u = random_phase_multisine(n_samples, seed);
+        let harmonics: Vec<usize> = BAND.collect();
+        let u = multisine(n_samples as f64 * TS, TS, F0, &harmonics, |_| 1.0, seed).unwrap();
         let applied: Vec<f64> = u.iter().map(|x| x + input_offset).collect();
         let y0 = plant.simulate(TS, &applied).unwrap();
         let without_offset = plant.simulate(TS, &u).unwrap();
@@ -764,7 +739,8 @@ mod srivc {
     ///   first and the orders searched afterwards.
     /// - The validation errors `V` of all reasonable candidates agree to 3 digits, while the
     ///   cross-correlation test rejects every lower order and every wrong delay: the residual still
-    ///   depends on the input.
+    ///   depends on the input. Some of them are unstable instead (a pole in the right half-plane
+    ///   making up for the missing dynamics), and are left out before the tests.
     /// - The line test also rejects the lower orders (mean F several times its expectation), but is
     ///   less sharp for a delay off by one sample.
     /// - With too many parameters the delay is no longer identifiable (an extra zero absorbs a shift),
@@ -827,7 +803,12 @@ mod srivc {
         // An extra zero passes the tests when converged, but loses in BIC
         let extra: Vec<_> = search.candidates.iter().filter(|c| c.structure.numerator_order == 3 && c.selectable()).collect();
         assert!(!extra.is_empty() && extra.iter().all(|c| c.bic() > selected.bic()));
-        assert!(search.candidates.iter().all(|c| matches!(c.outcome, Outcome::Validated { .. })));
+        // Every candidate is identified; the unstable ones (a pole in the right half-plane making
+        // up for a missing pole or a wrong delay) are lower orders or wrong delays
+        let wrong = |s: &Structure| s.denominator_order < 5 || s.input_delay != 8;
+        for c in &search.candidates {
+            assert!(matches!(c.outcome, Outcome::Validated { .. }) || matches!(c.outcome, Outcome::Unstable(_)) && wrong(&c.structure), "{}", c.structure);
+        }
     }
 
     /// Joint search of `(n, m, q, nk)` with the prefilters at `ω_c` = 3 Hz (order `q + 1` for each
@@ -835,9 +816,9 @@ mod srivc {
     /// data with an input offset of 1 % (not recorded): the right number of integrators `q = 1`
     /// is selected.
     ///
-    /// - A wrong `q` with the orders of the right one fails every test: with `q = 0` the pole at
-    ///   the origin is missing from `A`, with `q = 2` the zero at the origin `s^2 G` needs is
-    ///   missing from `B`.
+    /// - A wrong `q` with the orders of the right one fails every test or is unstable: with `q = 0`
+    ///   the pole at the origin is missing from `A`, with `q = 2` the zero at the origin `s^2 G`
+    ///   needs is missing from `B`.
     /// - Too many integrators with the orders adjusted (`(4, 3, 2)`: a zero near the origin) fits as
     ///   well and passes every test, but loses in BIC by about the penalty of the extra parameter,
     ///   `ln N` (~11).
@@ -890,7 +871,8 @@ mod srivc {
         let candidate = |n, m, q, nk| search.candidates.iter().find(|c| c.structure == Structure::new(n, m, q, nk)).unwrap();
         for nk in [7, 8, 9] {
             for (n, m, q) in [(4, 2, 0), (4, 2, 2)] {
-                assert!(!candidate(n, m, q, nk).report().unwrap().passed(), "{} passes", candidate(n, m, q, nk).structure);
+                let c = candidate(n, m, q, nk);
+                assert!(c.report().is_none_or(|r| !r.passed()) && !c.selectable(), "{} passes", c.structure);
             }
         }
         let c = candidate(4, 3, 2, 8);

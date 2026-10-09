@@ -47,6 +47,12 @@ impl<T: Float + FloatConst + 'static> FrequencyTransferFunction<T> {
         (self.response)(omega)
     }
 
+    /// Inverse 1 / G(jω), e.g. the input shape that flattens the output of G.
+    pub fn inverse(&self) -> Self {
+        let g = self.clone();
+        Self::new(move |omega| g.response(omega).inv())
+    }
+
     /// Gain (in dB if `log_scale`, otherwise the magnitude) and phase \[rad\] at `frequency` given in `U`.
     pub fn characteristics<U: FrequencyUnit>(&self, frequency: T, log_scale: bool) -> FrequencyCharacteristics<T, U> {
         let g = self.response(U::to_rad_per_sec(frequency));

@@ -63,7 +63,7 @@ fn test_roots_plot() {
             }
         }
 
-        let mut storage = DataStorage::new(format!("./out/roots_locus/roots_locus_alpha_{:.02}.csv", alpha), ',', false).unwrap();
+        let mut storage = DataStorage::new(format!("./out/roots_locus/roots_locus_alpha_{:.02}.csv", alpha)).unwrap();
         if let Some(roots) = roots {
             for root in roots {
                 storage.add(&[root.re, root.im]).unwrap();
@@ -108,7 +108,7 @@ fn test_roots_plot_2order() {
             assert!(found.iter().any(|r| (r - e).norm() < 1e-3), "zeta = {zeta}: {e} not in {found:?}");
         }
 
-        let mut storage = DataStorage::new(format!("./out/roots_locus_2order/roots_locus_zeta_{:.01}.csv", zeta), ',', false).unwrap();
+        let mut storage = DataStorage::new(format!("./out/roots_locus_2order/roots_locus_zeta_{:.01}.csv", zeta)).unwrap();
         if let Some(roots) = roots {
             for root in roots {
                 storage.add(&[root.re, root.im]).unwrap();

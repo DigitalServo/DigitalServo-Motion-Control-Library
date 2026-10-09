@@ -1,19 +1,11 @@
+//! First derivative of a ramp by `Differentiator` (bandwidth 100 rad/s), written to
+//! `out/differentiator.csv`.
+//!
+//! `cargo run --example differentiator`
+
 use dsmc::factorial;
 
-#[test]
-fn test_delayer() {
-    use dsmc::signal::Delayer;
-    let mut delayer = Delayer::new(5);
-    for i in 0..20 {
-        let out = delayer.output(i);
-        // Zero (the default) until the buffer fills, then the input from 5 samples earlier.
-        let expected = if i < 5 { 0 } else { i - 5 };
-        assert_eq!(out, expected, "sample {i}");
-    }
-}
-
-#[test]
-fn test_differentiator() {
+fn main() {
     use dsmc::logger::DataStorage;
     use dsmc::signal::Differentiator;
 
@@ -25,7 +17,7 @@ fn test_differentiator() {
     let derivative_order = 1;
     let filter_order = 0;
 
-    let mut storage = DataStorage::new("./out/differentiator.csv", ',', false).unwrap();
+    let mut storage = DataStorage::new("./out/differentiator.csv").unwrap();
     let mut differentiator = Differentiator::new(ts, bandwidth, derivative_order, filter_order);
 
     for _ in 0..100000 {

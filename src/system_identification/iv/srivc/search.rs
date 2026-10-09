@@ -7,7 +7,7 @@ use nalgebra::{ComplexField, RealField};
 use num_traits::Float;
 use rustfft::FftNum;
 
-use super::{identify, identify_with_prefilter, Initialization, Prefilter, SrivcError, SrivcOptions, SrivcResult};
+use super::{has_unstable_root, identify, identify_with_prefilter, Initialization, Prefilter, SrivcError, SrivcOptions, SrivcResult};
 use crate::system_identification::preprocessing::high_pass;
 use crate::system_identification::validation::{Check, CheckResult, Report, Validation, ValidationError};
 
@@ -106,7 +106,11 @@ impl<T: Float> SearchOptions<T> {
 pub enum Outcome<T> {
     /// SRIVC failed (e.g. singular normal equations).
     NotIdentified(SrivcError),
-    /// The identified model diverges on the validation input.
+    /// The identified model is unstable: `A(s)` has a root with `Re s > 1 / T_val` (`T_val` the
+    /// duration of the validation data), which grows by more than `e` over the validation data, or
+    /// the simulation on the validation input is not finite. A slower root in the right half-plane
+    /// cannot be told from an integrator within the data (e.g. the estimate of a rigid-body pole
+    /// with `q = 0`); the integrators `s^q` are not counted.
     Unstable(SrivcResult<T>),
     /// Identified and validated.
     Validated { result: SrivcResult<T>, report: Report<T> },
@@ -202,6 +206,8 @@ where
         None => (validation.0.to_vec(), validation.1.to_vec()),
     };
     let mut candidates = Vec::with_capacity(structures.len());
+    // A root of A(s) growing by more than e over the validation data
+    let unstable_rate = T::one() / (T::from(u_val.len()).unwrap() * ts);
     for &structure in structures {
         let srivc = SrivcOptions { input_delay: structure.input_delay, ..options.srivc.clone() };
         let (n, m, q) = (structure.denominator_order, structure.numerator_order, structure.integrators);
@@ -212,7 +218,12 @@ where
         };
         let outcome = match identified {
             Err(error) => Outcome::NotIdentified(error),
-            Ok(result) if result.parameter.iter().any(|v| !Float::is_finite(*v)) => Outcome::Unstable(result),
+            // Unstable even if the simulation stays finite (short validation data): its residual
+            // is dominated by the growing mode, under which the relative tests (cross-correlation,
+            // lines) no longer see the dependence on the input
+            Ok(result) if result.parameter.iter().any(|v| !Float::is_finite(*v)) || has_unstable_root(&result.parameter.as_slice()[..n], unstable_rate) => {
+                Outcome::Unstable(result)
+            }
             Ok(result) => {
                 let validation = Validation::continuous(&result.model, ts, &u_val, &y_val)?.evaluated_from_sample(options.evaluated_from);
                 if !Float::is_finite(validation.mse()) {

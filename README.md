@@ -124,7 +124,7 @@ use dsmc::logger::DataStorage;
 
 let bode = BodeDiagramPlotter::<f64>::new(0.1, 1000.0, 0.1, true).plot(&tf!("1 / (s + 1)"));
 
-let mut csv = DataStorage::new("./out/bode.csv", ',', true).unwrap();
+let mut csv = DataStorage::new("./out/bode.csv").unwrap().set_header(["frequency", "gain", "phase"]);
 for point in &bode {
     csv.add(point).unwrap();
 }

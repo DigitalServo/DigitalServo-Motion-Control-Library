@@ -24,3 +24,16 @@
 式・アルゴリズム・閾値を変えた作業を記録するときは、`notes/math/` の該当ファイル（索引は `notes/math/README.md`）も現状に合わせて更新してください。
 
 バージョンを上げたコミットを記録するときは、題名にバージョン（例: v0.4.1）を入れてください。
+
+## テストの実行
+
+結合テストは `tests/integration/` に1つのバイナリとしてまとめています（`main.rs` に各ファイルを `mod` で列挙）。新しいテストファイルを足したら `main.rs` に `mod` を追加してください。`tests/` 直下にファイルを置くとバイナリが増え、macOS の初回起動スキャン（1本数秒）でテストが遅くなります。
+
+テストが長くなるモジュールは `tests/integration/<module>/` のフォルダにし、そのモジュールで共通の設定（サンプリング周期・対象プラント・比較用の補助関数など）はフォルダの `mod.rs` に置きます（例: `discretize/mod.rs`）。
+
+assert で結果を確かめないもの（CSV を `out/` に書き出す・表示するだけのもの）はテストではなく `examples/` に置き、`cargo run --example <name>` で実行します。
+
+- 変更に関係するモジュールだけ先に: `cargo test --test integration <module>::`（例: `excitation::`）
+- ライブラリ内の doctest: `cargo test --doc`
+- 最後に全体: `cargo test`
+- SRIVC の重いテスト（`system_identification::srivc::`）はデバッグビルドでは ignore されます。確かめるときは `cargo test --release --test integration srivc::`（数秒）で。`-- --ignored` をデバッグビルドで付けると数分かかるので使わないこと

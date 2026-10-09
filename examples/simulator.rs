@@ -1,5 +1,9 @@
-#[test]
-fn test_simulate() {
+//! Second-order systems with damping ratios 0 ..= 2: their Bode diagrams (`out/bode_2order/`) and
+//! step responses simulated with a zero-order hold (`out/simulator_2order/`).
+//!
+//! `cargo run --example simulator`
+
+fn main() {
 
     use dsmc::logger::DataStorage;
     use dsmc::{BodeDiagramPlotter, DiscreteSystem, StateSpace, TransferFunction, discretize::Zoh};
@@ -18,8 +22,8 @@ fn test_simulate() {
         let bode_plotter = BodeDiagramPlotter::<f64>::new(0.0, 10000.0 / (2.0 * std::f64::consts::PI), 0.1, true);
         let frequency_response = bode_plotter.frequency_response_s(&system);
 
-        let mut storage_bode = DataStorage::new(format!("./out/bode_2order/bode_zeta_{:.01}.csv", zeta), ',', false).unwrap();
-        let mut storage_res = DataStorage::new(format!("./out/simulator_2order/response_zeta_{:.01}.csv", zeta), ',', false).unwrap();
+        let mut storage_bode = DataStorage::new(format!("./out/bode_2order/bode_zeta_{:.01}.csv", zeta)).unwrap();
+        let mut storage_res = DataStorage::new(format!("./out/simulator_2order/response_zeta_{:.01}.csv", zeta)).unwrap();
 
         for res in frequency_response {
             storage_bode.add(&res).unwrap();

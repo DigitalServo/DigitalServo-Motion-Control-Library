@@ -1,5 +1,9 @@
-#[test]
-fn test_smith_predictor_with_ptc() {
+//! Smith predictor with a disturbance observer and a perfect tracking controller (PTC) feedforward,
+//! for a plant with a dead time, written to `out/smith.csv`.
+//!
+//! `cargo run --example smith_predictor`
+
+fn main() {
 
     use dsmc::{
         DiscreteSystem, StateSpace, TransferFunction,
@@ -12,7 +16,7 @@ fn test_smith_predictor_with_ptc() {
 
     let ts = 1e-4;
 
-    let mut storage = DataStorage::new("./out/smith.csv", ',', false).unwrap();
+    let mut storage = DataStorage::new("./out/smith.csv").unwrap();
 
     let j = 2.0e-4;
     let d = 0.02;

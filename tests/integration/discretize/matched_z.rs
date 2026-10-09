@@ -1,3 +1,5 @@
+//! Matched z-transform and its inverse `to_continuous`.
+
 use dsmc::discretize::matched_z_transform::{
     to_continuous, to_continuous_with, to_continuous_with_delay, MatchedZ,
     MatchedZError, ToContinuousOptions, ZerosAtInfinity,
@@ -5,51 +7,7 @@ use dsmc::discretize::matched_z_transform::{
 use dsmc::{tf, Continuous, Discrete, Polynomial, TransferFunction};
 use num_complex::Complex;
 
-const TS: f64 = 1e-3;
-
-fn nyquist(tolerance: f64) -> ToContinuousOptions<f64> {
-    ToContinuousOptions { nyquist_tolerance: tolerance }
-}
-
-fn eval(p: &Polynomial<f64>, x: Complex<f64>) -> Complex<f64> {
-    p.iter().fold(Complex::new(0.0, 0.0), |acc, &c| acc * x + c)
-}
-
-fn response_s(g: &TransferFunction<f64, Continuous>, w: f64) -> Complex<f64> {
-    let s = Complex::new(0.0, w);
-    eval(&g.numerator, s) / eval(&g.denominator, s)
-}
-
-fn response_z(g: &TransferFunction<f64, Discrete>, w: f64) -> Complex<f64> {
-    let z = Complex::new(0.0, w * TS).exp();
-    eval(&g.numerator, z) / eval(&g.denominator, z)
-}
-
-/// Coefficients normalized by the leading denominator coefficient, leading zeros removed.
-fn normalized<D>(g: &TransferFunction<f64, D>) -> (Vec<f64>, Vec<f64>) {
-    let lead = g.denominator.iter().copied().find(|c| *c != 0.0).unwrap();
-    let trim = |p: &Polynomial<f64>| p.iter().copied().skip_while(|c| c.abs() < 1e-300).map(|c| c / lead).collect::<Vec<_>>();
-    (trim(&g.numerator), trim(&g.denominator))
-}
-
-fn assert_coeffs_close(actual: &[f64], expected: &[f64], tol: f64) {
-    assert_eq!(actual.len(), expected.len(), "{actual:?} vs {expected:?}");
-    for (a, e) in actual.iter().zip(expected) {
-        assert!((a - e).abs() <= tol * e.abs().max(1.0), "{actual:?} != {expected:?}");
-    }
-}
-
-fn plants() -> Vec<TransferFunction<f64, Continuous>> {
-    vec![
-        tf!("100 / (s + 100)"),
-        tf!("(s + 50) / ((s + 10) (s^2 + 40s + 10000))"),
-        tf!("(1 - 0.01s) / ((s + 20)^2)"),       // nonminimum phase, repeated pole
-        tf!("1 / (s (0.02s + 1))"),              // integrator
-        tf!("(s + 5) / (s^2 (s + 100))"),        // double integrator
-        tf!("10 / (s + 0.001)"),                 // slow pole, z = 1 - 1e-6 (not an integrator)
-        tf!("s / ((s + 10) (s + 30))"),          // zero at the origin
-    ]
-}
+use super::{assert_coeffs_close, assert_same_tf, normalized, plants, TS};
 
 #[test]
 fn first_order() {
@@ -58,15 +16,11 @@ fn first_order() {
 
     // All zeros at infinity to z = -1: K (z + 1) / (z - p), DC gain 1 -> K = (1 - p) / 2
     let g = tf!("100 / (s + 100)").discretize(MatchedZ(ZerosAtInfinity::MinusOne), TS).unwrap();
-    let (n, d) = normalized(&g);
-    assert_coeffs_close(&n, &[(1.0 - p) / 2.0, (1.0 - p) / 2.0], 1e-12);
-    assert_coeffs_close(&d, &[1.0, -p], 1e-12);
+    assert_same_tf(&g, &TransferFunction::discrete(&[(1.0 - p) / 2.0, (1.0 - p) / 2.0], &[1.0, -p]), 1e-12, "MinusOne");
 
     // One kept at infinity: (1 - p) / (z - p)
     let g = tf!("100 / (s + 100)").discretize(MatchedZ(ZerosAtInfinity::KeepOneDelay), TS).unwrap();
-    let (n, d) = normalized(&g);
-    assert_coeffs_close(&n, &[1.0 - p], 1e-12);
-    assert_coeffs_close(&d, &[1.0, -p], 1e-12);
+    assert_same_tf(&g, &TransferFunction::discrete(&[1.0 - p], &[1.0, -p]), 1e-12, "KeepOneDelay");
 }
 
 #[test]
@@ -74,10 +28,7 @@ fn round_trip_s_z_s() {
     for g in plants() {
         for option in [ZerosAtInfinity::MinusOne, ZerosAtInfinity::KeepOneDelay] {
             let back = to_continuous(g.discretize(MatchedZ(option), TS).unwrap(), TS).unwrap();
-            let (n0, d0) = normalized(&g);
-            let (n1, d1) = normalized(&back);
-            assert_coeffs_close(&n1, &n0, 1e-7);
-            assert_coeffs_close(&d1, &d0, 1e-7);
+            assert_same_tf(&back, &g, 1e-7, &format!("s -> z -> s, {option:?}"));
         }
     }
 }
@@ -88,10 +39,7 @@ fn round_trip_z_s_z() {
         for option in [ZerosAtInfinity::MinusOne, ZerosAtInfinity::KeepOneDelay] {
             let gz = g.discretize(MatchedZ(option), TS).unwrap();
             let again = to_continuous(&gz, TS).unwrap().discretize(MatchedZ(option), TS).unwrap();
-            let (n0, d0) = normalized(&gz);
-            let (n1, d1) = normalized(&again);
-            assert_coeffs_close(&n1, &n0, 1e-7);
-            assert_coeffs_close(&d1, &d0, 1e-7);
+            assert_same_tf(&again, &gz, 1e-7, &format!("z -> s -> z, {option:?}"));
         }
     }
 }
@@ -102,7 +50,7 @@ fn low_frequency_response() {
     for g in plants() {
         let gz = g.discretize(MatchedZ(ZerosAtInfinity::MinusOne), TS).unwrap();
         for w in [0.1, 1.0, 10.0] {
-            let (hs, hz) = (response_s(&g, w), response_z(&gz, w));
+            let (hs, hz) = (g.frequency_transfer_function().response(w), gz.frequency_transfer_function(TS).response(w));
             assert!((hs - hz).norm() <= 2e-2 * hs.norm(), "{g:?} at {w}: {hs} vs {hz}");
         }
     }
@@ -136,11 +84,11 @@ fn perturbed_nyquist_zeros() {
 
     let spurious = to_continuous(&perturbed, TS).unwrap();
     assert_eq!(normalized(&spurious).0.len(), 3, "a spurious zero pair near the Nyquist frequency: {spurious:?}");
-    let back = to_continuous_with(&perturbed, TS, &nyquist(1e-2)).unwrap();
+    let back = to_continuous_with(&perturbed, TS, &ToContinuousOptions { nyquist_tolerance:1e-2}).unwrap();
     let (n0, d0) = normalized(&g);
     let (n1, d1) = normalized(&back);
-    assert_coeffs_close(&d1, &d0, 1e-9);
-    assert_coeffs_close(&n1, &n0, 1e-5);
+    assert_coeffs_close(&d1, &d0, 1e-9, "denominator");
+    assert_coeffs_close(&n1, &n0, 1e-5, "numerator");
 }
 
 /// A model of mismatched order (as identified with too few numerator coefficients) has zeros at
@@ -155,10 +103,7 @@ fn unmappable_zeros_are_dropped() {
     let mismatched = TransferFunction::<f64, Discrete>::from_polynomials(numer, gz.denominator.clone());
 
     let back = to_continuous(&mismatched, TS).unwrap();
-    let (n0, d0) = normalized(&g);
-    let (n1, d1) = normalized(&back);
-    assert_coeffs_close(&d1, &d0, 1e-9);
-    assert_coeffs_close(&n1, &n0, 1e-9);
+    assert_same_tf(&back, &g, 1e-9, "zeros dropped");
 
     // Only zeros: a pole at z = 0 or on the negative real axis is still an error.
     let pole_negative = TransferFunction::<f64, Discrete>::from_polynomials(Polynomial(vec![1.0]), Polynomial(vec![1.0, 0.5]));
@@ -178,14 +123,11 @@ fn dead_time() {
     assert_eq!(to_continuous(&gz, TS).unwrap_err(), MatchedZError::PoleAtOrigin);
     let back = to_continuous_with_delay(&gz, TS, &ToContinuousOptions::default()).unwrap();
     assert!((back.delay - 3.0 * TS).abs() < 1e-15);
-    let (n0, d0) = normalized(&g);
-    let (n1, d1) = normalized(&back.tf);
-    assert_coeffs_close(&n1, &n0, 1e-7);
-    assert_coeffs_close(&d1, &d0, 1e-7);
+    assert_same_tf(&back.tf, &g, 1e-7, "dead time");
 
     // Frequency response includes the delay: phase -ω delay on top of tf(jω).
     let w = 50.0;
-    let rational = response_s(&g, w);
+    let rational = g.frequency_transfer_function().response(w);
     assert!((back.frequency_response(w) - rational * Complex::new(0.0, -w * 3.0 * TS).exp()).norm() < 1e-9 * rational.norm());
 
     // A fractional delay has no z^-d form.
@@ -205,9 +147,6 @@ fn time_advance() {
 
     let back = to_continuous_with_delay(&mismatched, TS, &ToContinuousOptions::default()).unwrap();
     assert!((back.delay + TS).abs() < 1e-15, "delay {}", back.delay);
-    let (n0, d0) = normalized(&g);
-    let (n1, d1) = normalized(&back.tf);
-    assert_coeffs_close(&d1, &d0, 1e-9);
-    assert_coeffs_close(&n1, &n0, 1e-9);
+    assert_same_tf(&back.tf, &g, 1e-9, "time advance");
     assert_eq!(format!("{:.3}", back), "exp(0.001 s) * (1000.000 / (s^2 + 20.000 * s + 1000.000))");
 }

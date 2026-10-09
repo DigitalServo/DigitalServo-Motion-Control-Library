@@ -1,10 +1,14 @@
+//! Bode diagram of a second-order low-pass filter, continuous (`out/bode_s.csv`) and discretized by
+//! Tustin (`out/bode_z.csv`).
+//!
+//! `cargo run --example bode_diagram`
+
 use dsmc::discretize::Tustin;
 use dsmc::logger::DataStorage;
 use dsmc::{BodeDiagramPlotter, tf};
 
-#[test]
-fn test_bode_plotter_s() {
-    let mut storage = DataStorage::new("./out/bode_s.csv", ',', false).unwrap();
+fn bode_s() {
+    let mut storage = DataStorage::new("./out/bode_s.csv").unwrap();
 
     let bode_plotter = BodeDiagramPlotter::<f64>::new(0.0, 1000.0, 0.01, true);
 
@@ -22,9 +26,8 @@ fn test_bode_plotter_s() {
     storage.close().unwrap()
 }
 
-#[test]
-fn test_bode_plotter_z() {
-    let mut storage = DataStorage::new("./out/bode_z.csv", ',', false).unwrap();
+fn bode_z() {
+    let mut storage = DataStorage::new("./out/bode_z.csv").unwrap();
 
     let ts = 1e-4;
 
@@ -48,4 +51,9 @@ fn test_bode_plotter_z() {
     }
 
     storage.close().unwrap()
+}
+
+fn main() {
+    bode_s();
+    bode_z();
 }

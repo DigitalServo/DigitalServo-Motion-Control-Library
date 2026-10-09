@@ -279,14 +279,33 @@ fn initial_parameter<T: Float + ComplexField>(tf: &TransferFunction<T, Continuou
     Ok(theta)
 }
 
-/// `[a_1, ..., a_n]` of the monic `A(s)` with the roots in the right half-plane reflected to the
-/// left half-plane (unchanged if stable, or if the roots are not found).
-fn stabilized<T: Float + ComplexField>(a: &[T]) -> Vec<T> {
-    // Roots of A(ρ s') / ρ^n, whose coefficients a_i / ρ^i are O(1)
+/// Roots `s'` of the monic `A(s)` (`a = [a_1, ..., a_n]`) in units of its root radius `ρ`
+/// (`s = ρ s'`), with `ρ`: the roots of `A(ρ s') / ρ^n`, whose coefficients `a_i / ρ^i` are O(1).
+/// `None` if they are not found.
+fn scaled_roots<T: Float + ComplexField>(a: &[T]) -> Option<(T, Vec<Complex<T>>)> {
     let rho = root_radius(a);
     let mut coefficients = vec![Complex::from(T::one())];
     coefficients.extend(a.iter().enumerate().map(|(i, &c)| Complex::from(c / Float::powi(rho, i as i32 + 1))));
-    let Some(roots) = dka_method(&Polynomial(coefficients)) else {
+    dka_method(&Polynomial(coefficients)).map(|roots| (rho, roots))
+}
+
+/// Whether the monic `A(s)` (`a = [a_1, ..., a_n]`) has a root with `Re s > rate` \[1/s\] (and
+/// beyond the rounding, `Re s > ρ sqrt(eps)` with the root radius `ρ` of `scaled_roots`).
+/// `false` if the roots are not found.
+pub(super) fn has_unstable_root<T: Float + ComplexField>(a: &[T], rate: T) -> bool {
+    if a.is_empty() {
+        return false;
+    }
+    scaled_roots(a).is_some_and(|(rho, roots)| {
+        let threshold = Float::max(rate / rho, Float::sqrt(T::epsilon()));
+        roots.iter().any(|r| r.re > threshold)
+    })
+}
+
+/// `[a_1, ..., a_n]` of the monic `A(s)` with the roots in the right half-plane reflected to the
+/// left half-plane (unchanged if stable, or if the roots are not found).
+fn stabilized<T: Float + ComplexField>(a: &[T]) -> Vec<T> {
+    let Some((rho, roots)) = scaled_roots(a) else {
         return a.to_vec();
     };
     if roots.iter().all(|r| r.re <= T::zero()) {
