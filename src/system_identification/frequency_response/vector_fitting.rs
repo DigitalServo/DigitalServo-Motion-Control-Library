@@ -1,6 +1,6 @@
 //! Vector Fitting (VF) method.
 
-use std::{iter::Sum, ops::{AddAssign, DivAssign, MulAssign, RemAssign, SubAssign}};
+use std::iter::Sum;
 
 use nalgebra::{Complex, DMatrix, DVector, RealField};
 
@@ -27,21 +27,9 @@ pub enum VectorFittingError {
     /// The iteration failed.
     #[error("Failed to iterate (check data and iterations)")]
     IterationError,
-}
-
-/// [Helper function] poly_from_roots: roots → monic polynomial (descending order)
-/// e.g. roots=[-1,-2] → [1, 3, 2] (= (s+1)(s+2))
-fn poly_from_roots<T: Float + RealField>(roots: &[Complex<T>]) -> Vec<Complex<T>> {
-    let mut p = vec![Complex::new(T::one(), T::zero())];
-    for &r in roots {
-        let mut q = vec![Complex::from(T::zero()); p.len() + 1];
-        for (i, &c) in p.iter().enumerate() {
-            q[i] += c;          // c * s
-            q[i + 1] -= c * r;  // -c * r
-        }
-        p = q;
-    }
-    p
+    /// The weights are not one per sample, or not all finite and non-negative.
+    #[error("Invalid weights: {len} for {samples} samples, all finite and non-negative needed")]
+    InvalidWeights { len: usize, samples: usize },
 }
 
 /// Options of vector fitting.
@@ -69,6 +57,10 @@ impl<T: Float> Default for VectorFittingOptions<T> {
 }
 
 /// Fitted model `G(s) = Σ r_k / (s - p_k) + d + e s`. Converts into a `TransferFunction` with `into`.
+///
+/// From `identify`, the model has real coefficients: the poles are real or in conjugate pairs
+/// (the one with `Im p > 0` first, then its conjugate), the residues of a real pole are real and
+/// those of a pair conjugate, exactly.
 #[derive(Debug, Clone)]
 pub struct VectorFittingResult<T> {
     /// Poles `p_k`.
@@ -79,11 +71,143 @@ pub struct VectorFittingResult<T> {
     pub d: T,
     /// Proportional term (coefficient of `s`).
     pub e: T,
-    /// RMS fitting error after each iteration.
+    /// RMS fitting error after each iteration (of the weighted error by `identify_weighted`).
     pub rms_errors: Vec<T>,
 }
 
+/// A real pole, or a pair of conjugate poles `p`, `p*` (`Im p > 0`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Block<T> {
+    Real(T),
+    Pair(Complex<T>),
+}
+
+impl<T: Float> Block<T> {
+    /// Number of poles (and of real residue parameters): 1 or 2.
+    fn size(&self) -> usize {
+        match self {
+            Block::Real(_) => 1,
+            Block::Pair(_) => 2,
+        }
+    }
+
+    /// The pole with `Im p >= 0`.
+    fn pole(&self) -> Complex<T> {
+        match *self {
+            Block::Real(p) => Complex::new(p, T::zero()),
+            Block::Pair(p) => p,
+        }
+    }
+
+    /// Real basis at `s`: `1 / (s - p)` for a real pole; `1 / (s - p) + 1 / (s - p*)` and
+    /// `j / (s - p) - j / (s - p*)` for a pair, so that the real parameters `c'`, `c''` stand for
+    /// the conjugate residues `c' ± j c''`.
+    fn basis(&self, s: Complex<T>) -> [Complex<T>; 2] {
+        match *self {
+            Block::Real(p) => [Complex::from(T::one()) / (s - p), Complex::from(T::zero())],
+            Block::Pair(p) => {
+                let (u, v) = (Complex::from(T::one()) / (s - p), Complex::from(T::one()) / (s - p.conj()));
+                let j = Complex::new(T::zero(), T::one());
+                [u + v, j * (u - v)]
+            }
+        }
+    }
+}
+
+/// Poles of `blocks` (each pair as `p`, `p*`).
+fn poles_of<T: Float>(blocks: &[Block<T>]) -> Vec<Complex<T>> {
+    blocks
+        .iter()
+        .flat_map(|b| match *b {
+            Block::Real(p) => vec![Complex::new(p, T::zero())],
+            Block::Pair(p) => vec![p, p.conj()],
+        })
+        .collect()
+}
+
+/// Complex residues of the real parameters `c` (`c' ± j c''` for a pair), one per pole.
+fn residues_of<T: Float>(blocks: &[Block<T>], c: &[T]) -> Vec<Complex<T>> {
+    let mut residues = Vec::with_capacity(c.len());
+    let mut i = 0;
+    for b in blocks {
+        match b {
+            Block::Real(_) => residues.push(Complex::new(c[i], T::zero())),
+            Block::Pair(_) => {
+                residues.push(Complex::new(c[i], c[i + 1]));
+                residues.push(Complex::new(c[i], -c[i + 1]));
+            }
+        }
+        i += b.size();
+    }
+    residues
+}
+
+/// Real model of arbitrary poles and residues, as `(blocks, c)`: a real pole keeps the real part
+/// of its residue; a complex pole is paired with the pole closest to its conjugate (within
+/// `1e-6 |p|`), with the mean `(r_p + r_q*) / 2` as its residue; a complex pole without its
+/// conjugate is completed by it (a real model has both), with the conjugate residue. For a
+/// result of `identify` (real poles and exact conjugate pairs) this is exact.
+fn real_model<T: Float>(poles: &[Complex<T>], residues: &[Complex<T>]) -> (Vec<Block<T>>, Vec<T>) {
+    let two = T::from(2).unwrap();
+    let mut used = vec![false; poles.len()];
+    let (mut blocks, mut c) = (Vec::new(), Vec::new());
+    for i in 0..poles.len() {
+        if used[i] {
+            continue;
+        }
+        used[i] = true;
+        let (p, r) = (poles[i], residues[i]);
+        if p.im == T::zero() {
+            blocks.push(Block::Real(p.re));
+            c.push(r.re);
+            continue;
+        }
+        let partner = (0..poles.len())
+            .filter(|&j| !used[j] && poles[j].im != T::zero())
+            .min_by(|&a, &b| (poles[a] - p.conj()).norm().partial_cmp(&(poles[b] - p.conj()).norm()).unwrap_or(std::cmp::Ordering::Equal))
+            .filter(|&j| (poles[j] - p.conj()).norm() <= T::from(1e-6).unwrap() * p.norm());
+        // Residue of the pole with Im > 0
+        let (upper, residue) = match partner {
+            Some(j) => {
+                used[j] = true;
+                let mean = (r + residues[j].conj()) / two;
+                if p.im > T::zero() { (p, mean) } else { (p.conj(), mean.conj()) }
+            }
+            None if p.im > T::zero() => (p, r),
+            None => (p.conj(), r.conj()),
+        };
+        blocks.push(Block::Pair(upper));
+        c.push(residue.re);
+        c.push(residue.im);
+    }
+    (blocks, c)
+}
+
+/// Product of polynomials (descending coefficients).
+fn multiply<T: Float>(a: &[T], b: &[T]) -> Vec<T> {
+    let mut out = vec![T::zero(); a.len() + b.len() - 1];
+    for (i, &x) in a.iter().enumerate() {
+        for (j, &y) in b.iter().enumerate() {
+            out[i + j] = out[i + j] + x * y;
+        }
+    }
+    out
+}
+
+/// `b` added to `a`, aligned at the constant term.
+fn add_into<T: Float>(a: &mut [T], b: &[T]) {
+    let offset = a.len() - b.len();
+    for (i, &c) in b.iter().enumerate() {
+        a[offset + i] = a[offset + i] + c;
+    }
+}
+
 impl<T: Float + RealField> From<VectorFittingResult<T>> for TransferFunction<T, Continuous> {
+    /// `G(s) = B(s) / A(s)` in real arithmetic, from the real poles and the conjugate pairs: a real
+    /// pole gives the factor `s - p` and the term `c`, a pair `s^2 - 2 a' s + |p|^2` and
+    /// `2 c' s - 2 (c' a' + c'' a'')` (residues `c' ± j c''`, `p = a' + j a''`). Poles and
+    /// residues that are not those of a real model are made so first (see `VectorFittingResult`;
+    /// a real pole keeps the real part of its residue, a pair the mean of `r_p` and `r_p*^*`).
     fn from(val: VectorFittingResult<T>) -> Self {
         let n = val.poles.len();
         if n == 0 {
@@ -93,89 +217,48 @@ impl<T: Float + RealField> From<VectorFittingResult<T>> for TransferFunction<T, 
             );
         }
 
-        // G(s) = B(s) / A(s)
-        // A(s) = ∏_{k=1 to N}(s - p_k)
-        // B(s) = Σ_{k=1 to N} [r_k* (∏_{j!=k}(s - p_j))] + A(s)d + sA(s)e = numer1 + numer2 + numer3
+        let two = T::from(2).unwrap();
+        let (blocks, c) = real_model(&val.poles, &val.residues);
+        let factors: Vec<Vec<T>> = blocks
+            .iter()
+            .map(|b| match *b {
+                Block::Real(p) => vec![T::one(), -p],
+                Block::Pair(p) => vec![T::one(), -two * p.re, p.norm_sqr()],
+            })
+            .collect();
+        let denom = factors.iter().fold(vec![T::one()], |acc, f| multiply(&acc, f));
 
-        // Compute A(s)
-        let denom_complex = poly_from_roots(&val.poles);
-        let denom: Vec<T> = denom_complex.iter().map(|c| c.re).collect();
+        // B(s) = Σ_b B_b(s) Π_{other} A_b'(s) + A(s) d + s A(s) e
+        let degree = denom.len() - 1;
+        let mut numer = vec![T::zero(); degree + 2];
+        let mut i = 0;
+        for (k, b) in blocks.iter().enumerate() {
+            let term = match *b {
+                Block::Real(_) => vec![c[i]],
+                Block::Pair(p) => vec![two * c[i], -two * (c[i] * p.re + c[i + 1] * p.im)],
+            };
+            let others = factors.iter().enumerate().filter(|&(j, _)| j != k).fold(vec![T::one()], |acc, (_, f)| multiply(&acc, f));
+            add_into(&mut numer, &multiply(&term, &others));
+            i += b.size();
+        }
+        add_into(&mut numer, &denom.iter().map(|&a| a * val.d).collect::<Vec<T>>());
+        let mut s_denom: Vec<T> = denom.iter().map(|&a| a * val.e).collect();
+        s_denom.push(T::zero());
+        add_into(&mut numer, &s_denom);
 
-        // Compute B(s)
-        let numer: Vec<T> = {
-            // The maximum length of the numerator polynomial is n + 2;
-            // The highest order tem depends on s*A(s)*e.
-            let numer_len = val.poles.len() + 2;
-            let mut numer_complex: Vec<Complex<T>> = vec![Complex::from(T::zero()); numer_len];
-
-            // numer1
-            for k in 0..n {
-                let other_poles: Vec<_> = (0..n)
-                    .filter(|&j| j != k)
-                    .map(|j| val.poles[j])
-                    .collect();
-
-                let r_k = val.residues[k];
-                let sub_poly: Vec<Complex<T>> = poly_from_roots(&other_poles)
-                    .iter()
-                    .map(|c| r_k * c)
-                    .collect();
-
-                // Right-shift
-                let offset = numer_complex.len() - sub_poly.len();
-                for (i, &c) in sub_poly.iter().enumerate() {
-                    numer_complex[offset + i] += c;
-                }
-            }
-
-            // numer2
-            {
-                let sub_poly: Vec<Complex<T>> = denom_complex
-                    .iter()
-                    .map(|c| c * Complex::from(val.d))
-                    .collect();
-
-                // Right-shift
-                let offset = numer_complex.len() - sub_poly.len();
-                for (i, &c) in sub_poly.iter().enumerate() {
-                    numer_complex[offset + i] += c;
-                }
-            }
-
-            // numer3
-            {
-                let mut sub_poly: Vec<Complex<T>> = denom_complex
-                    .iter()
-                    .map(|c| c * Complex::from(val.e))
-                    .collect();
-                sub_poly.push(Complex::from(T::zero()));
-
-                // Right-shift
-                let offset = numer_complex.len() - sub_poly.len();
-                for (i, &c) in sub_poly.iter().enumerate() {
-                    numer_complex[offset + i] += c;
-                }
-            }
-
-            let mut numer: Vec<T> = numer_complex.iter().map(|c| c.re).collect();
-
-            // Drop the leading coefficients that are negligible (d, e not fitted, or a residue sum
-            // that cancels): the term c_i s^m is compared at the largest pole magnitude ω_ref with
-            // the largest term, so that the threshold does not depend on the units of G nor on the
-            // frequency scale
-            let omega_ref = val.poles.iter().map(|p| p.norm()).fold(T::zero(), Float::max);
-            let omega_ref = if omega_ref > T::zero() { omega_ref } else { T::one() };
-            let degree = numer.len() - 1;
-            let terms: Vec<T> = numer.iter().enumerate().map(|(i, c)| Float::abs(*c) * Float::powi(omega_ref, (degree - i) as i32)).collect();
-            let largest = terms.iter().copied().fold(T::zero(), Float::max);
-            let first_valid = terms.iter()
-                .position(|&t| t > T::from(1e-5).unwrap() * largest)
-                .unwrap_or(numer.len());
-
-            numer.drain(..first_valid);
-
-            numer
-        };
+        // Drop the leading coefficients that are negligible (d, e not fitted, or a residue sum
+        // that cancels): the term c_i s^m is compared at the largest pole magnitude ω_ref with
+        // the largest term, so that the threshold does not depend on the units of G nor on the
+        // frequency scale
+        let omega_ref = val.poles.iter().map(|p| p.norm()).fold(T::zero(), Float::max);
+        let omega_ref = if omega_ref > T::zero() { omega_ref } else { T::one() };
+        let top = numer.len() - 1;
+        let terms: Vec<T> = numer.iter().enumerate().map(|(i, c)| Float::abs(*c) * Float::powi(omega_ref, (top - i) as i32)).collect();
+        let largest = terms.iter().copied().fold(T::zero(), Float::max);
+        let first_valid = terms.iter()
+            .position(|&t| t > T::from(1e-5).unwrap() * largest)
+            .unwrap_or(numer.len());
+        numer.drain(..first_valid);
 
         TransferFunction::from_polynomials(Polynomial(numer), Polynomial(denom))
     }
@@ -196,84 +279,105 @@ impl<T: Float + RealField> From<VectorFittingResult<T>> for TransferFunction<T, 
 ///
 /// Algorithm:
 ///
-/// 1. Set initial poles `{a_k}` (logarithmic spacing on the imaginary axis)
-/// 2. Solve the weighted least-squares problem
+/// 1. Set initial poles `{a_k}` (complex pairs logarithmically spaced over the band, lightly
+///    damped; a real pole for an odd order)
+/// 2. Solve the least-squares problem, over the samples `s = jω` (real and imaginary parts)
 ///    ```text
-///    σ(s)・H(s) ≈ Σ c̃_k/(s-a_k) + d̃  (lhs)
-///    σ(s)       ≈ Σ ĉ_k/(s-a_k) + 1    (rhs constraint)
+///    σ(s)・H(s) ≈ Σ c_k/(s-a_k) + d + s e,   σ(s) = 1 + Σ c̃_k/(s-a_k)
 ///    ```
-/// 3. Find the zeros of `σ(s)` and set them as the new poles `{a_k}`
+/// 3. Set the zeros of `σ(s)` as the new poles `{a_k}` (reflected to the left half-plane)
 /// 4. Repeat 2-3 until convergence
-/// 5. After convergence, solve for the final residues `{c_k}`, `d` by least squares
+/// 5. After convergence, solve for the final residues `{c_k}`, `d`, `e` by least squares
+///
+/// The model is kept real (Appendix of the reference): the unknowns are real, `c` for a real
+/// pole and `c'`, `c''` for a pair `a, a*`, with the basis `1 / (s - a) + 1 / (s - a*)` and
+/// `j / (s - a) - j / (s - a*)` (residues `c' ± j c''`), so that the residues of a pair are
+/// conjugate and those of a real pole real, also on noisy data (independent complex residues fit
+/// the noise of the positive frequencies with a model that is not real, and the iterations
+/// oscillate). The zeros of `σ` are the eigenvalues of the real matrix `H = A - b c̃ᵀ`, `A` block
+/// diagonal (`a` for a real pole, `[[a', a''], [-a'', a']]` for a pair `a' ± j a''`) and `b` of
+/// blocks `1` and `[2, 0]`: real, or exact conjugate pairs. The columns of the least-squares
+/// problems are scaled to unit norm and solved by SVD.
+///
+/// The error is absolute: on a response spanning decades, the bins of the largest gain dominate.
+/// `identify_weighted` weights it, e.g. by `1 / |G|` for the relative error.
 pub fn identify<T: Float + RealField + Sum>(
     samples: &[FrequencyResponse<T>],
     n_poles: usize,
     opts: &VectorFittingOptions<T>,
 ) -> Result<VectorFittingResult<T>, VectorFittingError> {
-    let n_samples = samples.len();
-    if n_samples == 0 {
+    fit(samples, None, n_poles, opts)
+}
+
+/// `identify` minimizing the weighted error `Σ w_i^2 |G_fit(jω_i) - G_i|^2` (also in the pole
+/// relocation, where the error of each sample is `σ H - (Σ c / (s - a) + d + s e)`), with one
+/// finite, non-negative weight per sample: e.g. `w_i = 1 / |G_i|` for the relative error, or the
+/// inverse standard deviation of each bin. `rms_errors` are those of the weighted error.
+pub fn identify_weighted<T: Float + RealField + Sum>(
+    samples: &[FrequencyResponse<T>],
+    weights: &[T],
+    n_poles: usize,
+    opts: &VectorFittingOptions<T>,
+) -> Result<VectorFittingResult<T>, VectorFittingError> {
+    if weights.len() != samples.len() || weights.iter().any(|w| !(w.is_finite() && *w >= T::zero())) {
+        return Err(VectorFittingError::InvalidWeights { len: weights.len(), samples: samples.len() });
+    }
+    fit(samples, Some(weights), n_poles, opts)
+}
+
+fn fit<T: Float + RealField + Sum>(
+    samples: &[FrequencyResponse<T>],
+    weights: Option<&[T]>,
+    n_poles: usize,
+    opts: &VectorFittingOptions<T>,
+) -> Result<VectorFittingResult<T>, VectorFittingError> {
+    if samples.is_empty() {
         return Err(VectorFittingError::EmptyData);
     }
+    let weight = |i: usize| weights.map_or(T::one(), |w| w[i]);
 
-    // ---- Step 1: Set initial poles (logarithmic spacing on the imaginary axis) ----
-    let mut poles = generate_initial_poles(samples, n_poles);
-
+    // ---- Step 1: Set initial poles ----
+    let mut blocks = initial_blocks(samples, n_poles);
     let mut rms_errors = Vec::new();
 
     for _iter in 0..opts.max_iter {
         // ---- Step 2: Construct a least-squares problem and solve it ----
-        // let (sigma_residues, res, d, e) = solve_normal_equation(&samples, &poles, opts)?;
-        let (sigma_residues, res, d, e) = solve_accumulated_normal_equation(samples, &poles, opts)?;
+        let (c, d, e, c_tilde) = least_squares(samples, &weight, &blocks, opts, true)?;
+        rms_errors.push(rms(samples, &weight, &blocks, &c, d, e));
 
-        let rms = compute_rms(samples, &poles, &res, d, e);
-        rms_errors.push(rms);
+        // ---- Step 3: Zeros of σ(s) as the new poles ----
+        let new_blocks = zeros_of_sigma(&blocks, &c_tilde)?;
 
-        // ---- Step 3: Find zeros of σ(s) to find new poles ----
-        let new_poles = zeros_of_sigma(&poles, &sigma_residues)?;
-
-
-        // Stabilize poles (invert sign if real part is positive)
-        let new_poles: Vec<Complex<T>> = new_poles
-            .into_iter()
-            .map(|p| {
-                if p.re > T::zero() {
-                    Complex::new(-p.re, p.im)
-                } else {
-                    p
-                }
-            })
-            .collect();
-
-        // Convergence check
+        // Convergence check (blocks sorted alike; a change of structure is not converged)
         let epsilon = T::from(1e-30).unwrap();
-        let max_change = poles
-            .iter()
-            .zip(new_poles.iter())
-            .map(|(old, new)| (new - old).norm() / (old.norm() + epsilon))
-            .fold(T::zero(), Float::max);
-
-        poles = new_poles;
-
+        let max_change = if new_blocks.len() == blocks.len() && new_blocks.iter().zip(&blocks).all(|(a, b)| a.size() == b.size()) {
+            blocks
+                .iter()
+                .zip(new_blocks.iter())
+                .map(|(old, new)| (new.pole() - old.pole()).norm() / (old.pole().norm() + epsilon))
+                .fold(T::zero(), Float::max)
+        } else {
+            T::infinity()
+        };
+        blocks = new_blocks;
         if max_change < opts.tol {
             break;
         }
     }
 
-    // ---- Step 5: Find final residues and constant terms using least-squares ----
-    // let (_, residues, d, e) = solve_normal_equation(&samples, &poles, opts)?;
-    let (_, residues, d, e) = solve_accumulated_normal_equation(samples, &poles, opts)?;
-
-    Ok(VectorFittingResult { poles, residues, d, e, rms_errors })
+    // ---- Step 5: Final residues and constant terms ----
+    let (c, d, e, _) = least_squares(samples, &weight, &blocks, opts, false)?;
+    Ok(VectorFittingResult { poles: poles_of(&blocks), residues: residues_of(&blocks, &c), d, e, rms_errors })
 }
 
-
-fn generate_initial_poles<T: Float>(samples: &[FrequencyResponse<T>], n_poles: usize) -> Vec<Complex<T>> {
-    let w_min = samples.iter().cloned().fold(T::infinity(), |a, b| T::min(a, b.omega));
-    let w_max = samples.iter().cloned().fold(T::neg_infinity(), |a, b| T::max(a, b.omega));
+/// Complex pairs `-0.01 ω ± j ω` logarithmically spaced over the band, and a real pole `-ω_mid`
+/// for an odd order.
+fn initial_blocks<T: Float>(samples: &[FrequencyResponse<T>], n_poles: usize) -> Vec<Block<T>> {
+    let w_min = samples.iter().fold(T::infinity(), |a, b| T::min(a, b.omega));
+    let w_max = samples.iter().fold(T::neg_infinity(), |a, b| T::max(a, b.omega));
 
     let n_pairs = n_poles / 2;
-    let mut poles = Vec::with_capacity(n_poles);
-
+    let mut blocks = Vec::with_capacity(n_pairs + 1);
     for i in 0..n_pairs {
         let t = if n_pairs > 1 {
             T::from(i as f64 / (n_pairs - 1) as f64).unwrap()
@@ -281,294 +385,177 @@ fn generate_initial_poles<T: Float>(samples: &[FrequencyResponse<T>], n_poles: u
             T::from(0.5).unwrap()
         };
         let w = w_min * (w_max / w_min).powf(t);
-        let zeta = T::from(0.01).unwrap();
-        let re = -zeta * w;
-        poles.push(Complex::new(re,  w));
-        poles.push(Complex::new(re, -w));
+        blocks.push(Block::Pair(Complex::new(-T::from(0.01).unwrap() * w, w)));
     }
-
     if n_poles % 2 == 1 {
-        let w_mid = (w_min * w_max).sqrt();
-        poles.push(Complex::new(-w_mid, T::zero()));
+        blocks.push(Block::Real(-(w_min * w_max).sqrt()));
     }
-
-    poles
+    blocks
 }
 
-/// `(sigma_residues, fitted_residues, d, e)` of a least-squares step.
-type LeastSquaresSolution<T> = (Vec<Complex<T>>, Vec<Complex<T>>, T, T);
-
-/// Returns: `(sigma_residues, fitted_residues, d, e)`
-#[allow(unused)]
-fn solve_normal_equation<T: Float + RealField>(
+/// Real parameters `(c, d, e, c̃)` of the least-squares problem over the samples (rows: the real
+/// and the imaginary parts of each weighted sample):
+///
+/// ```text
+/// with_sigma:  Σ c φ(s) + d + s e - G Σ c̃ φ(s) = G
+/// otherwise:   Σ c φ(s) + d + s e = G                 (c̃ empty)
+/// ```
+///
+/// `φ` the real basis of the blocks. The columns are scaled to unit norm before the SVD solve.
+#[allow(clippy::type_complexity)]
+fn least_squares<T: Float + RealField>(
     samples: &[FrequencyResponse<T>],
-    poles: &[Complex<T>],
+    weight: &impl Fn(usize) -> T,
+    blocks: &[Block<T>],
     opts: &VectorFittingOptions<T>,
-) -> Result<LeastSquaresSolution<T>, VectorFittingError> {
-    let n = poles.len();
-    let n_s = samples.len();
+    with_sigma: bool,
+) -> Result<(Vec<T>, T, T, Vec<T>), VectorFittingError> {
+    let n: usize = blocks.iter().map(Block::size).sum();
     let n_extra = opts.fit_d as usize + opts.fit_e as usize;
-    let parameter_size = 4 * n + n_extra;
-    let rows = 2 * n_s;
-
-    let mut a_mat = DMatrix::<T>::zeros(rows, parameter_size);
-    let mut b_vec = DVector::<T>::zeros(rows);
+    let columns = n + n_extra + if with_sigma { n } else { 0 };
+    let rows = 2 * samples.len();
+    let mut a = DMatrix::<T>::zeros(rows, columns);
+    let mut b = DVector::<T>::zeros(rows);
 
     for (i, sample) in samples.iter().enumerate() {
-        let si = Complex::new(T::zero(), sample.omega);
-        let gi = sample.value;
-
-        let row_re = 2 * i;
-        let row_im = 2 * i + 1;
-
-        for k in 0..n {
-            let term = gi / (si - poles[k]);
-            a_mat[(row_re, 2 * k)]     =  term.re;
-            a_mat[(row_re, 2 * k + 1)] = -term.im;
-            a_mat[(row_im, 2 * k)]     =  term.im;
-            a_mat[(row_im, 2 * k + 1)] =  term.re;
-        }
-
-        for k in 0..n {
-            let term = -Complex::from(T::one()) / (si - poles[k]);
-            a_mat[(row_re, 2 * n + 2 * k)]     =  term.re;
-            a_mat[(row_re, 2 * n + 2 * k + 1)] = -term.im;
-            a_mat[(row_im, 2 * n + 2 * k)]     =  term.im;
-            a_mat[(row_im, 2 * n + 2 * k + 1)] =  term.re;
-        }
-
-        let mut col = 4 * n;
-        if opts.fit_d {
-            a_mat[(row_re, col)] = -T::one();
-            a_mat[(row_im, col)] = T::zero();
-            col += 1;
-        }
-        if opts.fit_e {
-            a_mat[(row_re, col)] = -si.re;
-            a_mat[(row_im, col)] = -si.im;
-        }
-
-        b_vec[row_re] = gi.re;
-        b_vec[row_im] = gi.im;
-    }
-
-    // Solve the problem min‖Aθ + b‖ → Aθ = −b using SVD
-    let neg_b = -b_vec;
-    let svd = a_mat.svd(true, true);
-    let theta = svd
-        .solve(&neg_b, T::from(1e-10).unwrap())
-        .map_err(|_| VectorFittingError::SingularMatrix)?;
-
-    // c̃_k  (0..2n)
-    let tilde_c: Vec<Complex<T>> = (0..n)
-        .map(|k| Complex::new(theta[2 * k], theta[2 * k + 1]))
-        .collect();
-
-    // c_k  (2n..4n)
-    let c: Vec<Complex<T>> = (0..n)
-        .map(|k| Complex::new(theta[2 * n + 2 * k], theta[2 * n + 2 * k + 1]))
-        .collect();
-
-    // d, h  (4n..)
-    let d = if opts.fit_d { theta[4 * n] } else { T::zero() };
-    let e = if opts.fit_e { theta[4 * n + 1] } else { T::zero() };
-
-    Ok((tilde_c, c, d, e))
-}
-
-/// Returns: `(sigma_residues, fitted_residues, d, e)`
-#[allow(unused)]
-fn solve_accumulated_normal_equation<T: Float + RealField + AddAssign + MulAssign>(
-    samples: &[FrequencyResponse<T>],
-    poles: &[Complex<T>],
-    opts: &VectorFittingOptions<T>,
-) -> Result<LeastSquaresSolution<T>, VectorFittingError> {
-    let n = poles.len();
-    let num_data = samples.len();
-    if num_data == 0 {
-        return Err(VectorFittingError::EmptyData);
-    }
-
-    let n_extra = opts.fit_d as usize + opts.fit_e as usize;
-    let parameter_size = 4 * n + n_extra;    // ˜c (2N), c (2N), d, e
-    let mut r = DMatrix::<T>::zeros(parameter_size, parameter_size);
-    let mut rhs = DVector::<T>::zeros(parameter_size);
-
-    for sample in samples {
+        let w = weight(i);
         let s = Complex::new(T::zero(), sample.omega);
         let g = sample.value;
-
-        let mut phi = DMatrix::<T>::zeros(2, parameter_size);
-
-        let mut y = DVector::<T>::zeros(2);
-        y[0] = g.re;
-        y[1] = g.im;
-
-        for (j, &pole) in poles.iter().enumerate() {
-            let denom = s - pole;
-
-            let term_tilde = g / denom;
-            let col_t_re = 2 * j;
-            let col_t_im = 2 * j + 1;
-
-            phi[(0, col_t_re)] = term_tilde.re;
-            phi[(0, col_t_im)] = -term_tilde.im;
-            phi[(1, col_t_re)] = term_tilde.im;
-            phi[(1, col_t_im)] = term_tilde.re;
-
-            let term_c = -Complex::from(T::one()) / denom;
-            let col_c_re = 2 * n + 2 * j;
-            let col_c_im = 2 * n + 2 * j + 1;
-
-            phi[(0, col_c_re)] = term_c.re;
-            phi[(0, col_c_im)] = -term_c.im;
-            phi[(1, col_c_re)] = term_c.im;
-            phi[(1, col_c_im)] = term_c.re;
+        let mut row = Vec::with_capacity(columns);
+        for block in blocks {
+            row.extend_from_slice(&block.basis(s)[..block.size()]);
         }
-
         if opts.fit_d {
-            let col_d = 4 * n;
-            phi[(0, col_d)] = -T::one();
-            phi[(1, col_d)] = T::zero();
+            row.push(Complex::from(T::one()));
         }
-
         if opts.fit_e {
-            let col_e = 4 * n + 1;
-            phi[(0, col_e)] = -s.re;
-            phi[(1, col_e)] = -s.im;
+            row.push(s);
         }
-
-        r += &phi.transpose() * &phi;
-        rhs += &phi.transpose() * &y;
+        if with_sigma {
+            for block in blocks {
+                row.extend(block.basis(s)[..block.size()].iter().map(|&phi| -g * phi));
+            }
+        }
+        for (j, v) in row.iter().enumerate() {
+            a[(2 * i, j)] = w * v.re;
+            a[(2 * i + 1, j)] = w * v.im;
+        }
+        b[2 * i] = w * g.re;
+        b[2 * i + 1] = w * g.im;
     }
 
-    let theta = match r.qr().solve(&(-rhs)) {
-        Some(x) => x,
-        None => return Err(VectorFittingError::SingularMatrix),
-    };
-
-    let mut tilde_c = vec![Complex::from(T::zero()); n];
-    let mut c = vec![Complex::from(T::zero()); n];
-
-    for j in 0..n {
-        let idx_t_re = 2 * j;
-        let idx_t_im = 2 * j + 1;
-        tilde_c[j] = Complex::new(theta[idx_t_re], theta[idx_t_im]);
-
-        let idx_c_re = 2 * n + 2 * j;
-        let idx_c_im = 2 * n + 2 * j + 1;
-        c[j] = Complex::new(theta[idx_c_re], theta[idx_c_im]);
+    let scale: Vec<T> = (0..columns)
+        .map(|j| {
+            let norm = a.column(j).norm();
+            if norm > T::zero() { norm } else { T::one() }
+        })
+        .collect();
+    for (j, &sc) in scale.iter().enumerate() {
+        a.column_mut(j).unscale_mut(sc);
+    }
+    let x = a
+        .svd(true, true)
+        .solve(&b, T::from(1e-12).unwrap())
+        .map_err(|_| VectorFittingError::SingularMatrix)?;
+    let x: Vec<T> = x.iter().zip(&scale).map(|(&v, &sc)| v / sc).collect();
+    if x.iter().any(|v| !v.is_finite()) {
+        return Err(VectorFittingError::SingularMatrix);
     }
 
-    let d = if opts.fit_d { theta[4 * n] } else { T::zero() };
-    let e = if opts.fit_e { theta[4 * n + 1] } else { T::zero() };
-
-    Ok((tilde_c, c, d, e))
+    let c = x[..n].to_vec();
+    let mut k = n;
+    let d = if opts.fit_d { k += 1; x[k - 1] } else { T::zero() };
+    let e = if opts.fit_e { k += 1; x[k - 1] } else { T::zero() };
+    let c_tilde = x[k..].to_vec();
+    Ok((c, d, e, c_tilde))
 }
 
-
-/// Find zeros of σ(s) = 1 + Σ_k c̃_k/(s−a_k)
-///
-/// ## Algorithm：Real companion matrix
-///
-/// At first, compute the coefficients of irreducible polynomial N(s),
-/// and then solve the eigenvalues of the real companion matrix using nalgebra's Schur decomposition.
-///
-/// ### Compute coefficients of polynomial
-///
-/// ```text
-/// N(s) = Π_k(s−a_k) + Σ_k c̃_k · Π_{j≠k}(s−a_j)
-/// ```
-///
-/// The coefficients of N(s) are real because because the poles should be real or conjugate pairs.
-///
-/// ### companion matrix（Frobenius form）
-///
-/// if N(s) = s^n + p_{n-1}·s^{n-1} + … + p_0：
-///
-/// ```text
-/// C = [0   0  … 0  -p_0  ]
-///     [1   0  … 0  -p_1  ]
-///     [0   1  … 0  -p_2  ]
-///     [⋮       ⋱  ⋮      ]
-///     [0   0  … 1  -p_{n-1}]
-/// ```
-///
-/// Eigenvalues of C are the roots of N(s), i.e. the solutions of σ(s)=0.
-pub(crate) fn zeros_of_sigma<T: Float + RealField>(
-    poles: &[Complex<T>],
-    sigma_residues: &[Complex<T>],
-) -> Result<Vec<Complex<T>>, VectorFittingError> {
-    let n = poles.len();
+/// Zeros of `σ(s) = 1 + Σ c̃ φ(s)` (real parameters `c̃` of the blocks) as the eigenvalues of
+/// the real matrix `H = A - b c̃ᵀ` (Gustavsen and Semlyen, Appendix): `A` block diagonal with `a`
+/// for a real pole and `[[a', a''], [-a'', a']]` for a pair `a' ± j a''`, `b` of blocks `1` and
+/// `[2, 0]`. The eigenvalues of a real matrix are real or exact conjugate pairs; those with
+/// `|Im| <= 1e-9 |λ|` are taken as real. Poles in the right half-plane are reflected to the left
+/// one; the blocks are sorted by the magnitude of the pole.
+fn zeros_of_sigma<T: Float + RealField>(blocks: &[Block<T>], c_tilde: &[T]) -> Result<Vec<Block<T>>, VectorFittingError> {
+    let n = c_tilde.len();
     if n == 0 {
         return Err(VectorFittingError::PolesNotSet);
     }
-
-    // ---- Step1: N(s) = Π(s−a_k) + Σ_k c̃_k·Π_{j≠k}(s−a_j) ----
-    // Coefficients of Π(s−a_k)
-    let denom_poly = poly_from_roots(poles);
-
-    // Compute Π_{j≠k}(s−a_j) for each k and multiply by c̃_k, then add to num_poly
-    let mut num_poly = denom_poly.clone();
-
-    for (k, &residue) in sigma_residues.iter().enumerate().take(n) {
-        let other_poles: Vec<Complex<T>> = (0..n).filter(|&j| j != k).map(|j| poles[j]).collect();
-        let sub_poly = poly_from_roots(&other_poles); // 次数 n-1 の多項式
-
-        // Add sub_poly (length: n) to num_poly (length: n+1) and multiply by sigma_residues[k]
-        let offset = num_poly.len() - sub_poly.len(); // = 1
-        for (i, &c) in sub_poly.iter().enumerate() {
-            num_poly[offset + i] += residue * c;
+    let mut h = DMatrix::<T>::zeros(n, n);
+    let mut b = DVector::<T>::zeros(n);
+    let mut i = 0;
+    for block in blocks {
+        match *block {
+            Block::Real(p) => {
+                h[(i, i)] = p;
+                b[i] = T::one();
+            }
+            Block::Pair(p) => {
+                h[(i, i)] = p.re;
+                h[(i, i + 1)] = p.im;
+                h[(i + 1, i)] = -p.im;
+                h[(i + 1, i + 1)] = p.re;
+                b[i] = T::from(2).unwrap();
+            }
+        }
+        i += block.size();
+    }
+    for r in 0..n {
+        for col in 0..n {
+            h[(r, col)] -= b[r] * c_tilde[col];
         }
     }
 
-    // ---- Step2: Abstract the real parts of the coefficients ----
-    let real_coeffs: Vec<T> = num_poly.iter().map(|c| c.re).collect();
-
-    // Monic normalize the coefficients (make the leading coefficient 1)
-    let lead = real_coeffs[0];
-    let monic: Vec<T> = real_coeffs.iter().map(|&c| c / lead).collect();
-    // monic = [1, p_{n-1}, …, p_0]（降べきの順）
-
-    // ---- Step3: Construct the companion matrix（Frobenius 形式） ----
-    // C[i, n-1] = -monic[n-i]  (i=0..n-1)
-    // C[i+1, i] = 1            (i=0..n-2)
-    let mut companion = DMatrix::<T>::zeros(n, n);
-    for i in 0..n - 1 {
-        companion[(i + 1, i)] = T::one();
+    let eigenvalues = nalgebra::linalg::Schur::try_new(h, T::default_epsilon(), 0)
+        .ok_or(VectorFittingError::ZerosNotFound)?
+        .complex_eigenvalues();
+    let mut new_blocks = Vec::with_capacity(n);
+    for z in eigenvalues.iter() {
+        let z = Complex::new(z.re, z.im);
+        if !(z.re.is_finite() && z.im.is_finite()) {
+            return Err(VectorFittingError::ZerosNotFound);
+        }
+        let re = -Float::abs(z.re);
+        if Float::abs(z.im) <= T::from(1e-9).unwrap() * z.norm() {
+            new_blocks.push(Block::Real(re));
+        } else if z.im > T::zero() {
+            new_blocks.push(Block::Pair(Complex::new(re, z.im)));
+        }
     }
-    for i in 0..n {
-        companion[(i, n - 1)] = -monic[n - i];
+    if new_blocks.iter().map(Block::size).sum::<usize>() != n {
+        return Err(VectorFittingError::ZerosNotFound);
     }
-
-    // ---- Step4: Get eigen values using Schur decomposition ----
-    let schur = nalgebra::linalg::Schur::new(companion);
-    let eigs = schur.complex_eigenvalues();
-    Ok(eigs.iter().map(|c| Complex::new(c.re, c.im)).collect())
+    new_blocks.sort_by(|a, b| a.pole().norm().partial_cmp(&b.pole().norm()).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(new_blocks)
 }
 
-
-
-fn compute_rms<T: Float + AddAssign + DivAssign + SubAssign + MulAssign + RemAssign + Sum>(
+/// RMS of the (weighted) error of `Σ c φ + d + s e` over the samples.
+fn rms<T: Float + RealField + Sum>(
     samples: &[FrequencyResponse<T>],
-    poles: &[Complex<T>],
-    residues: &[Complex<T>],
+    weight: &impl Fn(usize) -> T,
+    blocks: &[Block<T>],
+    c: &[T],
     d: T,
     e: T,
 ) -> T {
     let n = T::from(samples.len()).unwrap();
     let sum_sq: T = samples
         .iter()
-        .map(|sample| {
-            let sk = Complex::new(T::zero(), sample.omega);
-            let mut h_fit = Complex::<T>::new(d, T::zero()) + sk * e;
-            for (&a, &c) in poles.iter().zip(residues.iter()) {
-                h_fit += c / (sk - a);
+        .enumerate()
+        .map(|(i, sample)| {
+            let s = Complex::new(T::zero(), sample.omega);
+            let mut fit = Complex::new(d, T::zero()) + s * e;
+            let mut k = 0;
+            for block in blocks {
+                for phi in &block.basis(s)[..block.size()] {
+                    fit += *phi * c[k];
+                    k += 1;
+                }
             }
-            (h_fit - sample.value).norm_sqr()
+            (fit - sample.value).norm_sqr() * weight(i) * weight(i)
         })
         .sum();
-    (sum_sq / n).sqrt()
+    Float::sqrt(sum_sq / n)
 }
 
 #[cfg(test)]
@@ -576,29 +563,35 @@ mod tests {
     use super::*;
     use num_complex::Complex64;
 
+    /// The eigenvalues of `H` are the zeros of `σ(s) = 1 + Σ r_k / (s - a_k)` with the complex
+    /// residues of the real parameters.
     #[test]
     fn test_zeros_of_sigma() {
-        let poles = vec![
-            Complex64::new(-1.0,  2.0),
-            Complex64::new(-1.0, -2.0),
-        ];
-        let residues = vec![
-            Complex64::new(1.0, 0.0),
-            Complex64::new(1.0, 0.0),
-        ];
+        let blocks = vec![Block::Real(-3.0), Block::Pair(Complex64::new(-1.0, 2.0)), Block::Pair(Complex64::new(-0.5, 10.0))];
+        let c_tilde = vec![0.7, 1.0, -0.4, 2.0, 0.3];
+        let poles = poles_of(&blocks);
+        let residues = residues_of(&blocks, &c_tilde);
+        assert_eq!(residues[1], residues[2].conj());
 
-        let zeros = zeros_of_sigma(&poles, &residues).unwrap();
-        println!("Complex case zeros: {:?}", zeros);
-
-        for z in &zeros {
-            let sigma_z = residues[0] / (z - poles[0])
-                        + residues[1] / (z - poles[1])
-                        + Complex64::new(1.0, 0.0);
-            assert!(
-                sigma_z.norm() < 1e-8,
-                "σ({:.4}+{:.4}i) = {:.2e} (should be 0)",
-                z.re, z.im, sigma_z.norm()
-            );
+        let zeros = zeros_of_sigma(&blocks, &c_tilde).unwrap();
+        assert_eq!(zeros.iter().map(Block::size).sum::<usize>(), 5);
+        for z in poles_of(&zeros) {
+            // Reflected zeros: σ vanishes at the zero or at its mirror image
+            let sigma = |z: Complex64| residues.iter().zip(&poles).fold(Complex64::new(1.0, 0.0), |acc, (r, p)| acc + r / (z - p));
+            let value = sigma(z).norm().min(sigma(Complex64::new(-z.re, z.im)).norm());
+            assert!(value < 1e-8, "σ({z}) = {value:.2e}");
         }
+    }
+
+    /// The real basis of a pair is `(c' + j c'') / (s - p) + (c' - j c'') / (s - p*)`.
+    #[test]
+    fn test_pair_basis() {
+        let p = Complex64::new(-1.0, 3.0);
+        let s = Complex64::new(0.0, 2.0);
+        let (c1, c2) = (0.4, -1.5);
+        let [phi1, phi2] = Block::Pair(p).basis(s);
+        let r = Complex64::new(c1, c2);
+        let expected = r / (s - p) + r.conj() / (s - p.conj());
+        assert!((phi1 * c1 + phi2 * c2 - expected).norm() < 1e-14);
     }
 }

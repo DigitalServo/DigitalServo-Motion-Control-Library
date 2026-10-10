@@ -414,6 +414,10 @@ let fitted = identify(&samples, 2, &VectorFittingOptions::default()).unwrap();
 let model: TransferFunction<f64> = fitted.into();
 ```
 
+The model is kept real (residues of real poles real, of conjugate pairs conjugate) also on
+noisy measurements. `identify_weighted(&samples, &weights, n, &options)` weights the error per
+sample, e.g. by `1 / |G|` for the relative error of a response spanning decades.
+
 More examples are in [`tests/`](tests) and in the [API documentation](https://docs.rs/dsmc).
 
 ## License
