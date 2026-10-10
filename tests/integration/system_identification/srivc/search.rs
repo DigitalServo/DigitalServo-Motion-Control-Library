@@ -3,7 +3,7 @@
 use std::f64::consts::PI;
 
 use dsmc::system_identification::iv::srivc::{self, Initialization, Outcome, SearchOptions, Structure};
-use dsmc::system_identification::validation::{Check, CheckKind};
+use dsmc::system_identification::validation::{Check, CheckKind, CoherenceCheck};
 
 use super::*;
 
@@ -46,7 +46,7 @@ fn test_srivc_structure_search() {
                 Check::Whiteness { max_lag: 20 },
                 Check::CrossCorrelation { max_lag: 100 },
                 Check::Lines { fundamental_frequency: F0, lines: BAND.collect() },
-                Check::Coherence { segment_s: 1.0 / F0, excited: 1e-2 },
+                Check::Coherence(CoherenceCheck::new(1.0 / F0, 1e-2)),
             ],
             0.99,
         )
@@ -127,7 +127,7 @@ fn test_srivc_integrator_search() {
                 Check::Whiteness { max_lag: 20 },
                 Check::CrossCorrelation { max_lag: 100 },
                 Check::Lines { fundamental_frequency: F0, lines: BAND.collect() },
-                Check::Coherence { segment_s: 1.0 / F0, excited: 1e-2 },
+                Check::Coherence(CoherenceCheck::new(1.0 / F0, 1e-2)),
             ],
             0.99,
         )

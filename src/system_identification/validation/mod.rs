@@ -19,7 +19,7 @@
 //!
 //! ```
 //! use dsmc::tf;
-//! use dsmc::system_identification::validation::{Check, Validation};
+//! use dsmc::system_identification::validation::{Check, CoherenceCheck, Validation};
 //!
 //! let g = tf!("1000 / (s^2 + 20 s + 1000)");
 //! let u: Vec<f64> = (0..4000).map(|k| ((k * 7919) % 101) as f64 / 50.0 - 1.0).collect();
@@ -40,7 +40,7 @@
 //!         &[
 //!             Check::InformationCriteria { parameters: 3 },
 //!             Check::CrossCorrelation { max_lag: 50 },
-//!             Check::Coherence { segment_s: 0.5, excited: 1e-2 },
+//!             Check::Coherence(CoherenceCheck::new(0.5, 1e-2)),
 //!         ],
 //!         0.99,
 //!     )
@@ -68,7 +68,7 @@ mod line_test;
 mod spectra;
 mod whiteness;
 
-pub use check::{Check, CheckKind, CheckResult, Report};
+pub use check::{Check, CheckKind, CheckResult, CoherenceCheck, Report};
 pub use coherence::CoherenceTest;
 pub use cross_correlation::CrossCorrelation;
 pub use frequency_response::FrequencyResponseComparison;
@@ -98,6 +98,8 @@ pub enum ValidationError {
     InvalidFundamental { fundamental_frequency: f64, ts: f64 },
     #[error("the period of the fundamental frequency {fundamental_frequency} Hz is not a whole number of sampling periods {ts} s")]
     FractionalPeriod { fundamental_frequency: f64, ts: f64 },
+    #[error("band [{low}, {high}] Hz is not finite with 0 <= low <= high")]
+    InvalidBand { low: f64, high: f64 },
     #[error(transparent)]
     Simulation(#[from] SimulationError),
 }
@@ -268,6 +270,19 @@ impl<T: Float> Validation<T> {
     pub fn mse(&self) -> T {
         let e = self.evaluated();
         e.iter().fold(T::zero(), |acc, &v| acc + v * v) / T::from(e.len()).unwrap()
+    }
+}
+
+/// Whether bin `f` of a segment of `segment_len` samples (frequency `f / (segment_len ts)` \[Hz\])
+/// is in `[low, high]` \[Hz\], compared in bins with a tolerance `1e-6` so that the bin at a
+/// given edge is kept.
+fn in_band<T: Float>(segment_len: usize, ts: T, low: T, high: T) -> impl Fn(usize) -> bool {
+    let scale = T::from(segment_len).unwrap() * ts;
+    let tolerance = T::from(1e-6).unwrap();
+    let (low, high) = (low * scale - tolerance, high * scale + tolerance);
+    move |f| {
+        let f = T::from(f).unwrap();
+        low <= f && f <= high
     }
 }
 

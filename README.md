@@ -289,7 +289,7 @@ lags, coherence and lines by the number outside against a binomial quantile) and
 
 ```rust
 use dsmc::tf;
-use dsmc::system_identification::validation::{Check, Validation};
+use dsmc::system_identification::validation::{Check, CoherenceCheck, Validation};
 
 let ts = 1e-3;
 let g_s = tf!("1000 / (s^2 + 20 s + 1000)");
@@ -311,7 +311,7 @@ let report = Validation::continuous(&g_s, ts, &u, &y)
             Check::InformationCriteria { parameters: 3 },
             Check::Whiteness { max_lag: 20 },
             Check::CrossCorrelation { max_lag: 50 },
-            Check::Coherence { segment_s: 1.0, excited: 1e-2 },
+            Check::Coherence(CoherenceCheck::new(1.0, 1e-2)),
         ],
         0.99,
     )
@@ -319,6 +319,13 @@ let report = Validation::continuous(&g_s, ts, &u, &y)
 println!("{report}"); // one line per check, then "overall: passed"
 assert!(report.passed());
 ```
+
+A model that leaves out modes on purpose (e.g. a rigid-body model of a plant whose resonances
+are above the control bandwidth) fails the tests on the whole band, rightly: the residual keeps
+the error of those modes. `CoherenceCheck::new(segment_s, excited).set_band((low, high))` tests the
+coherence only in `[low, high]` \[Hz\] (`CoherenceTest::band`, `FrequencyResponseComparison::band`
+for a closer look), with a margin to the lowest mode left out; run it without the whiteness and
+cross-correlation tests, which see the whole band.
 
 Durations (`evaluated_from`, the segments of `coherence_test` and `frequency_response`) are in
 seconds and the fundamental frequency of `line_test` in Hz, whole numbers of the sampling period

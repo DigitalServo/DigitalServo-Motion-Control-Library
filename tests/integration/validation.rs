@@ -561,7 +561,7 @@ fn test_validation_one_step_prediction() {
 /// and the true model is rejected by chance at about the nominal rate.
 #[test]
 fn test_validation_check() {
-    use dsmc::system_identification::validation::{Check, CheckResult, Validation};
+    use dsmc::system_identification::validation::{Check, CheckResult, CoherenceCheck, Validation};
     use std::f64::consts::PI;
 
     let mut state: u64 = 0x2545_f491_4f6c_dd1d;
@@ -594,7 +594,7 @@ fn test_validation_check() {
         Check::InformationCriteria { parameters: 3 },
         Check::Whiteness { max_lag: 20 },
         Check::CrossCorrelation { max_lag: 50 },
-        Check::Coherence { segment_s: 0.5, excited: 1e-2 },
+        Check::Coherence(CoherenceCheck::new(0.5, 1e-2)),
         Check::Lines { fundamental_frequency: 1.0 / (period as f64 * ts), lines: lines.clone() },
     ];
     let mut noisy = |colored: bool| {
@@ -635,6 +635,60 @@ fn test_validation_check() {
     let rejected = (0..trials).filter(|_| !run(delay, &noisy(false)).passed()).count();
     println!("true model rejected in {rejected} of {trials} trials (4 tests at 99 %)");
     assert!(rejected <= 6, "{rejected} of {trials}");
+}
+
+/// Rigid-body model of a plant with a resonance above the control bandwidth: the coherence test
+/// fails on the whole band (the residual keeps the error of the resonance), and passes on the
+/// band `set_band` below it, where the model error is at the noise level.
+#[test]
+fn test_validation_coherence_band() {
+    use dsmc::system_identification::validation::{Check, CoherenceCheck, Validation, ValidationError};
+    use std::f64::consts::PI;
+
+    let mut state: u64 = 0x2545_f491_4f6c_dd1d;
+    let mut uniform = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        ((state >> 11) as f64 + 0.5) / (1u64 << 53) as f64
+    };
+    let mut gaussian = move || (-2.0 * uniform().ln()).sqrt() * (2.0 * PI * uniform()).cos();
+
+    let ts: f64 = 1e-3;
+    let n_samples = 40000;
+    // Rigid body 10 / (s + 10) with an antiresonance at 150 Hz and a resonance at 200 Hz (unit DC
+    // gain). Their quasi-static tail is a gain error `(f / 150)^2 - (f / 200)^2` below them (0.2 %
+    // at 10 Hz), within the noise of the data in the band; with the modes at 60 / 90 Hz (1.6 %)
+    // the band test rightly fails.
+    let rigid = TransferFunction::continuous(&[10.0], &[1.0, 10.0]);
+    let (wa, wr, zeta) = (2.0 * PI * 150.0, 2.0 * PI * 200.0, 0.02);
+    let mode = TransferFunction::continuous(&[wr * wr / (wa * wa), 2.0 * zeta * wr * wr / wa, wr * wr], &[1.0, 2.0 * zeta * wr, wr * wr]);
+    let plant = &rigid * &mode;
+
+    let u: Vec<f64> = (0..n_samples).map(|_| gaussian()).collect();
+    let y0 = Validation::continuous(&plant, ts, &u, &u).unwrap().simulated;
+    let rms = (y0.iter().map(|v| v * v).sum::<f64>() / n_samples as f64).sqrt();
+    let y: Vec<f64> = y0.iter().map(|v| v + 0.05 * rms * gaussian()).collect();
+    let validation = Validation::continuous(&rigid, ts, &u, &y).unwrap();
+
+    let band = (0.0, 10.0);
+    let whole = Check::Coherence(CoherenceCheck::new(1.0, 1e-2));
+    let low = Check::Coherence(CoherenceCheck::new(1.0, 1e-2).set_band(band));
+    let report = validation.check(&[whole, low], 0.99).unwrap();
+    println!("rigid-body model:\n{report}");
+    assert_eq!(report.results.iter().map(|r| r.passed()).collect::<Vec<_>>(), [Some(false), Some(true)]);
+
+    // The bins of the band, both edges included (1 Hz bins)
+    let coherence = validation.coherence_test(1.0, 0.99).unwrap().band(band);
+    assert_eq!(coherence.bins, (1..=10).collect::<Vec<_>>());
+    let response = validation.frequency_response(1.0).unwrap();
+    let in_band = response.band(band);
+    assert_eq!(in_band.bins, coherence.bins);
+    println!("relative error: {:.4} in the band, {:.4} on the whole band", in_band.rms_relative_error(), response.rms_relative_error());
+    assert!(in_band.rms_relative_error() < 0.02 && response.rms_relative_error() > 0.5);
+
+    let invalid = Check::Coherence(CoherenceCheck::new(1.0, 1e-2).set_band((10.0, 5.0)));
+    assert_eq!(validation.check(&[invalid], 0.99).unwrap_err(), ValidationError::InvalidBand { low: 10.0, high: 5.0 });
 }
 
 /// The tests do not depend on the units of the signals (input and output scaled by 1e-4 and

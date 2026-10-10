@@ -18,15 +18,47 @@ pub enum Check<T> {
     /// Independence of the residual and the input over the lags `-max_lag ..= max_lag`
     /// (`cross_correlation`).
     CrossCorrelation { max_lag: usize },
-    /// Coherence of the residual and the input (`coherence_test`) with segments of `segment_s`
-    /// \[s\], over the bins where the input power is at least `excited` times its maximum (e.g.
-    /// `1e-2`; 0 for all bins with input power).
-    Coherence { segment_s: T, excited: T },
+    /// Coherence of the residual and the input (`coherence_test`), see `CoherenceCheck`.
+    Coherence(CoherenceCheck<T>),
     /// Test at the excited `lines` of a periodic input of fundamental frequency
     /// `fundamental_frequency` \[Hz\] (`line_test`),
     /// over the whole periods from `Validation::start` on (set it after the transient, e.g. one
     /// period).
     Lines { fundamental_frequency: T, lines: Vec<usize> },
+}
+
+/// Settings of `Check::Coherence`: segments of `segment_s` \[s\], over the bins in `band` \[Hz\]
+/// (all bins if `None`; `set_band`) where the input power is at least `excited` times its maximum
+/// in the band (e.g. `1e-2`; 0 for all bins with input power).
+///
+/// ```
+/// use dsmc::system_identification::validation::{Check, CoherenceCheck};
+///
+/// // Rigid-body model for a control bandwidth of 20 Hz: the resonances above are not tested
+/// let check: Check<f64> = Check::Coherence(CoherenceCheck::new(1.0, 1e-2).set_band((0.0, 20.0)));
+/// ```
+#[derive(Clone, Debug, PartialEq)]
+pub struct CoherenceCheck<T> {
+    /// Segment length \[s\].
+    pub segment_s: T,
+    /// Relative input power of the bins tested (`CoherenceTest::excited`).
+    pub excited: T,
+    /// Frequency band `(low, high)` \[Hz\] of the bins tested (`CoherenceTest::band`).
+    pub band: Option<(T, T)>,
+}
+
+impl<T> CoherenceCheck<T> {
+    /// Over all bins (no band).
+    pub fn new(segment_s: T, excited: T) -> Self {
+        Self { segment_s, excited, band: None }
+    }
+
+    /// Test only the bins in `band = (low, high)` \[Hz\] (both included), e.g. the control
+    /// bandwidth for a model that leaves out the modes above it (`CoherenceTest::band`).
+    pub fn set_band(mut self, band: (T, T)) -> Self {
+        self.band = Some(band);
+        self
+    }
 }
 
 /// Result of one `Check`.
@@ -216,8 +248,16 @@ impl<T: Float + FftNum> Validation<T> {
                         let passed = test.outside().is_empty();
                         CheckResult::CrossCorrelation { test, passed }
                     }
-                    Check::Coherence { segment_s, excited } => {
-                        let test = self.coherence_test(*segment_s, confidence)?.excited(*excited);
+                    Check::Coherence(CoherenceCheck { segment_s, excited, band }) => {
+                        let mut test = self.coherence_test(*segment_s, confidence)?;
+                        if let Some((low, high)) = *band {
+                            if !(low.is_finite() && high.is_finite() && T::zero() <= low && low <= high) {
+                                let (low, high) = (low.to_f64().unwrap_or(f64::NAN), high.to_f64().unwrap_or(f64::NAN));
+                                return Err(ValidationError::InvalidBand { low, high });
+                            }
+                            test = test.band((low, high));
+                        }
+                        let test = test.excited(*excited);
                         let allowed = binomial_quantile(test.bins.len(), alpha, confidence);
                         let passed = test.outside().len() <= allowed;
                         CheckResult::Coherence { test, allowed, passed }

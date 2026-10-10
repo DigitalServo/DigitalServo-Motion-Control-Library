@@ -4,7 +4,7 @@ use num_complex::Complex;
 use num_traits::Float;
 use rustfft::FftNum;
 
-use super::{Validation, ValidationError};
+use super::{in_band, Validation, ValidationError};
 use crate::analysis::fft::{coherence_of, power_floor};
 
 impl<T: Float + FftNum> Validation<T> {
@@ -94,7 +94,18 @@ impl<T: Float> FrequencyResponseComparison<T> {
     /// measured response is not defined by the data.
     pub fn excited(&self, relative: T) -> Self {
         let threshold = relative * self.input_power.iter().fold(T::zero(), |acc, &p| acc.max(p));
-        let keep: Vec<usize> = (0..self.bins.len()).filter(|&i| self.input_power[i] >= threshold).collect();
+        self.select(|i| self.input_power[i] >= threshold)
+    }
+
+    /// The bins with frequencies in `[low, high]` \[Hz\] (both included), as
+    /// `CoherenceTest::band`.
+    pub fn band(&self, (low, high): (T, T)) -> Self {
+        let in_band = in_band(self.segment_len, self.ts, low, high);
+        self.select(|i| in_band(self.bins[i]))
+    }
+
+    fn select(&self, keep: impl Fn(usize) -> bool) -> Self {
+        let keep: Vec<usize> = (0..self.bins.len()).filter(|&i| keep(i)).collect();
         Self {
             bins: keep.iter().map(|&i| self.bins[i]).collect(),
             measured: keep.iter().map(|&i| self.measured[i]).collect(),
