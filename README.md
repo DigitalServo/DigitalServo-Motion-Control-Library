@@ -387,7 +387,10 @@ A plant with a rigid-body mode (poles at, or very close to, the origin) is ident
 `R(s) / s^q` by `srivc::identify_with_prefilter` with a `Prefilter::new(q, omega_c)`: the input
 is pseudo-integrated, `s / (s + ω_c)^(q+1)`, and the output high-passed, `s^(q+1) / (s + ω_c)^(q+1)`,
 so that no integrator is applied to the data. With `SearchOptions::prefilter = Some(omega_c)`,
-`srivc::search` searches `q` with the other parameters of the structure.
+`srivc::search` searches `q` with the other parameters of the structure. `R` may be a constant
+(`n = 0`, only with `q >= 1`): the pure integrator `b_0 / s^q`, e.g. a single inertia `1 / (J s^2)`
+(torque -> position) is `(n, m, q) = (0, 0, 2)` with `b_0 = 1 / J`, or the rigid-body mode alone
+of a plant whose resonances are above the band of interest.
 
 Data with a drift (e.g. an integrating plant driven by an unknown input offset) are high-passed
 before the identification by `preprocessing::high_pass(&u, &y, cutoff, ts, order)`, which filters

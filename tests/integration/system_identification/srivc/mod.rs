@@ -25,6 +25,9 @@
 //! 6. `search::test_srivc_integrator_search`: the number of integrators `q` is searched with `(n, m, nk)`
 //!    and picked by BIC, a wrong `q` costing a parameter (a pole or a zero near the origin).
 //!
+//! `pure_integrator`: `n = 0` with integrators (`b_0 / s^q`, e.g. a single inertia or the
+//! rigid-body mode alone), by `identify_with_prefilter` and in a search.
+//!
 //! The tests take a few seconds with optimizations and several minutes without, so they are
 //! ignored in debug builds: run `cargo test --release --test integration srivc:: -- --nocapture`
 //! (the tables of the candidates are printed), or force them with `-- --ignored`.
@@ -33,6 +36,7 @@ mod basic;
 mod high_order;
 mod input_offset;
 mod pseudo_integration;
+mod pure_integrator;
 mod search;
 
 use std::f64::consts::PI;

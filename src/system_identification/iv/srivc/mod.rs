@@ -22,7 +22,7 @@ pub enum Initialization<T> {
     /// (around the bandwidth of the plant), whose estimate starts the iterations.
     StateVariableFilter(T),
     /// Initial model `B(s) / A(s)` (e.g. a discrete-time estimate converted to continuous time),
-    /// with `deg A = n` and `deg B <= m`.
+    /// with `deg A = n` and `deg B <= m` (a constant `A` for `n = 0`).
     Model(TransferFunction<T, Continuous>),
 }
 
@@ -76,7 +76,9 @@ pub struct SrivcResult<T> {
 pub enum SrivcError {
     #[error("input and output lengths differ: {input} vs {output}")]
     LengthMismatch { input: usize, output: usize },
-    #[error("invalid orders: denominator {denominator}, numerator {numerator} (need 1 <= n, m <= n)")]
+    /// `m > n`, or `n = 0` without integrators (`n = 0` is valid only with `q >= 1`: the pure
+    /// integrator `b_0 / s^q`).
+    #[error("invalid orders: denominator {denominator}, numerator {numerator} (need m <= n, and n >= 1 unless there are integrators)")]
     InvalidOrder { denominator: usize, numerator: usize },
     #[error("initial model does not match the orders (denominator = {denominator}, numerator <= {numerator})")]
     InitialModel { denominator: usize, numerator: usize },
@@ -108,7 +110,8 @@ pub enum SrivcError {
 /// `FirstOrderHold`), so `ts` should be small against the time constants of the plant.
 ///
 /// Argument order: `denominator_order` (`n`) before `numerator_order` (`m`), as in the notation
-/// `(n, m, q, nk)`; e.g. `b_0 / (s^2 + a_1 s + a_2)` is `(2, 0)`.
+/// `(n, m, q, nk)`; e.g. `b_0 / (s^2 + a_1 s + a_2)` is `(2, 0)`. Needs `1 <= n` and `m <= n`
+/// (`InvalidOrder`; `n = 0` only with integrators, `identify_with_prefilter`).
 pub fn identify<T>(
     u: &[T],
     y: &[T],
@@ -200,6 +203,15 @@ impl<T: Float> Prefilter<T> {
 /// An input offset not in the recorded input (integrated by the plant into a drift of the output)
 /// is removed by the prefilter but for its transient from `k = 0`, which biases the estimate in
 /// proportion to the offset; `options.evaluated_from` (e.g. one period) leaves it out.
+///
+/// `n = 0` (`A = 1`, so `m = 0`) is valid with `q >= 1`: the pure integrator `G(s) = b_0 / s^q`,
+/// e.g. a single inertia `1 / (J s^2)` (torque -> position) is `(n, m, q) = (0, 0, 2)` with
+/// `b_0 = 1 / J`, or the rigid-body mode alone of a plant whose resonances are above the band of
+/// interest. The regression `z = b_0 w` then holds no output, so the estimate is the least
+/// squares one (the instruments are the regressors) whatever the initialization, `θ = [b_0]`: the
+/// iterations converge in one step from `Initialization::StateVariableFilter` (which is that
+/// estimate), in two from a `Model` (a constant `A`). `n = 0` with `q = 0` (a static gain) is
+/// `InvalidOrder`.
 #[allow(clippy::too_many_arguments)]
 pub fn identify_with_prefilter<T>(
     u: &[T],
@@ -218,7 +230,8 @@ where
     if u.len() != y.len() {
         return Err(SrivcError::LengthMismatch { input: u.len(), output: y.len() });
     }
-    if n == 0 || m > n {
+    // n = 0 (A = 1, R = b_0) needs the prefilter for a filter of positive order
+    if (n == 0 && prefilter.integrators == 0) || m > n {
         return Err(SrivcError::InvalidOrder { denominator: n, numerator: m });
     }
     if u.len() < options.evaluated_from + n + m + 1 {
@@ -284,6 +297,9 @@ fn initial_parameter<T: Float + ComplexField>(tf: &TransferFunction<T, Continuou
 /// `None` if they are not found.
 fn scaled_roots<T: Float + ComplexField>(a: &[T]) -> Option<(T, Vec<Complex<T>>)> {
     let rho = root_radius(a);
+    if a.is_empty() {
+        return Some((rho, Vec::new()));
+    }
     let mut coefficients = vec![Complex::from(T::one())];
     coefficients.extend(a.iter().enumerate().map(|(i, &c)| Complex::from(c / Float::powi(rho, i as i32 + 1))));
     dka_method(&Polynomial(coefficients)).map(|roots| (rho, roots))
@@ -293,9 +309,6 @@ fn scaled_roots<T: Float + ComplexField>(a: &[T]) -> Option<(T, Vec<Complex<T>>)
 /// beyond the rounding, `Re s > ρ sqrt(eps)` with the root radius `ρ` of `scaled_roots`).
 /// `false` if the roots are not found.
 pub(super) fn has_unstable_root<T: Float + ComplexField>(a: &[T], rate: T) -> bool {
-    if a.is_empty() {
-        return false;
-    }
     scaled_roots(a).is_some_and(|(rho, roots)| {
         let threshold = Float::max(rate / rho, Float::sqrt(T::epsilon()));
         roots.iter().any(|r| r.re > threshold)
@@ -349,7 +362,8 @@ impl<T: Float + AddAssign + MulAssign + ComplexField + RealField> Step<T> {
     #[allow(clippy::too_many_arguments)]
     fn new(a: &[T], prefilter: &Prefilter<T>, ts: T, u: &[T], y: &[T], m: usize, options: &SrivcOptions<T>) -> Self {
         let filter = StateVariableFilter::new(&times_power(a, prefilter.cutoff, prefilter.order), ts);
-        let instrument_filter = (prefilter.order > 0).then(|| StateVariableFilter::new(a, ts));
+        // n = 0: no instruments to filter (the regressors hold no output)
+        let instrument_filter = (prefilter.order > 0 && !a.is_empty()).then(|| StateVariableFilter::new(a, ts));
         let uf = filter.apply(u, options.input_intersample);
         let yf = filter.apply(y, InterSample::FirstOrderHold);
         let (u_shift, y_shift) = (prefilter.order - prefilter.integrators, prefilter.order);
@@ -374,10 +388,11 @@ impl<T: Float + AddAssign + MulAssign + ComplexField + RealField> Step<T> {
         regressors
     }
 
-    /// IV estimate with the auxiliary model `b / A(s)` (least squares if `None`).
+    /// IV estimate with the auxiliary model `b / A(s)` (least squares if `None`, or if `n = 0`:
+    /// the regressors `[w^(m), ..., w]` hold no output, so the instruments are the regressors).
     fn solve(&self, b: Option<&[T]>) -> Result<DVector<T>, SrivcError> {
         let n = self.n;
-        let xf = b.map(|b| {
+        let xf = b.filter(|_| n > 0).map(|b| {
             // x̂ = B̂(s) / A(s) w = Σ b_j w_f^(m-j)
             let x_hat: Vec<T> = (0..self.uf.nrows())
                 .map(|k| (0..=self.m).fold(T::zero(), |acc, j| acc + b[j] * self.uf[(k, self.u_shift + self.m - j)]))

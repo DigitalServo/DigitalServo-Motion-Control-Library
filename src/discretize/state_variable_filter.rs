@@ -36,9 +36,14 @@ impl<T: Float + AddAssign + ComplexField + RealField> StateVariableFilter<T> {
     /// `w(t_k + τ) = w[k] + (w[k+1] - w[k]) τ / ts`,
     /// `z[k+1] = Φ z[k] + Γ0 w[k] + Γ1 (w[k+1] - w[k])`: from the exponential of the augmented
     /// matrix `[[ρ ts A', ρ ts B, 0], [0, 0, 1], [0, 0, 0]] = [[Φ, Γ0, Γ1], ...]`.
+    ///
+    /// `a = []` (`A = 1`) is the identity: no state, `apply` gives the column `[v]`.
     pub(crate) fn new(a: &[T], ts: T) -> Self {
         let n = a.len();
         let rho = root_radius(a);
+        if n == 0 {
+            return Self { a: Vec::new(), rho, phi: DMatrix::zeros(0, 0), gamma0: DVector::zeros(0), gamma1: DVector::zeros(0) };
+        }
         let rho_ts = rho * ts;
         let mut aug = DMatrix::<T>::zeros(n + 2, n + 2);
         for i in 0..n - 1 {
@@ -94,4 +99,19 @@ impl<T: Float + AddAssign + ComplexField + RealField> StateVariableFilter<T> {
 pub(crate) fn root_radius<T: Float>(a: &[T]) -> T {
     let rho = a.iter().enumerate().fold(T::zero(), |acc, (i, &c)| acc.max(c.abs().powf(T::one() / T::from(i + 1).unwrap())));
     if rho > T::zero() { rho } else { T::one() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identity_without_poles() {
+        let v = [1.0, -2.0, 0.5, 3.0];
+        for hold in [InterSample::ZeroOrderHold, InterSample::FirstOrderHold] {
+            let out = StateVariableFilter::<f64>::new(&[], 1e-3).apply(&v, hold);
+            assert_eq!(out.shape(), (4, 1));
+            assert_eq!(out.column(0).as_slice(), &v);
+        }
+    }
 }

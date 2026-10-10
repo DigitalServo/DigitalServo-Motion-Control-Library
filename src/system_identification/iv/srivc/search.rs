@@ -15,6 +15,9 @@ use crate::system_identification::validation::{Check, CheckResult, Report, Valid
 /// `deg B = m = numerator_order`, `q = integrators` (poles fixed at the origin, see
 /// `identify_with_prefilter`), `nk = input_delay` \[samples\], always in this order `(n, m, q, nk)`
 /// (constructor, `grid`, display).
+///
+/// `n = 0` is valid only with `q >= 1` (the pure integrator `b_0 / s^q`, e.g. `1 / (J s^2)` is
+/// `(0, 0, 2)`); `search` reports `(0, 0, 0, nk)` as not identified (`SrivcError::InvalidOrder`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Structure {
     /// `n`.
