@@ -4,6 +4,7 @@
 //! The settings shared by the submodules are here: the sampling period, the test plants, and the
 //! comparison of transfer functions.
 
+mod backward_difference;
 mod matched_z;
 mod methods;
 mod tustin;

@@ -13,7 +13,7 @@ space models, discretization, frequency analysis, trajectory generation, feedfor
 | Area | What you get |
 | --- | --- |
 | **Systems** | `TransferFunction` in `s` or `z` (the domain is a type parameter, so they cannot be mixed up), the `tf!` macro, arithmetic, pole-zero cancellation, poles / zeros, partial fractions; `TransferFunctionWithDelay` (dead time: frequency response, exact simulation of a held input); `StateSpace` |
-| **Discretization** | Zero-order hold (exact), bilinear (Tustin), matched z-transform in both directions, each for transfer functions and state-space models, chosen by type or at run time (`DiscretizeMethod`); running a discrete-time `TransferFunction` or `StateSpace` sample by sample (`DiscreteSystem`: plant simulation, controllers, filters) |
+| **Discretization** | Zero-order hold (exact), bilinear (Tustin), backward difference, matched z-transform in both directions, each for transfer functions and state-space models, chosen by type or at run time (`DiscretizeMethod`); running a discrete-time `TransferFunction` or `StateSpace` sample by sample (`DiscreteSystem`: plant simulation, controllers, filters) |
 | **Frequency analysis** | `FrequencyTransferFunction` (`ω -> G(jω)`, including dead time), Bode diagram, Nyquist plot, FFT, Welch's method |
 | **Laplace transform** | Inverse Laplace transform, stable (non-causal) inverse of nonminimum-phase systems, piecewise-polynomial signals |
 | **Trajectories** | Modified trapezoid / sine / constant velocity, cycloid, harmonic, smoothstep of any smoothness |
@@ -69,13 +69,14 @@ assert!((x(1.0) - (-1.0f64).exp()).abs() < 1e-9);
 
 ```rust
 use dsmc::{tf, DiscreteSystem, StateSpace};
-use dsmc::discretize::{DiscretizeMethod, MatchedZ, Tustin, Zoh, ZerosAtInfinity};
+use dsmc::discretize::{BackwardDifference, DiscretizeMethod, MatchedZ, Tustin, Zoh, ZerosAtInfinity};
 
 let g = tf!("100 / (s + 100)");
 let ts = 1e-3;
 
 let g_zoh = g.discretize(Zoh, ts).unwrap();
 let g_tustin = g.discretize(Tustin, ts).unwrap();
+let g_backward = g.discretize(BackwardDifference, ts).unwrap();
 let g_matched = g.discretize(MatchedZ(ZerosAtInfinity::MinusOne), ts).unwrap();
 let ss_tustin = StateSpace::try_from(&g).unwrap().discretize(Tustin, ts).unwrap();
 
