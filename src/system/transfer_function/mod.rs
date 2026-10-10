@@ -61,9 +61,18 @@ impl<T: Float + AddAssign, D> TransferFunction<T, D> {
     /// Common factors are removed by dividing the original coefficients by `(s - c)`
     /// (synthetic division), rather than rebuilding the polynomials from numerically found roots,
     /// so the remaining factors keep their coefficients (repeated roots included).
+    ///
+    /// Roots at the origin are known exactly from the trailing zero coefficients, so the common
+    /// ones are cancelled first by dropping those zeros. Only the remaining roots go through the
+    /// numerical root finder, where a root of high multiplicity would spread too widely to match.
     pub fn reduced_with_tolerance(&self, rel_tol: T) -> Self {
-        let numer = trim_leading_zeros(&self.numerator);
-        let denom = trim_leading_zeros(&self.denominator);
+        let mut numer = trim_leading_zeros(&self.numerator);
+        let mut denom = trim_leading_zeros(&self.denominator);
+        let origin = trailing_zeros(&numer).min(trailing_zeros(&denom));
+        let (numer_len, denom_len) = (numer.len(), denom.len());
+        numer.truncate(numer_len - origin);
+        denom.truncate(denom_len - origin);
+
         let numer_roots = grouped_roots(&numer);
         let denom_roots = grouped_roots(&denom);
 
@@ -87,6 +96,15 @@ impl<T: Float + AddAssign, D> TransferFunction<T, D> {
 fn trim_leading_zeros<T: Float>(p: &Polynomial<T>) -> Polynomial<T> {
     let coeffs: Vec<T> = p.iter().copied().skip_while(|c| c.is_zero()).collect();
     if coeffs.is_empty() { Polynomial(vec![T::zero()]) } else { Polynomial(coeffs) }
+}
+
+/// Multiplicity of the root at the origin: the number of trailing zero coefficients
+/// (`0` for the zero polynomial, which has no well-defined roots).
+fn trailing_zeros<T: Float>(p: &Polynomial<T>) -> usize {
+    if p.iter().all(|c| c.is_zero()) {
+        return 0;
+    }
+    p.iter().rev().take_while(|c| c.is_zero()).count()
 }
 
 /// Roots of a descending-order real polynomial as `(root, multiplicity)`. Clusters of a repeated

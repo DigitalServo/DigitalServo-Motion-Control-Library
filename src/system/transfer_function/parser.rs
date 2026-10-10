@@ -179,6 +179,19 @@ impl<T: Float + AddAssign> Rational<T> {
         if self.den == rhs.den {
             return Self { num: &self.num + &rhs.num, den: self.den };
         }
+        // Monomial denominators (from `z^-k`): use `c1 c2 v^max(a, b)` instead of the product
+        // `c1 c2 v^(a + b)`, so that sums of many delays do not inflate the degree.
+        if let (Some((c1, a)), Some((c2, b))) = (monomial(&self.den), monomial(&rhs.den)) {
+            let m = a.max(b);
+            let scaled = |n: &Polynomial<T>, c: T, shift: usize| {
+                let mut coeffs: Vec<T> = n.iter().map(|&x| x * c).collect();
+                coeffs.resize(coeffs.len() + shift, T::zero());
+                Polynomial(coeffs)
+            };
+            let mut den = vec![c1 * c2];
+            den.resize(m + 1, T::zero());
+            return Self { num: &scaled(&self.num, c2, m - a) + &scaled(&rhs.num, c1, m - b), den: Polynomial(den) };
+        }
         let n1d2 = &self.num * &rhs.den;
         let n2d1 = &rhs.num * &self.den;
         Self { num: &n1d2 + &n2d1, den: &self.den * &rhs.den }
@@ -207,6 +220,15 @@ impl<T: Float + AddAssign> Rational<T> {
         }
         Ok(result)
     }
+}
+
+/// `Some((c, k))` if `p` is the monomial `c v^k` (`c != 0`, leading zeros allowed).
+fn monomial<T: Float>(p: &Polynomial<T>) -> Option<(T, usize)> {
+    let first = p.iter().position(|c| !c.is_zero())?;
+    if p[first + 1..].iter().any(|c| !c.is_zero()) {
+        return None;
+    }
+    Some((p[first], p.len() - 1 - first))
 }
 
 struct Parser {
