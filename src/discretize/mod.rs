@@ -32,18 +32,23 @@
 //! | `MatchedZ` | yes | yes (single input / output, through the transfer function) | yes |
 //!
 //! Using a method on a kind of system it does not support is a compile error.
+//!
+//! `StateVariableFilter` filters sampled signals by `1 / A(s)` directly (exact for their
+//! `InterSample` behaviour), giving the derivatives of the output too: the pseudo-derivatives of
+//! continuous-time identification, accurate at high orders and low cutoffs where `s^i / A(s)`
+//! discretized as transfer functions is not.
 
 pub mod backward_difference;
 pub mod bilinear_transform;
 pub mod matched_z_transform;
 pub mod zoh;
-pub(crate) mod state_variable_filter;
+pub mod state_variable_filter;
 
 pub use backward_difference::BackwardDifference;
 pub use bilinear_transform::Tustin;
 pub use matched_z_transform::{MatchedZ, ZerosAtInfinity};
 use serde::{Deserialize, Serialize};
-pub use state_variable_filter::InterSample;
+pub use state_variable_filter::{InterSample, StateVariableFilter};
 pub use zoh::Zoh;
 pub use matched_z_transform::MatchedZError;
 

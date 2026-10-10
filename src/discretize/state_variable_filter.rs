@@ -1,6 +1,11 @@
-//! Exact discretization of the state-variable filter `1 / A(s)` for a held sampled signal, scaled
-//! so that it stays accurate at high orders. Used for continuous-time simulation
-//! (`TransferFunctionWithDelay::simulate`) and by SRIVC (its prefilter).
+//! Exact discretization of the state-variable filter `1 / A(s)` for a sampled signal (held or
+//! linear between samples), scaled so that it stays accurate at high orders.
+//!
+//! Used for continuous-time simulation (`TransferFunctionWithDelay::simulate`), by SRIVC (its
+//! filters and prefilter), and for continuous-time identification with a state-variable filter:
+//! the derivatives `x^(i)` of `x = v / A(s)` are the pseudo-derivatives `s^i / A(s) v` of the
+//! data, e.g. with `A(s) = (s + λ)^N` (`StateVariableFilter::lag`) the regressors of a
+//! differential equation filtered by `F(s) = (λ / (s + λ))^N`.
 
 use std::ops::AddAssign;
 
@@ -19,11 +24,34 @@ pub enum InterSample {
 /// Filter `1 / A(s)` of a sampled signal `v`, giving `[x, x', ..., x^(n)]` of `x = v / A(s)` at the
 /// sampling instants (zero initial state).
 ///
+/// The filter is discretized exactly for the intersample behaviour of `v` (`InterSample`): a
+/// command output through a D/A converter is `ZeroOrderHold` (then exact), a measured continuous
+/// signal `FirstOrderHold` (then within the error of the linear interpolation, `(ω ts)^2 / 12`
+/// relative at the frequency `ω`; for the highest derivative `x^(n) = v - Σ a_i x^(n-i)`, a
+/// difference of terms of the order of `v`, that error is relative to `v`, not to `x^(n)`). Unlike `s^i / A(s)` discretized as transfer functions (whose
+/// coefficients, from `n` poles near `z = 1` when `λ ts` is small, lose the low-frequency response
+/// to rounding at high orders), the states are kept in the time domain:
+///
+/// ```
+/// use dsmc::discretize::{InterSample, StateVariableFilter};
+///
+/// // F(s) = (λ / (s + λ))^5 at 2 Hz, sampled at 10 kHz
+/// let (lambda, ts) = (2.0 * std::f64::consts::PI * 2.0, 1e-4);
+/// let filter = StateVariableFilter::lag(5, lambda, ts);
+/// let u = vec![1.0; 20000]; // unit step, held (2 s)
+/// let x = filter.apply_columns(&u, InterSample::ZeroOrderHold);
+/// // F u = λ^5 x, s F u = λ^5 x' (pseudo-derivative)
+/// let gain = lambda.powi(5);
+/// assert!((gain * x[0][19999] - 1.0).abs() < 1e-3);
+/// assert!(gain * x[1][19999] < 1e-2);
+/// ```
+///
 /// The coefficients `a_i` grow like `ρ^i` (`ρ`: radius of the roots), so the companion matrix in
 /// the states `x^(i)` spans many decades at high orders and its exponential is inaccurate. The
 /// states are therefore scaled as in the normalized time `ρ t`: `z_i = x^(i) / ρ^i`, with the
 /// input `w = v / ρ^n`, `ż = ρ (A' z + B w)`, `A'` the companion matrix of `a_i / ρ^i`.
-pub(crate) struct StateVariableFilter<T> {
+#[derive(Clone, Debug)]
+pub struct StateVariableFilter<T> {
     a: Vec<T>,
     rho: T,
     phi: DMatrix<T>,
@@ -37,8 +65,9 @@ impl<T: Float + AddAssign + ComplexField + RealField> StateVariableFilter<T> {
     /// `z[k+1] = Φ z[k] + Γ0 w[k] + Γ1 (w[k+1] - w[k])`: from the exponential of the augmented
     /// matrix `[[ρ ts A', ρ ts B, 0], [0, 0, 1], [0, 0, 0]] = [[Φ, Γ0, Γ1], ...]`.
     ///
-    /// `a = []` (`A = 1`) is the identity: no state, `apply` gives the column `[v]`.
-    pub(crate) fn new(a: &[T], ts: T) -> Self {
+    /// `ts` is the sampling period \[s\]. `a = []` (`A = 1`) is the identity: no state, `apply`
+    /// gives the column `[v]`.
+    pub fn new(a: &[T], ts: T) -> Self {
         let n = a.len();
         let rho = root_radius(a);
         if n == 0 {
@@ -64,8 +93,30 @@ impl<T: Float + AddAssign + ComplexField + RealField> StateVariableFilter<T> {
         }
     }
 
-    /// Row `k`: `[x[k], x'[k], ..., x^(n)[k]]`.
-    pub(crate) fn apply(&self, v: &[T], hold: InterSample) -> DMatrix<T> {
+    /// `1 / (s + λ)^order` (`lambda` = `λ` \[rad/s\]): `a_k = C(order, k) λ^k`. `λ^order` times
+    /// the outputs are those of the low-pass `F(s) = (λ / (s + λ))^order` and its
+    /// pseudo-derivatives `s^i F(s)`.
+    pub fn lag(order: usize, lambda: T, ts: T) -> Self {
+        // (s + λ)^order, one factor at a time: c_k += λ c_(k-1)
+        let mut c = vec![T::one()];
+        for _ in 0..order {
+            c.push(T::zero());
+            for k in (1..c.len()).rev() {
+                c[k] = c[k] + lambda * c[k - 1];
+            }
+        }
+        Self::new(&c[1..], ts)
+    }
+
+    /// Order `n` of `A(s)`.
+    pub fn order(&self) -> usize {
+        self.a.len()
+    }
+
+    /// `[x, x', ..., x^(n)]` of `x = v / A(s)` at the sampling instants, from rest, for `v`
+    /// sampled with the period given to `new` and of the intersample behaviour `hold`: row `k`,
+    /// column `i` is `x^(i)[k]` (`v.len()` rows, `n + 1` columns).
+    pub fn apply(&self, v: &[T], hold: InterSample) -> DMatrix<T> {
         let n = self.a.len();
         let scale: Vec<T> = (0..=n).map(|i| Float::powi(self.rho, i as i32)).collect();
         let mut out = DMatrix::zeros(v.len(), n + 1);
@@ -91,6 +142,13 @@ impl<T: Float + AddAssign + ComplexField + RealField> StateVariableFilter<T> {
             std::mem::swap(&mut z, &mut next);
         }
         out
+    }
+
+    /// `apply` by columns: element `i` is `x^(i)` over the samples (`n + 1` vectors of
+    /// `v.len()`).
+    pub fn apply_columns(&self, v: &[T], hold: InterSample) -> Vec<Vec<T>> {
+        let out = self.apply(v, hold);
+        out.column_iter().map(|c| c.iter().copied().collect()).collect()
     }
 }
 

@@ -7,14 +7,20 @@
 //! τ_f = F(s) τ,   v_f = s F(s) θ,   a_f = s^2 F(s) θ,   τ_f = J a_f + D v_f
 //! ```
 //!
+//! computed by `discretize::StateVariableFilter::lag(3, λ, ts)` as the derivatives of
+//! `θ / (s + λ)^3` and `τ / (s + λ)^3` (the common factor `λ^3` cancels in the least squares).
+//!
 //! The same filter on both sides keeps the relation, and with `λ` below the resonance it removes
 //! the resonance and the noise of the measured position, amplified by the derivatives (which
 //! would otherwise bias `J` down, as noise in the regressors). `F` is of the third order so that
 //! `s^2 F` is strictly proper: it still rolls off the noise above `λ`. The derivatives of `F` also
 //! leave out the constant offset of the position from rest. The torque is held between samples
-//! and the position is a sampled continuous signal: the filters are discretized by `Zoh` for `τ`
-//! and by `Tustin` for `θ`, so that they are not shifted by half a sample against each other (a
-//! phase error `ω ts / 2` that `J ω` would turn into an error of `D`).
+//! and the position is a sampled continuous signal: the filter is applied with
+//! `InterSample::ZeroOrderHold` to `τ` and `InterSample::FirstOrderHold` to `θ`, so that they are
+//! not shifted by half a sample against each other (a phase error `ω ts / 2` that `J ω` would turn
+//! into an error of `D`). Unlike `s^i F(s)` discretized as transfer functions, whose `N` poles at
+//! `z = e^(-λ ts)` lose the low-frequency response to rounding at high orders and low `λ`, the
+//! filter keeps its states in the time domain, scaled.
 //!
 //! Prints the estimates against `λ` (also `out/whitebox_rigid_body_lambda.csv`), then the
 //! coherence test of the rigid-body model on the whole band and below the resonance, and its gain
@@ -29,7 +35,7 @@ use dsmc::logger::DataStorage;
 use dsmc::signal::excitation::multisine;
 use dsmc::system_identification::lsm::whitebox::DataBuffer;
 use dsmc::system_identification::validation::{Check, CoherenceCheck, Validation};
-use dsmc::{Discrete, DiscreteSystem, TransferFunction, discretize::{Tustin, Zoh}, tf};
+use dsmc::{Discrete, DiscreteSystem, TransferFunction, discretize::{InterSample, StateVariableFilter, Zoh}};
 
 const TS: f64 = 1e-4;
 
@@ -79,14 +85,13 @@ fn main() {
     let error = |[jh, dh]: [f64; 2]| (100.0 * (jh / j - 1.0), 100.0 * (dh / d - 1.0));
     println!("true: J = {j:.5} kg m^2, D = {d:.5} N m s/rad, resonance {fr} Hz, excited 1 ..= 50 Hz");
 
-    // State-variable filter of bandwidth `lambda_hz` [Hz]: `[J, D]`
+    // State-variable filter of bandwidth `lambda_hz` [Hz]: `[J, D]` from `x^(i)` of
+    // `x = v / (s + λ)^3` (`s^i F v = λ^3 x^(i)`)
     let identify = |lambda_hz: f64| {
-        let l = 2.0 * PI * lambda_hz;
-        let f = tf!("({l} / (s + {l}))^3");
-        let (fs1, fs2) = (tf!("s") * f.clone(), tf!("s^2") * f.clone());
-        let (f_z, fs1_z, fs2_z) = (f.discretize(Zoh, TS).unwrap(), fs1.discretize(Tustin, TS).unwrap(), fs2.discretize(Tustin, TS).unwrap());
-        let (tau_f, v_f, a_f) = (filter(&f_z, &tau), filter(&fs1_z, &theta), filter(&fs2_z, &theta));
-        estimate(&a_f, &v_f, &tau_f, from)
+        let filter = StateVariableFilter::lag(3, 2.0 * PI * lambda_hz, TS);
+        let tau_x = filter.apply_columns(&tau, InterSample::ZeroOrderHold);
+        let theta_x = filter.apply_columns(&theta, InterSample::FirstOrderHold);
+        estimate(&theta_x[2], &theta_x[1], &tau_x[0], from)
     };
 
     // λ = 2 Hz ..= 2 kHz

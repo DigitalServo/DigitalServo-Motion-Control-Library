@@ -7,6 +7,7 @@
 mod backward_difference;
 mod matched_z;
 mod methods;
+mod state_variable_filter;
 mod tustin;
 mod zoh;
 
