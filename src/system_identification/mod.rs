@@ -3,6 +3,7 @@
 pub mod gpr;
 pub mod lsm;
 pub mod iv;
+pub mod oe;
 pub mod kalman_filter;
 pub mod frequency_response;
 pub mod validation;

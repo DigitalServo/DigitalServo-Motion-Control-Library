@@ -1,7 +1,7 @@
 //! System identification: ARX models by least squares / Kalman filter with input delay estimation
-//! (`arx`), IV (`iv`), SRIVC (`srivc`, also on multi-inertia plants), Levy and vector fitting
-//! (`frequency_response`), and Gaussian process regression (`gpr`). The validation of the
-//! identified models is tested in `validation.rs`.
+//! (`arx`), IV (`iv`), output-error models by the prediction-error method (`oe`), SRIVC (`srivc`,
+//! also on multi-inertia plants), Levy and vector fitting (`frequency_response`), and Gaussian
+//! process regression (`gpr`). The validation of the identified models is tested in `validation.rs`.
 //!
 //! The settings shared by the submodules are here: the tolerances on the identified coefficients
 //! and the distance between two transfer functions.
@@ -10,6 +10,7 @@ mod arx;
 mod frequency_response;
 mod gpr;
 mod iv;
+mod oe;
 mod srivc;
 
 use dsmc::TransferFunction;
