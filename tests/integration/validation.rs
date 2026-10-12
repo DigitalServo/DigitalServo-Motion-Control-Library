@@ -507,12 +507,12 @@ fn test_validation_one_step_prediction() {
         y
     };
     let least_squares = |structure: &Arx<f64>, u: &[f64], y: &[f64]| {
-        let mut buffer = lsm::arx::DataBuffer::from_arx(structure.clone());
+        let mut estimator = lsm::arx::LeastSquares::from_arx(structure.clone());
         for k in 0..u.len() {
-            buffer.add(u[k], if k > 0 { y[k - 1] } else { 0.0 }, y[k]);
+            estimator.add(u[k], if k > 0 { y[k - 1] } else { 0.0 }, y[k]);
         }
-        buffer.identify().unwrap();
-        buffer.arx
+        estimator.identify().unwrap();
+        estimator.arx
     };
     let (max_lag, z, z_one_sided) = (20, 2.58, 2.326);
     let white = |v: &Validation<f64>| {

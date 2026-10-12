@@ -165,7 +165,7 @@ let ts = 1e-3;
 let mut plant = DiscreteSystem::try_from(&tf!("1000 / (s^2 + 20 s + 1000)").discretize(Zoh, ts).unwrap()).unwrap();
 
 // ARX model y[k] = a1 y[k-1] + a2 y[k-2] + b0 u[k-1] + b1 u[k-2]
-let mut arx = lsm::arx::DataBuffer::<f64>::new(2, 1).with_input_delay(1);
+let mut arx = lsm::arx::LeastSquares::<f64>::new(2, 1).with_input_delay(1);
 let mut y_prev = 0.0;
 for k in 0..1000 {
     let t = k as f64 * ts;
@@ -268,7 +268,7 @@ for k in 2..u.len() {
     y[k] = 1.5 * y[k - 1] - 0.7 * y[k - 2] + u[k - 1] + 0.5 * u[k - 2] + e;
 }
 
-let mut arx = lsm::arx::DataBuffer::<f64>::new(2, 1).with_input_delay(1);
+let mut arx = lsm::arx::LeastSquares::<f64>::new(2, 1).with_input_delay(1);
 for k in 0..u.len() {
     arx.add(u[k], if k > 0 { y[k - 1] } else { 0.0 }, y[k]);
 }

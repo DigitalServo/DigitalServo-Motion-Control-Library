@@ -15,7 +15,7 @@ fn test_lsm_arx() {
 
     let (input_order, state_order) = (2, 2);
     // A plant driven through a zero-order hold has a one-sample delay (u[k] does not affect y[k]).
-    let mut lsm = lsm::arx::DataBuffer::<f64>::new(state_order, input_order).with_input_delay(1);
+    let mut lsm = lsm::arx::LeastSquares::<f64>::new(state_order, input_order).with_input_delay(1);
     let mut kf = kalman_filter::arx::KalmanFilter::<f64>::new(state_order, input_order, 0.01, 0.01, 1.0e10).with_input_delay(1);
 
     let mut system = DiscreteSystem::from(StateSpace::try_from(&tf_c).unwrap().discretize(Zoh, ts).unwrap());
@@ -62,7 +62,7 @@ fn test_lsm_polynomial() {
 
     let dx: f64 = 1e-3;
 
-    let mut lsm = lsm::polynomial::DataBuffer::<f64>::new(3);
+    let mut lsm = lsm::polynomial::LeastSquares::<f64>::new(3);
     let mut kf = kalman_filter::polynomial::KalmanFilter::<f64>::new(3, 0.0, 0.0 ,1.0e5);
 
     let generator = |x: f64| -> f64 {
@@ -103,7 +103,7 @@ fn test_arx_mismatched_orders() {
     ];
     for (a, b, numer, denom) in cases {
         let expected = TransferFunction::<f64, Discrete>::from_polynomials(Polynomial(numer), Polynomial(denom));
-        let mut lsm = lsm::arx::DataBuffer::<f64>::new(a.len(), b.len() - 1);
+        let mut lsm = lsm::arx::LeastSquares::<f64>::new(a.len(), b.len() - 1);
         let mut kf = kalman_filter::arx::KalmanFilter::<f64>::new(a.len(), b.len() - 1, 0.01, 0.01, 1.0e10);
 
         let (mut ys, mut us) = (vec![0.0; a.len()], vec![0.0; b.len()]);

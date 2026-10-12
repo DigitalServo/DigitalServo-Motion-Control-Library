@@ -23,7 +23,7 @@ use crate::system_identification::lsm;
 /// where `x̂` is the noise-free output of an auxiliary model `θ_aux` driven by the input alone
 /// (typically the least-squares estimate; see `identify`). The auxiliary model must be stable.
 /// Call `add` every sample with `u[k]`, `y[k-1]` and `y[k]`, then `identify`.
-pub struct DataBuffer<T> {
+pub struct InstrumentalVariable<T> {
     /// Model; `identify` sets `arx.parameter`.
     pub arx: Arx<T>,
     /// Auxiliary model generating the instruments; its output history is the simulated `x̂`.
@@ -33,7 +33,7 @@ pub struct DataBuffer<T> {
     zeta_phi_sum: DMatrix<T>,
 }
 
-impl<T: Float + AddAssign + MulAssign + ComplexField> DataBuffer<T> {
+impl<T: Float + AddAssign + MulAssign + ComplexField> InstrumentalVariable<T> {
     /// `auxiliary`: model generating the instruments. Its orders and input delay are also those of
     /// the identified model; its history is cleared.
     pub fn new(auxiliary: &Arx<T>) -> Self {
@@ -86,20 +86,20 @@ where
 
     let mut arx = structure.clone();
     arx.clear_history();
-    let mut buffer = lsm::arx::DataBuffer::from_arx(arx);
+    let mut estimator = lsm::arx::LeastSquares::from_arx(arx);
     for (k, (&uk, &yk)) in u.iter().zip(y).enumerate() {
-        buffer.add(uk, y_prev(k), yk);
+        estimator.add(uk, y_prev(k), yk);
     }
-    buffer.identify()?;
-    let mut model = buffer.arx;
+    estimator.identify()?;
+    let mut model = estimator.arx;
 
     for _ in 0..iterations {
-        let mut buffer = DataBuffer::new(&model);
+        let mut estimator = InstrumentalVariable::new(&model);
         for (k, (&uk, &yk)) in u.iter().zip(y).enumerate() {
-            buffer.add(uk, y_prev(k), yk);
+            estimator.add(uk, y_prev(k), yk);
         }
-        buffer.identify()?;
-        model = buffer.arx;
+        estimator.identify()?;
+        model = estimator.arx;
     }
     Some(model)
 }

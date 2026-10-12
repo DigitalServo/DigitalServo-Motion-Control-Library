@@ -43,7 +43,7 @@ fn test_iv_arx() {
     let rms = (y0.iter().map(|v| v * v).sum::<f64>() / n as f64).sqrt();
     let y: Vec<f64> = y0.iter().map(|&v| v + 0.5 * rms * rand()).collect();
 
-    let mut lsm = lsm::arx::DataBuffer::from_arx(structure.clone());
+    let mut lsm = lsm::arx::LeastSquares::from_arx(structure.clone());
     for k in 0..n {
         lsm.add(u[k], if k > 0 { y[k - 1] } else { 0.0 }, y[k]);
     }

@@ -11,7 +11,7 @@ use crate::system_identification::arx::Arx;
 /// `y[k] = Σ_{i=1..na} a_i y[k-i] + Σ_{i=0..nb} b_i u[k-nk-i]` from sequential data
 /// (`na = state_order`, `nb = input_order`, `nk = input_delay`, 0 unless set by `with_input_delay`).
 /// Call `add` every sample with `u[k]`, `y[k-1]` and `y[k]`, then `identify`.
-pub struct DataBuffer<T> {
+pub struct LeastSquares<T> {
     /// Model; `identify` sets `arx.parameter`.
     pub arx: Arx<T>,
     psi_sum: DVector<T>,
@@ -20,7 +20,7 @@ pub struct DataBuffer<T> {
     count: usize,
 }
 
-impl<T: Float + AddAssign + MulAssign + ComplexField> DataBuffer<T> {
+impl<T: Float + AddAssign + MulAssign + ComplexField> LeastSquares<T> {
     /// `state_order`: `na`, `input_order`: `nb`.
     ///
     /// Argument order: the output (denominator) order `na` first, then the input (numerator)
@@ -108,22 +108,22 @@ pub fn estimate_input_delay<T>(
 where
     T: Float + AddAssign + MulAssign + ComplexField,
 {
-    let mut buffers: Vec<DataBuffer<T>> = (0..=max_delay)
+    let mut estimators: Vec<LeastSquares<T>> = (0..=max_delay)
         .map(|nk| {
-            let mut buffer = DataBuffer::new(state_order, input_order).with_input_delay(nk);
+            let mut estimator = LeastSquares::new(state_order, input_order).with_input_delay(nk);
             for (k, (&uk, &yk)) in u.iter().zip(y).enumerate() {
                 let y_prev = if k > 0 { y[k - 1] } else { T::zero() };
-                buffer.add(uk, y_prev, yk);
+                estimator.add(uk, y_prev, yk);
             }
-            buffer
+            estimator
         })
         .collect();
-    let losses: Vec<Option<T>> = buffers.iter().map(|b| b.loss()).collect();
+    let losses: Vec<Option<T>> = estimators.iter().map(|b| b.loss()).collect();
 
     let min = losses.iter().flatten().copied().reduce(T::min)?;
     let mean_y2 = y.iter().fold(T::zero(), |acc, &v| acc + v * v) / T::from(y.len().max(1)).unwrap();
     let threshold = min + T::from(1e-9).unwrap() * mean_y2;
     let input_delay = losses.iter().rposition(|l| l.is_some_and(|l| l <= threshold))?;
-    let model = buffers[input_delay].identify()?;
+    let model = estimators[input_delay].identify()?;
     Some(DelayEstimate { input_delay, model, losses })
 }

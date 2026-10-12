@@ -6,13 +6,13 @@ use num_traits::Float;
 
 /// Least-squares polynomial fit `y = Σ θ_i x^(order - i)`; `identify` returns the
 /// descending-order coefficients. Samples are accumulated with `add`.
-pub struct DataBuffer<T> {
+pub struct LeastSquares<T> {
     psi_sum: DVector<T>,
     phi_sum: DMatrix<T>,
     order: usize,
 }
 
-impl<T: Float + AddAssign + MulAssign + ComplexField> DataBuffer<T>
+impl<T: Float + AddAssign + MulAssign + ComplexField> LeastSquares<T>
 {
     /// Polynomial of degree `order`.
     pub fn new(order: usize) -> Self {

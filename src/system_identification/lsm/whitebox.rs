@@ -8,12 +8,12 @@ use num_traits::Float;
 /// Samples are accumulated with `add` (only `Σ φ φ^T` and `Σ φ y` are kept).
 /// The regressor `φ` is built from a physical model, e.g. `φ = [acceleration, velocity, sign(velocity)]`
 /// for inertia, viscous friction and Coulomb friction.
-pub struct DataBuffer<T> {
+pub struct LeastSquares<T> {
     psi_sum: DVector<T>,
     phi_sum: DMatrix<T>,
 }
 
-impl<T: Float + AddAssign + MulAssign + ComplexField + Scalar> DataBuffer<T> {
+impl<T: Float + AddAssign + MulAssign + ComplexField + Scalar> LeastSquares<T> {
     /// `order`: number of parameters (length of `φ`).
     pub fn new(order: usize) -> Self {
         Self {

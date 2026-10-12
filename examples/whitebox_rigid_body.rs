@@ -33,7 +33,7 @@ use std::f64::consts::PI;
 
 use dsmc::logger::DataStorage;
 use dsmc::signal::excitation::multisine;
-use dsmc::system_identification::lsm::whitebox::DataBuffer;
+use dsmc::system_identification::lsm::whitebox::LeastSquares;
 use dsmc::system_identification::validation::{Check, CoherenceCheck, Validation};
 use dsmc::{Discrete, DiscreteSystem, TransferFunction, discretize::{InterSample, StateVariableFilter, Zoh}};
 
@@ -47,11 +47,11 @@ fn filter(gz: &TransferFunction<f64, Discrete>, x: &[f64]) -> Vec<f64> {
 
 /// Least-squares `[J, D]` of `y = J a + D v` from sample `from` on.
 fn estimate(a: &[f64], v: &[f64], y: &[f64], from: usize) -> [f64; 2] {
-    let mut buffer = DataBuffer::new(2);
+    let mut estimator = LeastSquares::new(2);
     for k in from..y.len() {
-        buffer.add(&[a[k], v[k]], y[k]);
+        estimator.add(&[a[k], v[k]], y[k]);
     }
-    let theta = buffer.identify().unwrap();
+    let theta = estimator.identify().unwrap();
     [theta[0], theta[1]]
 }
 
