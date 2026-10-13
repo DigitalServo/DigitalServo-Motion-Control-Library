@@ -108,7 +108,8 @@ pub fn power_spectral_density<T: FftNum + Float + Sum + AddAssign + SubAssign + 
         return vec![];
     }
     let mut psd: Vec<T> = vec![];
-    let segments = welch_segments([data], ts, n_segments, |[x], scale| {
+    let nperseg = welch_segment_len(data.len(), n_segments);
+    let segments = welch_segments([data], ts, nperseg, |[x], scale| {
         psd.resize(x.len() / 2 + 1, T::zero());
         for (p, xk) in psd.iter_mut().zip(x) {
             *p += xk.norm_sqr() * scale;
@@ -125,6 +126,67 @@ pub fn power_spectral_density<T: FftNum + Float + Sum + AddAssign + SubAssign + 
             Spectrum { omega: segments.omega(k), value }
         })
         .collect()
+}
+
+/// Time-frequency power spectral density computed by [`spectrogram`].
+#[derive(Clone, Debug, Serialize)]
+pub struct Spectrogram<T> {
+    /// Center time \[s\] of each segment, `(start + L / 2) ts` with `start` the index of its first
+    /// sample (the convention of `scipy.signal.spectrogram`).
+    pub time: Vec<T>,
+    /// Angular frequency \[rad/s\] of each bin, `2π k / (L ts)` for `k = 0, ..., floor(L / 2)`.
+    pub omega: Vec<T>,
+    /// Power spectral density \[(unit of `data`)²/Hz\]: `psd[i][k]` is that of segment `i` (at
+    /// `time[i]`) at bin `k` (at `omega[k]`).
+    pub psd: Vec<Vec<T>>,
+}
+
+/// Spectrogram of `data` sampled with period `ts`, with windows of `window_time` \[s\].
+///
+/// Each segment has `L = round(window_time / ts)` samples (at least 2 and at most `len`), and the
+/// segments overlap by `floor(L / 2)` samples; the samples after the last whole segment are not used.
+/// Each segment is processed as in [`power_spectral_density`] (mean removed, Hann window, single-sided
+/// density per hertz `|X_k|^2 / (fs Σ w_i^2)`, doubled except at DC and Nyquist) but not averaged
+/// with the others: the definition of `scipy.signal.spectrogram(window="hann", nperseg=L,
+/// scaling="density", mode="psd")`. The resolution is `2π / (L ts)` \[rad/s\] in frequency and
+/// `(L - floor(L / 2)) ts` \[s\] in time. Empty if `data` has fewer than 2 samples.
+///
+/// # Panics
+///
+/// If `window_time / ts` is not positive and finite.
+pub fn spectrogram<T: FftNum + Float + Sum + AddAssign + DivAssign + ToPrimitive>(
+    data: &[T],
+    ts: T,
+    window_time: T,
+) -> Spectrogram<T> {
+    let samples = window_time / ts;
+    assert!(samples > T::zero() && samples.is_finite(), "spectrogram: window_time / ts must be positive and finite");
+    if data.len() < 2 {
+        return Spectrogram { time: vec![], omega: vec![], psd: vec![] };
+    }
+    let nperseg = samples.round().to_usize().unwrap_or(usize::MAX).clamp(2, data.len());
+
+    let two = T::from(2.0).unwrap();
+    let mut psd: Vec<Vec<T>> = vec![];
+    let segments = welch_segments([data], ts, nperseg, |[x], scale| {
+        psd.push(
+            x[..=nperseg / 2]
+                .iter()
+                .enumerate()
+                .map(|(k, xk)| {
+                    let p = xk.norm_sqr() * scale;
+                    if is_one_sided_edge(k, nperseg) { p } else { two * p }
+                })
+                .collect(),
+        );
+    });
+
+    let step = nperseg - nperseg / 2;
+    let time = (0..segments.count)
+        .map(|i| T::from(i * step).unwrap() * ts + T::from(nperseg).unwrap() / two * ts)
+        .collect();
+    let omega = (0..=nperseg / 2).map(|k| segments.omega(k)).collect();
+    Spectrogram { time, omega, psd }
 }
 
 /// Whether bin `k` of an `n`-point FFT is the DC bin or the Nyquist bin, which are not doubled in a
@@ -164,7 +226,8 @@ pub fn welch<T: FftNum + Float + Sum + AddAssign + SubAssign + DivAssign + MulAs
     let mut puu: Vec<T> = vec![];
     let mut pyy: Vec<T> = vec![];
     let mut pyu: Vec<Complex<T>> = vec![];
-    let segments = welch_segments([u, y], ts, n_segments, |[bu, by], scale| {
+    let nperseg = welch_segment_len(u.len(), n_segments);
+    let segments = welch_segments([u, y], ts, nperseg, |[bu, by], scale| {
         let bins = bu.len() / 2 + 1;
         puu.resize(bins, T::zero());
         pyy.resize(bins, T::zero());
@@ -204,7 +267,7 @@ pub fn welch<T: FftNum + Float + Sum + AddAssign + SubAssign + DivAssign + MulAs
     (ret, coherence)
 }
 
-/// Segmentation used by Welch's method ([`welch`], [`power_spectral_density`]).
+/// Segmentation used by Welch's method ([`welch`], [`power_spectral_density`]) and [`spectrogram`].
 struct WelchSegments<T> {
     /// Samples per segment `L`.
     len: usize,
@@ -234,13 +297,14 @@ fn hann_window<T: Float>(len: usize) -> Vec<T> {
     }).collect()
 }
 
-/// Splits each of the `signals` (of a common length, at least 2) into the segments of Welch's method,
-/// removes the mean of each segment, applies the Hann window and takes the FFT. For each segment,
-/// `accumulate` gets the FFTs of the signals (all `L` bins) and the density scale `1 / (fs Σ w_i^2)`.
+/// Splits each of the `signals` (of a common length, at least `nperseg`) into segments of `nperseg`
+/// (at least 2) samples with 50% overlap, removes the mean of each segment, applies the Hann window
+/// and takes the FFT. For each segment, in order of time, `accumulate` gets the FFTs of the signals
+/// (all `L` bins) and the density scale `1 / (fs Σ w_i^2)`.
 fn welch_segments<T, const M: usize>(
     signals: [&[T]; M],
     ts: T,
-    n_segments: usize,
+    nperseg: usize,
     mut accumulate: impl FnMut(&[Vec<Complex<T>>; M], T),
 ) -> WelchSegments<T>
 where
@@ -248,7 +312,6 @@ where
 {
     let n = signals[0].len();
     let fs = T::one() / ts;
-    let nperseg = welch_segment_len(n, n_segments);
     let noverlap = nperseg / 2;
 
     let window = hann_window::<T>(nperseg);
