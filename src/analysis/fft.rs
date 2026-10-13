@@ -89,15 +89,16 @@ pub fn amplitude_spectrum<T: FftNum + Float>(data: &[T], ts: T) -> Vec<Spectrum<
 }
 
 /// Single-sided power spectral density of `data` sampled with period `ts` by Welch's method, with the
-/// same segments as [`welch`]: Hann-windowed segments of `L` samples, about `len / n_segments` rounded
-/// up to a power of two (but at least 2 and at most `len`), with 50% overlap, mean removed per segment.
+/// same segments as [`welch`]: segments of `L` samples, about `len / n_segments` rounded
+/// up to a power of two (but at least 2 and at most `len`), with 50% overlap, mean removed per segment,
+/// weighted by the periodic Hann window.
 ///
 /// Returns the bins `k = 0, ..., floor(L / 2)` at `omega = 2π k / (L ts)` \[rad/s\]. The density is
 /// per **hertz**, not per rad/s, even though the frequency axis is in rad/s: its unit is (unit of
 /// `data`)²/Hz. It is `|X_k|^2 / (fs Σ w_i^2)` averaged over the segments, with `fs = 1 / ts`, `X_k`
 /// the FFT of a windowed segment and `w_i` the window, and doubled except at the DC bin (`k = 0`) and
 /// the Nyquist bin (`k = L / 2`, only when `L` is even): the definition of
-/// `scipy.signal.welch(scaling="density")`. The sum of `value * fs / L` over the bins (the density
+/// `scipy.signal.welch(window="hann", scaling="density")`. The sum of `value * fs / L` over the bins (the density
 /// times the bin width in Hz) thus approximates the variance of the signal. Empty if `data` has fewer than 2 samples.
 pub fn power_spectral_density<T: FftNum + Float + Sum + AddAssign + SubAssign + DivAssign + MulAssign + RemAssign + ToPrimitive>(
     data: &[T],
@@ -145,7 +146,7 @@ pub struct Spectrogram<T> {
 ///
 /// Each segment has `L = round(window_time / ts)` samples (at least 2 and at most `len`), and the
 /// segments overlap by `floor(L / 2)` samples; the samples after the last whole segment are not used.
-/// Each segment is processed as in [`power_spectral_density`] (mean removed, Hann window, single-sided
+/// Each segment is processed as in [`power_spectral_density`] (mean removed, periodic Hann window, single-sided
 /// density per hertz `|X_k|^2 / (fs Σ w_i^2)`, doubled except at DC and Nyquist) but not averaged
 /// with the others: the definition of `scipy.signal.spectrogram(window="hann", nperseg=L,
 /// scaling="density", mode="psd")`. The resolution is `2π / (L ts)` \[rad/s\] in frequency and
@@ -196,7 +197,7 @@ fn is_one_sided_edge(k: usize, n: usize) -> bool {
 }
 
 /// Frequency response `G = P_yu / P_uu` from input `u` and output `y` (sampled with period `ts`) by
-/// Welch's method: Hann-windowed segments of about `len / n_segments` samples (rounded up to a power
+/// Welch's method: periodic-Hann-windowed segments of about `len / n_segments` samples (rounded up to a power
 /// of two, but at most `len`) with 50% overlap, mean removed per segment.
 ///
 /// Returns the response at `omega` \[rad/s\] and the coherence `|P_yu|^2 / (P_uu P_yy)` per
@@ -290,15 +291,18 @@ fn welch_segment_len(n: usize, n_segments: usize) -> usize {
     n.div_ceil(n_segments.max(1)).next_power_of_two().clamp(2, n)
 }
 
-/// Symmetric Hann window `w_i = (1 - cos(2π i / (len - 1))) / 2` of `len` (at least 2) samples.
-fn hann_window<T: Float>(len: usize) -> Vec<T> {
+/// Periodic Hann window `w_i = (1 - cos(2π i / len)) / 2` of `len` (at least 2) samples: one period
+/// of the raised cosine, `w_0 = 0` but `w_{len-1} > 0` (scipy's `get_window("hann", len)`). Its DFT
+/// is nonzero only at the bins `0, ±1`, so a sinusoid on a bin leaks into its two neighbours only,
+/// and the windows of segments with 50% overlap add up to a constant (for even `len`).
+pub(crate) fn hann_window<T: Float>(len: usize) -> Vec<T> {
     (0..len).map(|i| {
-        T::from(0.5).unwrap() * (T::one() - (T::from(2.0 * PI).unwrap() * T::from(i).unwrap() / T::from(len - 1).unwrap()).cos())
+        T::from(0.5).unwrap() * (T::one() - (T::from(2.0 * PI).unwrap() * T::from(i).unwrap() / T::from(len).unwrap()).cos())
     }).collect()
 }
 
 /// Splits each of the `signals` (of a common length, at least `nperseg`) into segments of `nperseg`
-/// (at least 2) samples with 50% overlap, removes the mean of each segment, applies the Hann window
+/// (at least 2) samples with 50% overlap, removes the mean of each segment, applies the periodic Hann window
 /// and takes the FFT. For each segment, in order of time, `accumulate` gets the FFTs of the signals
 /// (all `L` bins) and the density scale `1 / (fs Σ w_i^2)`.
 fn welch_segments<T, const M: usize>(

@@ -79,3 +79,22 @@ fn spectrogram_clamps_the_window_to_the_record() {
 fn spectrogram_rejects_a_non_positive_window() {
     spectrogram(&[0.0; 10], 1e-3, 0.0);
 }
+
+#[test]
+fn periodic_hann_leaks_a_sinusoid_on_a_bin_into_its_neighbours_only() {
+    // 100 Hz on bin 10 of a 100-sample window at 1 kHz: the periodic Hann window spreads it over
+    // bins 9, 10, 11 with powers 1 : 4 : 1, and nothing else
+    let (ts, n) = (1e-3, 1000);
+    let data: Vec<f64> = (0..n).map(|k| (2.0 * PI * 100.0 * k as f64 * ts).sin()).collect();
+    let s = spectrogram(&data, ts, 0.1);
+
+    for row in &s.psd {
+        let peak = row[10];
+        assert!((row[9] / peak - 0.25).abs() < 1e-9 && (row[11] / peak - 0.25).abs() < 1e-9);
+        for (k, p) in row.iter().enumerate() {
+            if !(9..=11).contains(&k) {
+                assert!(*p < 1e-12 * peak, "bin {k}: {p}");
+            }
+        }
+    }
+}

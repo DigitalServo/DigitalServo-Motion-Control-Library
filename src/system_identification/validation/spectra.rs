@@ -6,9 +6,10 @@ use num_traits::Float;
 use rustfft::{FftNum, FftPlanner};
 
 use super::{Validation, ValidationError};
+use crate::analysis::fft::hann_window;
 
 impl<T: Float + FftNum> Validation<T> {
-    /// Mean auto / cross spectra over the segments of `segment_len` samples (Hann window, 50 %
+    /// Mean auto / cross spectra over the segments of `segment_len` samples (periodic Hann window, 50 %
     /// overlap, mean removed per segment) of the residual `ε`, the input `u` and the output `y`,
     /// at the bins `0 ..= segment_len / 2`, and the equivalent number of independent segments.
     pub(super) fn spectra(&self, segment_len: usize) -> Result<Spectra<T>, ValidationError> {
@@ -21,10 +22,7 @@ impl<T: Float + FftNum> Validation<T> {
             return Err(ValidationError::TooFewSegments { segments, segment_len });
         }
 
-        let two_pi = T::from(2.0 * std::f64::consts::PI).unwrap();
-        let window: Vec<T> = (0..segment_len)
-            .map(|i| T::from(0.5).unwrap() * (T::one() - (two_pi * T::from(i).unwrap() / T::from(segment_len - 1).unwrap()).cos()))
-            .collect();
+        let window: Vec<T> = hann_window(segment_len);
         let fft = FftPlanner::new().plan_fft_forward(segment_len);
         let half = segment_len / 2;
         let zero = Complex::new(T::zero(), T::zero());

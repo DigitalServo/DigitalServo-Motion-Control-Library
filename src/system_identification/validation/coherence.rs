@@ -11,7 +11,7 @@ impl<T: Float + FftNum> Validation<T> {
     /// measured operation data, ...).
     ///
     /// The evaluated samples are split into segments of `segment_s` \[s\] (`segment_len =
-    /// segment_s / ts` samples, a whole number; Hann window, 50 % overlap, mean removed per
+    /// segment_s / ts` samples, a whole number; periodic Hann window, 50 % overlap, mean removed per
     /// segment), and with the DFTs `E_l(f)`, `U_l(f)` of segment `l`
     ///
     /// ```text
