@@ -75,31 +75,87 @@ impl<T: Float + AddAssign + MulAssign + ComplexField> InstrumentalVariable<T> {
 
 /// Iterative IV identification from the input / output series with the orders and input delay of
 /// `structure` (its parameters and history are not used): least squares first, then `iterations`
-/// IV steps, each with the previous estimate as the auxiliary model. One iteration already removes
-/// the bias of least squares; further ones reduce the variance. Returns the identified model
-/// (`transfer_function()` gives `G(z)`), or `None` if a step is singular.
+/// IV steps, each with the previous estimate as the auxiliary model (stabilized by
+/// `Arx::stabilized`, as the simulated `x̂` of an unstable one diverges). One iteration already
+/// removes the bias of least squares; further ones reduce the variance. Returns the identified
+/// model (`transfer_function()` gives `G(z)`), or `None` if a step is singular.
 pub fn identify<T>(u: &[T], y: &[T], structure: &Arx<T>, iterations: usize) -> Option<Arx<T>>
 where
     T: Float + AddAssign + MulAssign + ComplexField,
 {
-    let y_prev = |k: usize| if k > 0 { y[k - 1] } else { T::zero() };
-
-    let mut arx = structure.clone();
-    arx.clear_history();
-    let mut estimator = lsm::arx::LeastSquares::from_arx(arx);
-    for (k, (&uk, &yk)) in u.iter().zip(y).enumerate() {
-        estimator.add(uk, y_prev(k), yk);
-    }
-    estimator.identify()?;
-    let mut model = estimator.arx;
-
+    let mut model = least_squares(u, y, structure)?;
     for _ in 0..iterations {
-        let mut estimator = InstrumentalVariable::new(&model);
-        for (k, (&uk, &yk)) in u.iter().zip(y).enumerate() {
-            estimator.add(uk, y_prev(k), yk);
-        }
-        estimator.identify()?;
-        model = estimator.arx;
+        model = iv_step(u, y, &model.stabilized())?;
     }
     Some(model)
+}
+
+/// Simplified refined IV (SRIV) identification of the output-error model
+/// `y[k] = z^-nk B(z) / F(z) u[k] + e[k]`, `F(z) = 1 - a_1 z^-1 - ... - a_na z^-na`, from the
+/// input / output series of a system at rest at `k = 0`, with the orders and input delay of
+/// `structure` (its parameters and history are not used): least squares first, then `iterations`
+/// IV steps on the data prefiltered by `1 / F̂` of the previous estimate:
+///
+/// ```text
+/// u_f = u / F̂,  y_f = y / F̂                       (filters at rest at k = 0)
+/// θ = (Σ ζ_f φ_fᵀ)^-1 Σ ζ_f y_f[k]
+/// φ_f[k] = [y_f[k-1], ..., y_f[k-na], u_f[k-nk], ..., u_f[k-nk-nb]]
+/// ζ_f[k] = [x̂_f[k-1], ..., x̂_f[k-na], u_f[k-nk], ..., u_f[k-nk-nb]],  x̂_f = B̂ / F̂ u_f
+/// ```
+///
+/// At a fixed point `F̂ = F`, `ζ_f` is the gradient `ψ = ∂ŷ/∂θ` of the simulated output
+/// `ŷ = B / F u` and `y_f - φ_fᵀ θ` the simulation error `ε = y - ŷ`, so `Σ ψ ε = 0`: a stationary
+/// point of the output-error loss `Σ ε^2` (`oe::identify`). With white noise on the output the
+/// estimate is asymptotically efficient, unlike the plain IV of `identify`. Roots of `F̂` outside
+/// the unit circle are reflected inside (`Arx::stabilized`) for the filter and the auxiliary model.
+/// Returns `None` if a step is singular.
+pub fn identify_sriv<T>(u: &[T], y: &[T], structure: &Arx<T>, iterations: usize) -> Option<Arx<T>>
+where
+    T: Float + AddAssign + MulAssign + ComplexField,
+{
+    let mut model = least_squares(u, y, structure)?;
+    for _ in 0..iterations {
+        let stable = model.stabilized();
+        let f = stable.parameter.rows(0, stable.state_order());
+        let prefilter = |x: &[T]| {
+            let mut xf = x.to_vec();
+            for k in 0..xf.len() {
+                for (i, &fi) in f.iter().enumerate().take(k) {
+                    let v = xf[k - i - 1];
+                    xf[k] += fi * v;
+                }
+            }
+            xf
+        };
+        model = iv_step(&prefilter(u), &prefilter(y), &stable)?;
+    }
+    Some(model)
+}
+
+/// Least-squares estimate with the structure of `structure`.
+fn least_squares<T>(u: &[T], y: &[T], structure: &Arx<T>) -> Option<Arx<T>>
+where
+    T: Float + AddAssign + MulAssign + ComplexField,
+{
+    let mut arx = structure.clone();
+    arx.clear_history();
+    let mut buffer = lsm::arx::LeastSquares::from_arx(arx);
+    for (k, (&uk, &yk)) in u.iter().zip(y).enumerate() {
+        buffer.add(uk, if k > 0 { y[k - 1] } else { T::zero() }, yk);
+    }
+    buffer.identify()?;
+    Some(buffer.arx)
+}
+
+/// One IV step with `auxiliary` as the auxiliary model; `None` if singular or not finite.
+fn iv_step<T>(u: &[T], y: &[T], auxiliary: &Arx<T>) -> Option<Arx<T>>
+where
+    T: Float + AddAssign + MulAssign + ComplexField,
+{
+    let mut buffer = InstrumentalVariable::new(auxiliary);
+    for (k, (&uk, &yk)) in u.iter().zip(y).enumerate() {
+        buffer.add(uk, if k > 0 { y[k - 1] } else { T::zero() }, yk);
+    }
+    buffer.identify()?;
+    buffer.arx.parameter.iter().all(|v| v.is_finite()).then_some(buffer.arx)
 }

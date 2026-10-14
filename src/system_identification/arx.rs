@@ -3,9 +3,10 @@
 use std::ops::AddAssign;
 
 use nalgebra::{DVector, Scalar};
+use num_complex::Complex;
 use num_traits::Float;
 
-use crate::{Discrete, TransferFunction};
+use crate::{Discrete, Polynomial, TransferFunction, dka_method, vieta_formula};
 
 /// ARX model `y[k] = Σ_{i=1..na} a_i y[k-i] + Σ_{i=0..nb} b_i u[k-nk-i]`
 /// (`na = state_order`, `nb = input_order`, `nk = input_delay`, 0 unless set by `with_input_delay`):
@@ -109,6 +110,45 @@ impl<T: Float + AddAssign + Scalar> Arx<T> {
         self.regressor().iter().zip(self.parameter.iter()).fold(T::zero(), |acc, (&p, &t)| acc + p * t)
     }
 
+    /// Whether the roots of the denominator `1 - a_1 z^-1 - ... - a_na z^-na` are inside the unit
+    /// circle (Schur-Cohn step-down: every reflection coefficient `|k| < 1`).
+    pub fn is_stable(&self) -> bool {
+        let na = self.state_order;
+        let mut c: Vec<T> = std::iter::once(T::one()).chain(self.parameter.iter().take(na).map(|&a| -a)).collect();
+        if c.iter().any(|v| !v.is_finite()) {
+            return false;
+        }
+        while c.len() > 1 {
+            let n = c.len() - 1;
+            let k = c[n] / c[0];
+            if k.abs() >= T::one() {
+                return false;
+            }
+            c = (0..n).map(|i| (c[i] - k * c[n - i]) / (T::one() - k * k)).collect();
+        }
+        true
+    }
+
+    /// The model with the roots `r` of the denominator outside the unit circle reflected to
+    /// `1 / r̄` (same history and `b_i`; the gain changes, the shape of `|G(e^jω)|` does not).
+    pub fn stabilized(&self) -> Self {
+        let na = self.state_order;
+        if self.is_stable() {
+            return self.clone();
+        }
+        let c: Vec<Complex<T>> =
+            std::iter::once(T::one()).chain(self.parameter.iter().take(na).map(|&a| -a)).map(|v| Complex::new(v, T::zero())).collect();
+        let Some(roots) = dka_method(&Polynomial(c)) else {
+            return self.clone();
+        };
+        let reflected: Vec<Complex<T>> = roots.iter().map(|r| if r.norm() > T::one() { r.conj().inv() } else { *r }).collect();
+        let mut model = self.clone();
+        for (a, c) in model.parameter.iter_mut().zip(vieta_formula(&reflected).0.iter().skip(1)) {
+            *a = -c.re;
+        }
+        model
+    }
+
     /// `G(z)` of the parameters `θ`, i.e.
     ///
     /// ```text
@@ -132,5 +172,37 @@ impl<T: Float + AddAssign + Scalar> Arx<T> {
         numer.resize(order + 1, T::zero());
 
         TransferFunction::discrete(&numer, &denom)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn model(a: &[f64]) -> Arx<f64> {
+        let mut m = Arx::<f64>::new(a.len(), 0);
+        m.parameter.rows_mut(0, a.len()).copy_from_slice(a);
+        m.parameter[a.len()] = 1.0;
+        m
+    }
+
+    #[test]
+    fn schur_cohn_stability() {
+        // (1 - 0.9 z^-1)(1 - 0.8 z^-1), complex pair of radius √0.7, z = 1.1, z = -1, poles 1.1 and 0.8
+        assert!(model(&[1.7, -0.72]).is_stable());
+        assert!(model(&[1.5, -0.7]).is_stable());
+        assert!(!model(&[1.1]).is_stable());
+        assert!(!model(&[-1.0]).is_stable());
+        assert!(!model(&[1.9, -0.88]).is_stable());
+        assert!(model(&[]).is_stable());
+    }
+
+    #[test]
+    fn stabilized_reflects_unstable_roots() {
+        // Poles 1.25 and 0.8 -> 0.8 (double): 1 - 1.6 z^-1 + 0.64 z^-2
+        let m = model(&[2.05, -1.0]).stabilized();
+        assert!(m.is_stable());
+        assert!((m.parameter[0] - 1.6).abs() < 1e-12 && (m.parameter[1] + 0.64).abs() < 1e-12, "{:?}", m.parameter);
+        assert_eq!(m.parameter[2], 1.0);
     }
 }

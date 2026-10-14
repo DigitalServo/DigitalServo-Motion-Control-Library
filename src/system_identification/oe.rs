@@ -12,9 +12,34 @@ use crate::system_identification::iv;
 /// Starting point of the iterations of `identify`.
 #[derive(Clone, Debug)]
 pub enum Initialization<T> {
-    /// Least squares followed by the given number of IV iterations (`iv::arx::identify`).
+    /// Least squares (ARX, `iv::arx::identify` with no IV iteration). An unstable estimate is
+    /// stabilized (`Arx::stabilized`).
+    ///
+    /// Usable only with little noise on the output and a sampling not much faster than the plant:
+    /// least squares minimizes the equation error `F(q) y - B(q) u`, i.e. the output error weighted
+    /// by `|F(e^jω)|^2`, which emphasizes the high frequencies when the poles of `F` are near `z = 1`,
+    /// and the noise biases it further (a lightly damped pair often comes out as two real poles).
+    /// Otherwise the iterations end in a local minimum, e.g. for `ω0 / 2π = 20 Hz`, `ζ = 0.02`:
+    ///
+    /// ```text
+    /// ts      noise (std / std of y)   V of OE from least squares   from SRIV
+    /// 1 ms    2 %                      ≈ σ² (14 .. 40 iterations)   ≈ σ² (1 iteration)
+    /// 1 ms    17 %                     23 .. 31 σ²                  ≈ σ²
+    /// 0.1 ms  2 %                      ≈ 3000 σ²                    ≈ σ²
+    /// ```
+    ///
+    /// Kept for comparison; prefer `Sriv`.
+    LeastSquares,
+    /// Least squares followed by the given number of IV iterations (`iv::arx::identify`). An
+    /// unstable estimate is stabilized (`Arx::stabilized`).
     InstrumentalVariable(usize),
-    /// Initial model with the orders and input delay of the structure; `F` must be stable.
+    /// Least squares followed by the given number of SRIV iterations (`iv::arx::identify_sriv`):
+    /// its fixed point is a stationary point of the loss. Recommended: with the poles of `F` near
+    /// `z = 1` (lightly damped plants sampled fast) the plain IV estimate is often unstable or far
+    /// from the minimum. An unstable estimate is stabilized (`Arx::stabilized`).
+    Sriv(usize),
+    /// Initial model with the orders and input delay of the structure; `F` must be stable
+    /// (`UnstableInitialModel` otherwise: it is not stabilized).
     Model(Arx<T>),
 }
 
@@ -46,9 +71,27 @@ pub struct OeResult<T> {
     pub loss: T,
     /// Number of Gauss-Newton iterations done.
     pub iterations: usize,
-    /// Whether the relative parameter change fell below `tolerance` (or no step could decrease the
-    /// loss any further).
-    pub converged: bool,
+    /// Why the iterations stopped.
+    pub termination: Termination,
+}
+
+impl<T> OeResult<T> {
+    /// Whether the relative parameter change fell below `tolerance` (`Termination::Converged`).
+    pub fn converged(&self) -> bool {
+        self.termination == Termination::Converged
+    }
+}
+
+/// Why the iterations of `identify` stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Termination {
+    /// The relative parameter change of an accepted step fell below `tolerance`.
+    Converged,
+    /// No step decreased the loss up to `μ > 1e10`: the loss cannot be decreased further within
+    /// rounding (e.g. at a minimum reached before `tolerance`), but this is not a guarantee of one.
+    Stalled,
+    /// `max_iterations` steps were accepted without convergence.
+    MaxIterations,
 }
 
 /// Errors of `identify`.
@@ -66,32 +109,55 @@ pub enum OeError {
     Singular,
 }
 
-/// Prediction-error identification of the output-error model
+/// Prediction-error identification of the output-error (OE) model
 ///
 /// ```text
 /// y[k] = z^-nk B(z) / F(z) u[k] + e[k]
-/// ŷ[k] = Σ_{i=1..na} f_i ŷ[k-i] + Σ_{i=0..nb} b_i u[k-nk-i]
+/// F(z) = 1 - f_1 z^-1 - ... - f_na z^-na
+/// B(z) = b_0 + b_1 z^-1 + ... + b_nb z^-nb
 /// ```
 ///
-/// (`F(z) = 1 - f_1 z^-1 - ... - f_na z^-na`, `B(z) = b_0 + ... + b_nb z^-nb`; the orders and the
-/// input delay are those of `structure`, whose parameters and history are not used) from the input /
-/// output series of a system at rest at `k = 0` with white measurement noise `e` on the output.
-/// Unlike least squares (biased by the noise) and IV, it minimizes the simulation error
+/// from the input / output series. The orders `na` (often written `nf` for OE models), `nb` and the
+/// input delay `nk` are those of `structure`, whose parameters and history are not used.
+///
+/// Assumptions on the data:
+/// - The system is at rest at `k = 0` (`u[k] = ŷ[k] = 0` for `k < 0`). The transient of a nonzero
+///   initial state is fitted as model error; `options.evaluated_from` leaves it out of `V`.
+/// - Open loop: `e` is uncorrelated with `u`. This alone makes the estimate of `B / F` consistent,
+///   even for colored `e`, whereas least squares (ARX) is biased by the noise. If `e` is also white
+///   and Gaussian, the estimate is the maximum-likelihood one and asymptotically efficient, whereas
+///   IV is consistent but not minimum variance.
+///
+/// It minimizes the simulation error
 ///
 /// ```text
 /// V(θ) = 1/N Σ ε[k]^2,  ε[k] = y[k] - ŷ[k, θ],  θ = [f_1, ..., f_na, b_0, ..., b_nb]
+/// ŷ[k, θ] = Σ_{i=1..na} f_i ŷ[k-i] + Σ_{i=0..nb} b_i u[k-nk-i]
 /// ```
 ///
-/// by Levenberg-Marquardt iterations from `initialization`, with the gradient `ψ = ∂ŷ/∂θ` given by
-/// the regressor `φ̂[k] = [ŷ[k-1], ..., ŷ[k-na], u[k-nk], ..., u[k-nk-nb]]` filtered by `1 / F`:
+/// which is nonlinear in `θ` since the regressor `φ̂[k] = [ŷ[k-1], ..., ŷ[k-na], u[k-nk], ...,
+/// u[k-nk-nb]]` contains the simulated output. The gradient `ψ = ∂ŷ/∂θ` is `φ̂` filtered by `1 / F`,
+/// and each step solves the Levenberg-Marquardt equations (Gauss-Newton with Marquardt scaling):
 ///
 /// ```text
 /// ψ[k] = φ̂[k] + Σ_{i=1..na} f_i ψ[k-i]
 /// (H + μ diag H) Δθ = Σ ψ ε,  H = Σ ψ ψᵀ
 /// ```
 ///
-/// A step is accepted if `F` stays stable and `V` decreases (then `μ /= 10`), otherwise `μ *= 10`
-/// and the step is retried; the iterations stop when `‖Δθ‖ <= tolerance ‖θ‖` or `μ > 1e10`.
+/// A step `θ + Δθ` is accepted if `F` stays stable (needed by both `ŷ` and the filter of `ψ`) and
+/// `V` decreases, then `μ /= 10`; otherwise `μ *= 10` and the step is solved again with the same
+/// `H` and `Σ ψ ε`. The iterations stop when `‖Δθ‖ <= tolerance ‖θ‖` (`Termination::Converged`),
+/// when `μ > 1e10` (no step decreases `V`: `Termination::Stalled`, not a guarantee of a minimum),
+/// or after `max_iterations` accepted steps (`Termination::MaxIterations`).
+///
+/// `V` is non-convex and the iterations reach the local minimum near `initialization`, which should
+/// be a consistent estimate with a stable `F` (e.g. `Initialization::Sriv`, whose fixed point is a
+/// stationary point of `V`, or `InstrumentalVariable`; `LeastSquares` only with little noise). The
+/// least-squares, IV and SRIV estimates are stabilized, which keeps the iterations running but may
+/// start them far from the minimum.
+///
+/// At the minimum, `λ̂ H^-1` with `λ̂ = N V(θ̂) / (N - d)`, `d = na + nb + 1`, estimates the
+/// covariance of the parameters only if `e` is white (for colored `e`, a sandwich form is needed).
 pub fn identify<T>(
     u: &[T],
     y: &[T],
@@ -111,8 +177,12 @@ where
     }
 
     let mut model = match initialization {
+        Initialization::LeastSquares => iv::arx::identify(u, y, structure, 0).ok_or(OeError::Singular)?.stabilized(),
         Initialization::InstrumentalVariable(iterations) => {
-            iv::arx::identify(u, y, structure, *iterations).ok_or(OeError::Singular)?
+            iv::arx::identify(u, y, structure, *iterations).ok_or(OeError::Singular)?.stabilized()
+        }
+        Initialization::Sriv(iterations) => {
+            iv::arx::identify_sriv(u, y, structure, *iterations).ok_or(OeError::Singular)?.stabilized()
         }
         Initialization::Model(model) => {
             let (na, nb, nk) = (structure.state_order(), structure.input_order(), structure.input_delay());
@@ -123,7 +193,7 @@ where
         }
     };
     model.clear_history();
-    if !is_stable(&model) {
+    if !model.is_stable() {
         return Err(OeError::UnstableInitialModel);
     }
 
@@ -133,7 +203,7 @@ where
     let mu_max = T::from(1e10).unwrap();
     let mu_min = T::from(1e-12).unwrap();
     let mut iterations = 0;
-    let mut converged = false;
+    let mut termination = Termination::MaxIterations;
 
     'outer: while iterations < options.max_iterations {
         let (h, g) = normal_equations(u, y, &model, start);
@@ -146,7 +216,7 @@ where
 
             let mut trial = model.clone();
             trial.parameter += &delta;
-            let trial_loss = if is_stable(&trial) { simulation_loss(u, y, &trial, start) } else { T::infinity() };
+            let trial_loss = if trial.is_stable() { simulation_loss(u, y, &trial, start) } else { T::infinity() };
             if trial_loss < loss {
                 model = trial;
                 loss = trial_loss;
@@ -154,20 +224,20 @@ where
                 iterations += 1;
                 let tolerance2 = options.tolerance * options.tolerance;
                 if delta.dot(&delta) <= tolerance2 * model.parameter.dot(&model.parameter) {
-                    converged = true;
+                    termination = Termination::Converged;
                     break 'outer;
                 }
                 break;
             }
             mu *= T::from(10).unwrap();
             if mu > mu_max {
-                converged = true;
+                termination = Termination::Stalled;
                 break 'outer;
             }
         }
     }
 
-    Ok(OeResult { model, loss, iterations, converged })
+    Ok(OeResult { model, loss, iterations, termination })
 }
 
 /// Mean squared simulation error `Σ_{k >= start} (y - ŷ)^2 / (N - start)` of `model` (at rest at `k = 0`).
@@ -224,45 +294,4 @@ fn normal_equations<T: Float + AddAssign + MulAssign + ComplexField>(
         }
     }
     (h, g)
-}
-
-/// Whether the roots of `F(z) = 1 - f_1 z^-1 - ... - f_na z^-na` are inside the unit circle
-/// (Schur-Cohn step-down: every reflection coefficient `|k| < 1`).
-fn is_stable<T: Float + ComplexField>(model: &Arx<T>) -> bool {
-    let na = model.state_order();
-    let mut a: Vec<T> = std::iter::once(T::one()).chain(model.parameter.iter().take(na).map(|&f| -f)).collect();
-    if a.iter().any(|v| !Float::is_finite(*v)) {
-        return false;
-    }
-    while a.len() > 1 {
-        let n = a.len() - 1;
-        let k = a[n] / a[0];
-        if Float::abs(k) >= T::one() {
-            return false;
-        }
-        let next: Vec<T> = (0..n).map(|i| (a[i] - k * a[n - i]) / (T::one() - k * k)).collect();
-        a = next;
-    }
-    true
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn schur_cohn_stability() {
-        let model = |f: &[f64]| {
-            let mut m = Arx::<f64>::new(f.len(), 0);
-            m.parameter.rows_mut(0, f.len()).copy_from_slice(f);
-            m
-        };
-        // (1 - 0.9 z^-1)(1 - 0.8 z^-1), complex pair of radius √0.7, and z = 1.1, z = -1
-        assert!(is_stable(&model(&[1.7, -0.72])));
-        assert!(is_stable(&model(&[1.5, -0.7])));
-        assert!(!is_stable(&model(&[1.1])));
-        assert!(!is_stable(&model(&[-1.0])));
-        assert!(!is_stable(&model(&[1.9, -0.88]))); // poles 1.1, 0.8
-        assert!(is_stable(&model(&[])));
-    }
 }
