@@ -60,9 +60,16 @@ impl<T: Float, U> FrequencyCharacteristics<T, U> {
     }
 }
 
-impl<T: Float + FloatConst, U: FrequencyUnit> FrequencyCharacteristics<T, U> {
-    /// Convert each response as `From<FrequencyResponse>` does (gain in dB, phase in `(-π, π]`, not unwrapped).
+impl<T: Float + FloatConst> FrequencyCharacteristics<T, Hz> {
+    /// Convert each response as `From<FrequencyResponse>` does (gain in dB, phase in `(-π, π]`, not unwrapped), with the frequency in Hz.
     pub fn from_responses(responses: &[FrequencyResponse<T>]) -> Vec<Self> {
+        responses.iter().map(|&r| r.into()).collect()
+    }
+}
+
+impl<T: Float + FloatConst> FrequencyCharacteristics<T, RadPerSec> {
+    /// `from_responses` with the frequency in rad/s.
+    pub fn from_responses_rad_per_sec(responses: &[FrequencyResponse<T>]) -> Vec<Self> {
         responses.iter().map(|&r| r.into()).collect()
     }
 }
