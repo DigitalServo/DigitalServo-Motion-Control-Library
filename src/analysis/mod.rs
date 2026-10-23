@@ -60,6 +60,13 @@ impl<T: Float, U> FrequencyCharacteristics<T, U> {
     }
 }
 
+impl<T: Float + FloatConst, U: FrequencyUnit> FrequencyCharacteristics<T, U> {
+    /// Convert each response as `From<FrequencyResponse>` does (gain in dB, phase in `(-π, π]`, not unwrapped).
+    pub fn from_responses(responses: &[FrequencyResponse<T>]) -> Vec<Self> {
+        responses.iter().map(|&r| r.into()).collect()
+    }
+}
+
 impl<T: Float, U> Default for FrequencyCharacteristics<T, U> {
     fn default() -> Self {
         Self::new()

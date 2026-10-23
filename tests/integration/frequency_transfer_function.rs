@@ -65,6 +65,11 @@ fn test_frequency_transfer_function() {
         let rad = FrequencyCharacteristics::<f64, RadPerSec>::from(*r);
         assert_eq!(rad.frequency, r.omega);
     }
+    let from_vec = FrequencyCharacteristics::<f64>::from_responses(&nyq);
+    assert_eq!(from_vec.len(), bode_dw.len());
+    for (a, c) in from_vec.iter().zip(&bode_dw) {
+        assert!((a.gain - c.gain).abs() < 1e-12 && (a.phase - c.phase).abs() < 1e-12);
+    }
 
     // TransferFunctionWithDelay plots like the series connection above
     let tf_d = TransferFunctionWithDelay::new(tf_s.clone(), l);
