@@ -1,5 +1,5 @@
 use dsmc::discretize::Tustin;
-use dsmc::{BodeDiagramPlotter, FrequencyTransferFunction, Hz, NyquistPlotter, RadPerSec, TransferFunctionWithDelay, tf};
+use dsmc::{BodeDiagramPlotter, FrequencyCharacteristics, FrequencyTransferFunction, Hz, NyquistPlotter, RadPerSec, TransferFunctionWithDelay, tf};
 use num_complex::Complex;
 
 #[test]
@@ -55,6 +55,16 @@ fn test_frequency_transfer_function() {
 
     let nyq = NyquistPlotter::<f64>::new(0.1, 100.0, 0.1).plot(&g_d);
     assert_eq!(nyq.len(), b.len());
+
+    // FrequencyResponse -> FrequencyCharacteristics: dB gain, wrapped phase, frequency in U
+    let bode_dw = BodeDiagramPlotter::<f64>::new(0.1, 100.0, 0.1, true).unwrap_phase(false).plot(&g_d);
+    for (r, c) in nyq.iter().zip(&bode_dw) {
+        let hz: FrequencyCharacteristics<f64> = (*r).into();
+        assert!((hz.frequency - c.frequency).abs() < 1e-12);
+        assert!((hz.gain - c.gain).abs() < 1e-12 && (hz.phase - c.phase).abs() < 1e-12);
+        let rad = FrequencyCharacteristics::<f64, RadPerSec>::from(*r);
+        assert_eq!(rad.frequency, r.omega);
+    }
 
     // TransferFunctionWithDelay plots like the series connection above
     let tf_d = TransferFunctionWithDelay::new(tf_s.clone(), l);

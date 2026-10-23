@@ -17,7 +17,7 @@ pub use frequency_unit::{FrequencyUnit, Hz, RadPerSec};
 pub use nyquist::NyquistPlotter;
 pub use statistics::Statistics;
 
-use num_traits::Float;
+use num_traits::{Float, FloatConst};
 use serde::{ser::SerializeStruct, Serialize, Serializer};
 
 /// Complex frequency response `value = G(jω)` at angular frequency `omega` [rad/s].
@@ -63,5 +63,17 @@ impl<T: Float, U> FrequencyCharacteristics<T, U> {
 impl<T: Float, U> Default for FrequencyCharacteristics<T, U> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Gain in dB and phase in `(-π, π]`; `omega` [rad/s] is converted into `U`.
+impl<T: Float + FloatConst, U: FrequencyUnit> From<FrequencyResponse<T>> for FrequencyCharacteristics<T, U> {
+    fn from(response: FrequencyResponse<T>) -> Self {
+        Self {
+            frequency: U::from_rad_per_sec(response.omega),
+            gain: T::from(20.0).unwrap() * response.value.norm().log10(),
+            phase: response.value.arg(),
+            _unit: PhantomData,
+        }
     }
 }
