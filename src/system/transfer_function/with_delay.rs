@@ -46,6 +46,19 @@ impl<T> TransferFunctionWithDelay<T> {
 }
 
 impl<T: Float> TransferFunctionWithDelay<T> {
+    /// The model `G(s) = e^(-delay s) R(s) / s^q` (`q = integrators`) from its rational part
+    /// `rational = R = B / A`, e.g. fitted to the responses of
+    /// [`FrequencyResponses::extract_rational_part`](crate::FrequencyResponses::extract_rational_part)
+    /// with the same `integrators` and `delay`: the denominator times `s^q` (`q` trailing zero
+    /// coefficients), and the delay.
+    pub fn from_rational_part(rational: TransferFunction<T, Continuous>, integrators: usize, delay: T) -> Self {
+        let mut denominator = rational.denominator.0;
+        denominator.resize(denominator.len() + integrators, T::zero());
+        Self::new(TransferFunction::from_polynomials(rational.numerator, Polynomial(denominator)), delay)
+    }
+}
+
+impl<T: Float> TransferFunctionWithDelay<T> {
     /// `G(jω) = e^(-jω delay) tf(jω)`.
     pub fn frequency_response(&self, omega: T) -> Complex<T> {
         let s = Complex::new(T::zero(), omega);

@@ -7,13 +7,13 @@ use rustfft::{num_complex::Complex, FftNum, FftPlanner};
 
 use serde::Serialize;
 
-use crate::analysis::{FrequencyResponse, FrequencyResponseWithCoherence, FrequencyResponsesWithCoherence};
+use crate::analysis::{FrequencyResponse, FrequencyResponseWithCoherence, FrequencyResponses, FrequencyResponsesWithCoherence};
 
 use std::f64::consts::PI;
 
 /// Single-sided spectrum of `data` sampled with period `ts`: the first `N / 2` FFT bins, scaled by `1 / N`,
 /// at `omega = 2π k / (N ts)` \[rad/s\].
-pub fn fft<T: FftNum + Float>(data: &[T], ts: T) -> Vec<FrequencyResponse<T>> {
+pub fn fft<T: FftNum + Float>(data: &[T], ts: T) -> FrequencyResponses<T> {
 
     let data_len: usize = data.len();
     let (domega, inv_data_len) = match T::from(data.len()) {
@@ -22,7 +22,7 @@ pub fn fft<T: FftNum + Float>(data: &[T], ts: T) -> Vec<FrequencyResponse<T>> {
             let domega = T::from(2.0 * PI).unwrap() * dfreq;
             (domega, T::one() / len)
         },
-        None => return vec![],
+        None => return FrequencyResponses::default(),
     };
 
     let mut planner: FftPlanner<T> = FftPlanner::new();

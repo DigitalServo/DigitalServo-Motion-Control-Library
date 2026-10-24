@@ -388,6 +388,139 @@ fn test_vector_fitting_welch_measurement() {
     check_real_fit(&result, &[Complex64::new(-10.0, 30.0), Complex64::new(-10.0, -30.0)], 0.05);
 }
 
+/// The measurement of `test_vector_fitting_welch_measurement` with the zero-order hold
+/// compensated: against `G(jω)` the bins are off by the leakage and the noise only (median 23 %
+/// before), and Sanathanan-Koerner (relative error) finds the poles `-10 ± 30j` and the gain
+/// within a few percent, where the uncompensated bins pull them off.
+#[test]
+fn test_compensate_zero_order_hold_welch() {
+    use dsmc::fft::welch;
+    use dsmc::signal::excitation::flat_output_multisine;
+    use dsmc::system_identification::frequency_response::levy;
+    use dsmc::{zero_order_hold_response, FrequencyResponses};
+    use dsmc::TransferFunctionWithDelay;
+    use num_complex::Complex64;
+
+    let (ts, period) = (1e-3, 1024);
+    let g = TransferFunction::continuous(&[1000.0], &[1.0, 20.0, 1000.0]);
+    let harmonics: Vec<usize> = (1..=150).collect();
+    let u: Vec<f64> = flat_output_multisine(&g, 4.0 * period as f64 * ts, ts, 1.0 / (period as f64 * ts), &harmonics, 7).unwrap();
+    let y0 = TransferFunctionWithDelay::from(&g).simulate(ts, &u).unwrap();
+    let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mut gaussian = move || {
+        let mut uniform = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            ((state >> 11) as f64 + 0.5) / (1u64 << 53) as f64
+        };
+        (-2.0 * uniform().ln()).sqrt() * (2.0 * std::f64::consts::PI * uniform()).cos()
+    };
+    let scale = 0.03 * (y0.iter().map(|v| v * v).sum::<f64>() / y0.len() as f64).sqrt();
+    let y: Vec<f64> = y0.iter().map(|v| v + scale * gaussian()).collect();
+    let response: FrequencyResponses<f64> = welch(&u, &y, ts, 4).into();
+    let measured: FrequencyResponses<f64> = response.into_iter().skip(1).take(150).collect();
+    let compensated = measured.compensate_zero_order_hold(ts);
+
+    // The hold: half-sample delay and droop, 2/π at the Nyquist frequency
+    let nyquist = zero_order_hold_response(std::f64::consts::PI / ts, ts);
+    assert!((nyquist - Complex64::new(0.0, -2.0 / std::f64::consts::PI)).norm() < 1e-15);
+    for (m, c) in measured.iter().zip(&compensated) {
+        assert_eq!(m.omega, c.omega);
+        assert!((c.value * zero_order_hold_response(c.omega, ts) - m.value).norm() < 1e-12 * m.value.norm());
+    }
+
+    let truth = g.frequency_transfer_function();
+    let median = |samples: &[dsmc::FrequencyResponse<f64>]| {
+        let mut errors: Vec<f64> = samples.iter().map(|s| (s.value / truth.response(s.omega) - 1.0).norm()).collect();
+        errors.sort_by(f64::total_cmp);
+        errors[errors.len() / 2]
+    };
+    println!("median error against G: measured {:.3}, compensated {:.3}", median(&measured), median(&compensated));
+    assert!(median(&measured) > 0.15);
+    assert!(median(&compensated) < 0.05);
+
+    let opts = levy::SanathananKoernerOptions::default();
+    let fit = |samples: &[dsmc::FrequencyResponse<f64>]| -> TransferFunction<f64> { levy::sanathanan_koerner_relative(samples, 2, 0, &opts).unwrap().into() };
+    let pole_error = |tf: &TransferFunction<f64>| {
+        let pole = tf.pz_map().poles.iter().copied().find(|p| p.im > 0.0).unwrap();
+        (pole - Complex64::new(-10.0, 30.0)).norm() / Complex64::new(-10.0, 30.0).norm()
+    };
+    let (raw, corrected) = (fit(&measured), fit(&compensated));
+    println!("pole error: measured {:.3} ({:?}), compensated {:.3} ({:?})", pole_error(&raw), raw, pole_error(&corrected), corrected);
+    assert!(pole_error(&corrected) < 0.05);
+    assert!(pole_error(&corrected) < pole_error(&raw));
+    assert!((corrected.numerator[0] / corrected.denominator[0] / 1000.0 - 1.0).abs() < 0.05);
+}
+
+/// `e^(-0.003 s) 1000 / (s (s^2 + 20 s + 1000))` behind a zero-order hold at 1 kHz, measured by
+/// Welch's method (as `test_compensate_zero_order_hold_welch`): with the hold compensated and the
+/// rational part extracted for `q = 1` and the delay, Sanathanan-Koerner (relative error) of
+/// orders (2, 0) finds the resonance within a few percent and `from_rational_part` gives
+/// the model with the integrator and the delay. Without extracting, a rational model of orders
+/// (3, 0) has to fit the delay of 3 ms (0.6 rad at 30 Hz), and its resonance is far off.
+#[test]
+fn test_extract_rational_part_welch() {
+    use dsmc::fft::welch;
+    use dsmc::signal::excitation::multisine;
+    use dsmc::system_identification::frequency_response::levy;
+    use dsmc::{FrequencyResponses, RationalPartError};
+    use dsmc::TransferFunctionWithDelay;
+    use num_complex::Complex64;
+
+    let (ts, period, delay) = (1e-3, 1024, 0.003);
+    let plant = TransferFunctionWithDelay::new(TransferFunction::continuous(&[1000.0], &[1.0, 20.0, 1000.0, 0.0]), delay);
+    let f0 = 1.0 / (period as f64 * ts);
+    let harmonics: Vec<usize> = (1..=100).collect();
+    let u: Vec<f64> = multisine(4.0 * period as f64 * ts, ts, f0, &harmonics, |k| 1.0 / plant.frequency_response(2.0 * std::f64::consts::PI * f0 * k as f64).norm(), 7).unwrap();
+    let y0 = plant.simulate(ts, &u).unwrap();
+    let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mut gaussian = move || {
+        let mut uniform = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            ((state >> 11) as f64 + 0.5) / (1u64 << 53) as f64
+        };
+        (-2.0 * uniform().ln()).sqrt() * (2.0 * std::f64::consts::PI * uniform()).cos()
+    };
+    let scale = 0.01 * (y0.iter().map(|v| v * v).sum::<f64>() / y0.len() as f64).sqrt();
+    let y: Vec<f64> = y0.iter().map(|v| v + scale * gaussian()).collect();
+    let measured = welch(&u, &y, ts, 4);
+    let bins: FrequencyResponses<f64> = measured.coherent_bins(0.9);
+    let compensated = bins.compensate_zero_order_hold(ts);
+    // The same bins compensated before the selection (the coherence is kept)
+    let compensated_first = measured.compensate_zero_order_hold(ts).coherent_bins(0.9);
+    assert_eq!(compensated_first.len(), compensated.len());
+    assert!(compensated_first.iter().zip(compensated.iter()).all(|(a, b)| a.omega == b.omega && a.value == b.value));
+
+    let rational = compensated.extract_rational_part(1, delay).unwrap();
+    let opts = levy::SanathananKoernerOptions::default();
+    let r: TransferFunction<f64> = levy::sanathanan_koerner_relative(&rational, 2, 0, &opts).unwrap().into();
+    let model = TransferFunctionWithDelay::from_rational_part(r, 1, delay);
+    println!("{} bins; model {:?}", bins.len(), model);
+    assert_eq!(model.delay, delay);
+    let a = &model.tf.denominator;
+    assert_eq!((a.len(), a[3]), (4, 0.0));
+    let resonance = |tf: &TransferFunction<f64>| tf.pz_map().poles.iter().copied().filter(|p| p.im > 0.0).fold(Complex64::new(0.0, 0.0), |_, p| p);
+    let truth = Complex64::new(-10.0, (1000.0f64 - 100.0).sqrt());
+    let error = |tf: &TransferFunction<f64>| (resonance(tf) - truth).norm() / truth.norm();
+    assert!(error(&model.tf) < 0.05, "{:?}", resonance(&model.tf));
+    assert!((model.tf.numerator[0] / a[0] / 1000.0 - 1.0).abs() < 0.05);
+
+    // Without extracting: the delay is fitted by the rational model
+    let plain: TransferFunction<f64> = levy::sanathanan_koerner_relative(&compensated, 3, 0, &opts).unwrap().into();
+    println!("resonance: extracted {:.2}, plain {:.2} (truth {truth:.2})", resonance(&model.tf), resonance(&plain));
+    assert!(error(&plain) > 3.0 * error(&model.tf));
+
+    // DC with an integrator, a non-finite delay
+    let mut with_dc = compensated.clone();
+    with_dc.0.insert(0, dsmc::FrequencyResponse { omega: 0.0, value: Complex64::new(1.0, 0.0) });
+    assert_eq!(with_dc.extract_rational_part(1, delay).unwrap_err(), RationalPartError::ZeroFrequencyWithIntegrators { index: 0 });
+    assert!(with_dc.extract_rational_part(0, delay).is_ok());
+    assert_eq!(compensated.extract_rational_part(1, f64::NAN).unwrap_err(), RationalPartError::InvalidDelay);
+}
+
 /// `identify_weighted` by `1 / |G|` (relative error) on a response over three decades of gain:
 /// the high-frequency bins, which hardly count in the absolute error, are fitted as well as the
 /// low ones. `identify_relative` gives the same fit; a zero response and invalid weights are

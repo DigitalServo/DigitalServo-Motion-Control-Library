@@ -257,16 +257,7 @@ impl<T: Float> SmlData<T> {
     /// `Y = G(jω) h Ū` (up to aliasing, small where `|G|` rolls off well below the Nyquist
     /// frequency).
     pub fn compensate_zero_order_hold(&self, ts: T) -> Self {
-        let two = T::one() + T::one();
-        let lines = self
-            .lines
-            .iter()
-            .map(|l| {
-                let x = l.omega * ts / two;
-                let sinc = if x == T::zero() { T::one() } else { Float::sin(x) / x };
-                l.scaled(Complex::new(T::zero(), -x).exp() * sinc, Complex::new(T::one(), T::zero()))
-            })
-            .collect();
+        let lines = self.lines.iter().map(|l| l.scaled(crate::zero_order_hold_response(l.omega, ts), Complex::new(T::one(), T::zero()))).collect();
         Self { lines, periods: self.periods }
     }
 

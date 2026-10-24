@@ -1,5 +1,10 @@
 //! Identification of a continuous-time transfer function `G(s)` from frequency-response samples,
 //! and of `G(s)` or `G(z)` from the input / output spectra of periodic data (`sml`).
+//!
+//! A measured response (`FrequencyResponses`, e.g. `welch(..).coherent_bins(..)`) is prepared for
+//! `levy` and `vector_fitting` by its methods: `compensate_zero_order_hold` for a held input, and
+//! `extract_rational_part` for known integrators and a dead time; the fitted rational part gives
+//! the model by `TransferFunctionWithDelay::from_rational_part`.
 
 pub mod levy;
 pub mod sml;

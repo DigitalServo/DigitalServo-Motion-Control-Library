@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use num_traits::{float::FloatConst, Float, ToPrimitive};
 
-use super::{FrequencyResponse, FrequencyTransferFunction, FrequencyUnit, Hz};
+use super::{FrequencyResponse, FrequencyResponses, FrequencyTransferFunction, FrequencyUnit, Hz};
 
 /// Nyquist plot over `[freq_from, freq_to)` with step `dfreq`, all given in `U` (`Hz` by default).
 pub struct NyquistPlotter<T, U = Hz> {
@@ -30,7 +30,7 @@ where
     /// Calculate the vector locus of a frequency transfer function
     /// (or anything convertible into one, such as a continuous `TransferFunction`).
     /// `omega` of each point is in rad/s regardless of `U`.
-    pub fn plot<G: Into<FrequencyTransferFunction<T>>>(&self, g: G) -> Vec<FrequencyResponse<T>> {
+    pub fn plot<G: Into<FrequencyTransferFunction<T>>>(&self, g: G) -> FrequencyResponses<T> {
         let g = g.into();
         (0..self.data_len)
             .map(|i| {
