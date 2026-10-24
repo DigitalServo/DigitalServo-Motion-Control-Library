@@ -428,7 +428,7 @@ fn initial_blocks<T: Float>(samples: &[FrequencyResponse<T>], n_poles: usize) ->
 ///
 /// `φ` the real basis of the blocks. The columns are scaled to unit norm before the SVD solve. A
 /// matrix that is not finite (a pole on a sample `jω`) is `SingularMatrix`; the SVD is limited to
-/// `6 k^2` iterations (`k` the number of columns, the limit of LAPACK's `dbdsqr`), beyond which it
+/// `6 k^2` iterations (`k` the number of columns, the limit of LAPACK's `dbdsqr`; `bounded_svd`), beyond which it
 /// is `SvdNotConverged` (nalgebra's `svd` iterates without limit, forever on a matrix with NaN).
 #[allow(clippy::type_complexity)]
 fn least_squares<T: Float + RealField>(
@@ -484,9 +484,7 @@ fn least_squares<T: Float + RealField>(
     for (j, &sc) in scale.iter().enumerate() {
         a.column_mut(j).unscale_mut(sc);
     }
-    let max_niter = 6 * columns * columns;
-    let x = a
-        .try_svd(true, true, T::default_epsilon(), max_niter)
+    let x = super::bounded_svd(a, true, true)
         .ok_or(VectorFittingError::SvdNotConverged)?
         .solve(&b, T::from(1e-12).unwrap())
         .map_err(|_| VectorFittingError::SingularMatrix)?;

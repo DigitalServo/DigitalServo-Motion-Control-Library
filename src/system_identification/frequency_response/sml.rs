@@ -54,7 +54,8 @@ pub enum SmlError {
     /// The sampling period is not positive and finite.
     #[error("invalid sampling period")]
     InvalidSamplingPeriod,
-    /// A least-squares problem is singular, or no initial model has a finite cost.
+    /// A least-squares problem is singular, not finite or its SVD does not converge, or no initial
+    /// model has a finite cost.
     #[error("singular least-squares problem (check orders and data)")]
     Singular,
 }
@@ -535,7 +536,7 @@ fn fit<T: Float + RealField>(data: &SmlData<T>, basis: &[LineBasis<T>], fixed: u
             }
         }
         let scale = scale_columns(&mut lhs);
-        let Ok(x) = lhs.svd(true, true).solve(&rhs, T::from(1e-14).unwrap()) else {
+        let Some(Ok(x)) = super::bounded_svd(lhs, true, true).map(|svd| svd.solve(&rhs, T::from(1e-14).unwrap())) else {
             break;
         };
         let theta: Vec<T> = x.iter().zip(&scale).map(|(&v, &sc)| v / sc).collect();
@@ -575,7 +576,9 @@ fn fit<T: Float + RealField>(data: &SmlData<T>, basis: &[LineBasis<T>], fixed: u
             return Err(SmlError::Singular);
         };
         let scale = scale_columns(&mut j);
-        let svd = j.svd(true, true);
+        let Some(svd) = super::bounded_svd(j, true, true) else {
+            return Err(SmlError::Singular);
+        };
         let (u, v_t) = (svd.u.unwrap(), svd.v_t.unwrap());
         let ur = u.transpose() * &r;
         loop {
@@ -609,7 +612,9 @@ fn fit<T: Float + RealField>(data: &SmlData<T>, basis: &[LineBasis<T>], fixed: u
         return Err(SmlError::Singular);
     };
     let scale = scale_columns(&mut j);
-    let svd = j.svd(false, true);
+    let Some(svd) = super::bounded_svd(j, false, true) else {
+        return Err(SmlError::Singular);
+    };
     let v_t = svd.v_t.unwrap();
     let mm = T::from(data.periods).unwrap();
     let factor = (mm - T::from(2).unwrap()) / (mm - T::from(3).unwrap()) / T::from(2).unwrap();

@@ -40,7 +40,7 @@ pub fn chirp<T: Float>(
 /// ```
 ///
 /// Quasi-static: the spectrum follows `|F|` only if the sweep is slow, i.e. the envelope changes
-/// little within the time constants of `F`. Across a resonance of half-power bandwidth `Δf` [Hz]
+/// little within the time constants of `F`. Across a resonance of half-power bandwidth `Δf` \[Hz\]
 /// the sweep rate must be well below `Δf^2`: `|f1 - f0| / tlen << Δf^2` (the line takes `Δf / rate`
 /// to cross the resonance, which must be long against its decay time `1 / (π Δf)`). A faster sweep
 /// smears the shape (the modulated envelope spreads the power to the neighbouring frequencies),
