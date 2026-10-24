@@ -206,8 +206,9 @@ fn test_sanathanan_koerner_convergence() {
     let one = levy::sanathanan_koerner_identification(&samples, 2, 0, &SanathananKoernerOptions { max_iter: 1, ..SanathananKoernerOptions::default() }).unwrap();
     let levy = levy::identify(&samples, 2, 0).unwrap();
     assert!(!one.converged && one.iterations == 1 && one.changes.is_empty());
-    assert_eq!(one.transfer_function.denominator.0, levy.denominator.0);
-    assert_eq!(one.transfer_function.numerator.0, levy.numerator.0);
+    let one_tf: TransferFunction<f64> = one.clone().into();
+    assert_eq!(one_tf.denominator.0, levy.denominator.0);
+    assert_eq!(one_tf.numerator.0, levy.numerator.0);
     let none = levy::sanathanan_koerner_identification(&samples, 2, 0, &SanathananKoernerOptions { max_iter: 0, ..SanathananKoernerOptions::default() });
     assert!(matches!(none, Err(LevyIdentificationError::IterationError)));
 

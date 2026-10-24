@@ -171,7 +171,7 @@ fn test_sml_continuous_wide_band() {
     let fast_pole = |tf: &TransferFunction<f64>| tf.pz_map().poles.iter().map(|p| p.norm()).fold(0.0f64, f64::max);
     let slow_pole = |tf: &TransferFunction<f64>| tf.pz_map().poles.iter().map(|p| p.norm()).fold(f64::INFINITY, f64::min);
     let samples: Vec<FrequencyResponse<f64>> = data.lines.iter().map(|l| FrequencyResponse { omega: l.omega, value: l.y / l.u }).collect();
-    let sk = levy::sanathanan_koerner_identification(&samples, 2, 0, &levy::SanathananKoernerOptions::default()).unwrap().transfer_function;
+    let sk: TransferFunction<f64> = levy::sanathanan_koerner_identification(&samples, 2, 0, &levy::SanathananKoernerOptions::default()).unwrap().into();
     let error = |p: f64, truth: f64| (p / truth - 1.0).abs();
     println!("fast pole: SML {:.3}, SK {:.3}; slow pole: SML {:.4}, SK {:.4}", fast_pole(&result.model), fast_pole(&sk), slow_pole(&result.model), slow_pole(&sk));
     assert!(error(fast_pole(&result.model), 100.0) < 0.03 && error(slow_pole(&result.model), 1.0) < 0.03);

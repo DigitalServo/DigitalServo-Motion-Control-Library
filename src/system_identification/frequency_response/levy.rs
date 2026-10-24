@@ -51,7 +51,7 @@ impl<T: Float> Default for SanathananKoernerOptions<T> {
     }
 }
 
-/// Result of the Sanathanan-Koerner iteration.
+/// Result of the Sanathanan-Koerner iteration. Converts into its `TransferFunction` with `into`.
 #[derive(Debug, Clone)]
 pub struct SanathananKoernerResult<T> {
     /// Estimate `G(s) = B(s) / A(s)` of the last step (`A` monic).
@@ -63,6 +63,13 @@ pub struct SanathananKoernerResult<T> {
     /// Relative change of the denominator at each step from the second,
     /// `max_i |A_k(jω_i) - A_{k-1}(jω_i)| / |A_{k-1}(jω_i)|`.
     pub changes: Vec<T>,
+}
+
+/// The estimate of the last step, without the iteration record.
+impl<T> From<SanathananKoernerResult<T>> for TransferFunction<T, Continuous> {
+    fn from(val: SanathananKoernerResult<T>) -> Self {
+        val.transfer_function
+    }
 }
 
 /// Levy's method (linear least squares on `B(jω) - G(jω) A(jω)` for `G(s) = B(s) / A(s)`):
