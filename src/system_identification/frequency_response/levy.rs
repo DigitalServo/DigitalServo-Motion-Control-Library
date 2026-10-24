@@ -23,6 +23,13 @@ pub enum LevyIdentificationError {
     /// The previous estimate has a different denominator order.
     #[error("Order of previous result does not match current order")]
     OrderMismatch,
+    /// The weights are not one per sample, or not all finite and non-negative.
+    #[error("Invalid weights: {len} for {samples} samples, all finite and non-negative needed")]
+    InvalidWeights { len: usize, samples: usize },
+    /// A sample whose response is zero or not finite (`1 / |G|` not finite and positive), for the
+    /// relative error of `sanathanan_koerner_relative`.
+    #[error("Zero or non-finite response at sample {index}: no relative error")]
+    ZeroResponse { index: usize },
 }
 
 /// Levy's method (linear least squares on `B(jω) - G(jω) A(jω)` for `G(s) = B(s) / A(s)`):
@@ -36,7 +43,7 @@ pub fn identify<T: Float + ComplexField + AddAssign + MulAssign>(
     denom_order: usize,
     numer_order: usize,
 ) -> Result<TransferFunction<T, Continuous>, LevyIdentificationError> {
-    levy_step(samples, numer_order, denom_order, None)
+    levy_step(samples, None, numer_order, denom_order, None)
 }
 
 /// Levy's method followed by Sanathanan-Koerner reweighting, `iterations` steps in total
@@ -49,9 +56,60 @@ pub fn sanathanan_koerner_identification<T: Float + ComplexField + AddAssign + M
     numer_order: usize,
     iterations: usize,
 ) -> Result<TransferFunction<T, Continuous>, LevyIdentificationError> {
+    iterate(samples, None, denom_order, numer_order, iterations)
+}
+
+/// `sanathanan_koerner_identification` with one finite, non-negative weight `w_i` per sample: each
+/// step minimizes `Σ w_i^2 |G_i A(jω_i) - B(jω_i)|^2 / |A_prev(jω_i)|^2` (`A_prev = 1` in the
+/// first step), which approaches the weighted error `Σ w_i^2 |G_i - B(jω_i) / A(jω_i)|^2` as the
+/// iteration converges. E.g. `w_i = 1 / |G_i|` for the relative error
+/// (`sanathanan_koerner_relative`), or the inverse standard deviation of each bin.
+///
+/// Argument order: `denom_order` (`n`) before `numer_order` (`m`), as in `identify`.
+pub fn sanathanan_koerner_weighted<T: Float + ComplexField + AddAssign + MulAssign>(
+    samples: &[FrequencyResponse<T>],
+    weights: &[T],
+    denom_order: usize,
+    numer_order: usize,
+    iterations: usize,
+) -> Result<TransferFunction<T, Continuous>, LevyIdentificationError> {
+    if weights.len() != samples.len() || weights.iter().any(|w| !(Float::is_finite(*w) && *w >= T::zero())) {
+        return Err(LevyIdentificationError::InvalidWeights { len: weights.len(), samples: samples.len() });
+    }
+    iterate(samples, Some(weights), denom_order, numer_order, iterations)
+}
+
+/// `sanathanan_koerner_identification` by the relative error: `sanathanan_koerner_weighted` with
+/// `w_i = 1 / |G_i|`, so that every sample counts alike whatever its gain; as the iteration
+/// converges, each step approaches `Σ |G_i - B(jω_i) / A(jω_i)|^2 / |G_i|^2`. A sample with
+/// `G_i = 0` (e.g. an unexcited bin of [`welch`](crate::fft::welch)) or a non-finite response has
+/// no relative error: `ZeroResponse`.
+///
+/// Argument order: `denom_order` (`n`) before `numer_order` (`m`), as in `identify`.
+pub fn sanathanan_koerner_relative<T: Float + ComplexField + AddAssign + MulAssign>(
+    samples: &[FrequencyResponse<T>],
+    denom_order: usize,
+    numer_order: usize,
+    iterations: usize,
+) -> Result<TransferFunction<T, Continuous>, LevyIdentificationError> {
+    let weights: Vec<T> = samples.iter().map(|s| T::one() / Float::hypot(s.value.re, s.value.im)).collect();
+    if let Some(index) = weights.iter().position(|w| !(Float::is_finite(*w) && *w > T::zero())) {
+        return Err(LevyIdentificationError::ZeroResponse { index });
+    }
+    iterate(samples, Some(&weights), denom_order, numer_order, iterations)
+}
+
+/// `iterations` Levy steps, each weighted by the denominator of the previous one.
+fn iterate<T: Float + ComplexField + AddAssign + MulAssign>(
+    samples: &[FrequencyResponse<T>],
+    weights: Option<&[T]>,
+    denom_order: usize,
+    numer_order: usize,
+    iterations: usize,
+) -> Result<TransferFunction<T, Continuous>, LevyIdentificationError> {
     let mut ret = None;
     for _ in 0..iterations {
-        ret = match levy_step(samples, numer_order, denom_order, ret) {
+        ret = match levy_step(samples, weights, numer_order, denom_order, ret) {
             Ok(tf) => Some(tf),
             Err(e) => return Err(e),
         };
@@ -63,8 +121,11 @@ pub fn sanathanan_koerner_identification<T: Float + ComplexField + AddAssign + M
     }
 }
 
+/// One Levy step: rows of sample `i` weighted by `w_i / |A_prev(jω_i)|` (`w_i = 1` without
+/// `weights`, `A_prev = 1` without `prev_result`).
 fn levy_step<T: Float + ComplexField + AddAssign + MulAssign>(
     samples: &[FrequencyResponse<T>],
+    weights: Option<&[T]>,
     numer_order: usize,
     denom_order: usize,
     prev_result: Option<TransferFunction<T, Continuous>>,
@@ -87,7 +148,7 @@ fn levy_step<T: Float + ComplexField + AddAssign + MulAssign>(
     let s0 = Complex::new(T::one(), T::zero());
     let powers_size = std::cmp::max(denom_order + 1, numer_order);
 
-    for sample in samples {
+    for (index, sample) in samples.iter().enumerate() {
         let w = sample.omega;
         let gr = sample.value.re;
         let gi = sample.value.im;
@@ -112,7 +173,7 @@ fn levy_step<T: Float + ComplexField + AddAssign + MulAssign>(
                 T::one() / denom.norm()
             },
             None => T::one()
-        };
+        } * weights.map_or(T::one(), |w| w[index]);
 
         let phi = {
             let mut ret = DMatrix::<T>::zeros(2, k);

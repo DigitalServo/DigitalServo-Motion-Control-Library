@@ -1,4 +1,4 @@
-//! Identification from frequency responses: Levy and vector fitting.
+//! Identification from frequency responses: Levy, Sanathanan-Koerner and vector fitting.
 
 use dsmc::TransferFunction;
 
@@ -131,9 +131,56 @@ fn test_vector_fitting_into_transfer_function_scale() {
     }
 }
 
-/// Samples of the noisy responses of the vector fitting tests: `G(jω)` at `omegas` with a
-/// multiplicative complex error `1 + ε`, `|ε|` uniform in `[low, high]` and of uniform phase
-/// (xorshift64).
+/// Sanathanan-Koerner by the relative error on a response over three decades of gain (multiplicative
+/// errors of 1 .. 5 %): the RMS relative error of the fit against `G` is 0.2 % (poles near 1 and
+/// 100 rad/s), and 68 % by the absolute error, which the low-frequency bins of the largest gain
+/// dominate (poles near 1.2 and 6.3 rad/s). `sanathanan_koerner_relative` is
+/// `sanathanan_koerner_weighted` by `1 / |G|`, and unit weights are
+/// `sanathanan_koerner_identification`; a zero response and invalid weights are errors.
+#[test]
+fn test_sanathanan_koerner_relative() {
+    use dsmc::system_identification::frequency_response::levy::{self, LevyIdentificationError};
+    use num_complex::Complex64;
+
+    // Two real poles at 1 and 100 rad/s: 100 / ((s + 1) (s + 100)), 0.1 .. 1000 rad/s
+    let g = TransferFunction::continuous(&[100.0], &[1.0, 101.0, 100.0]);
+    let omegas: Vec<f64> = (0..150).map(|k| 0.1 * 10f64.powf(4.0 * k as f64 / 149.0)).collect();
+    let samples = noisy_samples(&g, &omegas, (0.01, 0.05));
+    let iterations = 10;
+    let relative = levy::sanathanan_koerner_relative(&samples, 2, 0, iterations).unwrap();
+    let absolute = levy::sanathanan_koerner_identification(&samples, 2, 0, iterations).unwrap();
+
+    let truth = g.frequency_transfer_function();
+    let rms_relative_error = |fit: &TransferFunction<f64>| {
+        let response = fit.frequency_transfer_function();
+        let sum: f64 = omegas.iter().map(|&w| ((response.response(w) - truth.response(w)) / truth.response(w)).norm_sqr()).sum();
+        (sum / omegas.len() as f64).sqrt()
+    };
+    let (e_relative, e_absolute) = (rms_relative_error(&relative), rms_relative_error(&absolute));
+    println!("rms relative error against G: relative {e_relative:.4}, absolute {e_absolute:.4}\nrelative {relative:?}\nabsolute {absolute:?}");
+    assert!(e_relative < 0.01, "relative: {e_relative}");
+    assert!(e_absolute > 10.0 * e_relative, "absolute {e_absolute}, relative {e_relative}");
+
+    let weights: Vec<f64> = samples.iter().map(|s| 1.0 / s.value.norm()).collect();
+    let weighted = levy::sanathanan_koerner_weighted(&samples, &weights, 2, 0, iterations).unwrap();
+    assert_eq!(weighted.numerator.0, relative.numerator.0);
+    assert_eq!(weighted.denominator.0, relative.denominator.0);
+    let unit = levy::sanathanan_koerner_weighted(&samples, &vec![1.0; samples.len()], 2, 0, iterations).unwrap();
+    assert_eq!(unit.numerator.0, absolute.numerator.0);
+    assert_eq!(unit.denominator.0, absolute.denominator.0);
+
+    let mut zero = samples.clone();
+    zero[5].value = Complex64::new(0.0, 0.0);
+    assert!(matches!(levy::sanathanan_koerner_relative(&zero, 2, 0, iterations), Err(LevyIdentificationError::ZeroResponse { index: 5 })));
+    assert!(matches!(levy::sanathanan_koerner_weighted(&samples, &weights[1..], 2, 0, iterations), Err(LevyIdentificationError::InvalidWeights { len: 149, samples: 150 })));
+    let mut negative = weights.clone();
+    negative[3] = -1.0;
+    assert!(matches!(levy::sanathanan_koerner_weighted(&samples, &negative, 2, 0, iterations), Err(LevyIdentificationError::InvalidWeights { .. })));
+}
+
+/// Samples of the noisy responses of the Sanathanan-Koerner and vector fitting tests: `G(jω)` at
+/// `omegas` with a multiplicative complex error `1 + ε`, `|ε|` uniform in `[low, high]` and of
+/// uniform phase (xorshift64).
 fn noisy_samples(g: &TransferFunction<f64>, omegas: &[f64], (low, high): (f64, f64)) -> Vec<dsmc::FrequencyResponse<f64>> {
     use num_complex::Complex64;
     let mut state: u64 = 0x2545_f491_4f6c_dd1d;
