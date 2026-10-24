@@ -24,8 +24,10 @@ pub const PERIOD_PEAK_FRACTION: f64 = 0.9;
 /// `r < PERIOD_CORRELATION_THRESHOLD` (0.5). If the largest `r` after it is below the same 0.5,
 /// `x` is not periodic. Otherwise the period is the shortest lag of a local maximum with
 /// `r(τ) >= PERIOD_PEAK_FRACTION · max` (0.9), i.e. the shortest period, not a multiple of it.
-/// The lags go up to `min(max_period, n - 1)`; a transient at the start or noise lowers the peaks
-/// but not their lags.
+/// The lags go up to `min(max_period, n - 1)`, and a local maximum at the last of them must not be
+/// followed by a higher `r` (at lag `max_period + 1`, if `max_period < n - 1`): `None` if no peak
+/// qualifies, e.g. when the period is longer than `max_period` and `r` is still rising there. A
+/// transient at the start or noise lowers the peaks but not their lags.
 ///
 /// ```
 /// use dsmc::signal::detect_period;
@@ -60,11 +62,11 @@ pub fn detect_period<T: Float + FftNum>(x: &[T], max_period: usize) -> Option<us
 
     let threshold = T::from(PERIOD_CORRELATION_THRESHOLD).unwrap();
     let start = (1..=last).find(|&tau| r[tau] < threshold)?;
-    let (peak, max) = (start..=last).fold((start, r[start]), |(i, m), tau| if r[tau] > m { (tau, r[tau]) } else { (i, m) });
+    let max = (start..=last).fold(r[start], |m, tau| Float::max(m, r[tau]));
     if max < threshold {
         return None;
     }
     let level = T::from(PERIOD_PEAK_FRACTION).unwrap() * max;
     let local_max = |tau: usize| r[tau] >= r[tau - 1] && r.get(tau + 1).is_none_or(|&next| r[tau] >= next);
-    (start..=last).find(|&tau| r[tau] >= level && local_max(tau)).or(Some(peak))
+    (start..=last).find(|&tau| r[tau] >= level && local_max(tau))
 }

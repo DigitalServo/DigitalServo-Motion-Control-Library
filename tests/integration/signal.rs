@@ -11,7 +11,7 @@ fn test_delayer() {
 }
 
 /// `detect_period`: a periodic signal with noise and a decaying transient gives its shortest period
-/// (not a multiple), noise or a chirp gives `None`.
+/// (not a multiple), noise, a chirp or a period beyond `max_period` gives `None`.
 #[test]
 fn test_detect_period() {
     use dsmc::signal::detect_period;
@@ -35,6 +35,14 @@ fn test_detect_period() {
     // Even lines only: the signal repeats every 100 samples, and 100 (not 200) is found
     let u: Vec<f64> = multisine(12.0 * period as f64 * 1e-3, 1e-3, 1000.0 / period as f64, &[2, 4, 6], |_| 1.0, 3).unwrap();
     assert_eq!(detect_period(&u, 1000), Some(period / 2));
+
+    // A period of 300 beyond max_period: r still rising at the last lag (0.91 at 280 for a sine)
+    // is no period
+    let u: Vec<f64> = multisine(10.0 * 300.0 * 1e-3, 1e-3, 1000.0 / 300.0, &lines, |_| 1.0, 3).unwrap();
+    assert_eq!(detect_period(&u, 400), Some(300));
+    assert_eq!(detect_period(&u, 200), None);
+    let sine: Vec<f64> = (0..3000).map(|k| (2.0 * std::f64::consts::PI * k as f64 / 300.0).sin()).collect();
+    assert_eq!(detect_period(&sine, 280), None);
 
     let noise: Vec<f64> = (0..4000).map(|_| gaussian()).collect();
     assert_eq!(detect_period(&noise, 1000), None);

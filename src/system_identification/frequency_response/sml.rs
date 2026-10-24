@@ -48,6 +48,15 @@ pub enum SmlError {
     /// the output (`σ̂²_U = σ̂²_Y = 0`, e.g. noise-free data: the cost is not defined).
     #[error("spectral line {index}: non-finite values, negative variance or no noise")]
     InvalidSpectralLine { index: usize },
+    /// A line at `ω = 0` in the data of a model with integrators: `c = (jω)^q = 0` removes the
+    /// output there, and the input alone leaves a residual of about `|Ū| / σ̂_U` that no
+    /// coefficient can reduce, so the cost, the cost test and the BIC would be wrong (see
+    /// `identify_continuous_with_delay`).
+    #[error("spectral line {index} at zero frequency with integrators")]
+    ZeroFrequencyWithIntegrators { index: usize },
+    /// No excited line found in the input (see `SmlData::from_record_excited`).
+    #[error("no excited line in the input")]
+    NoExcitedLine,
     /// Fewer real equations `2 F` than the parameters `nθ` plus one.
     #[error("{lines} lines for {parameters} parameters (2 F > nθ needed)")]
     TooFewLines { lines: usize, parameters: usize },
@@ -207,18 +216,25 @@ impl<T: Float> SmlData<T> {
     where
         T: FftNum,
     {
-        if u.len() != y.len() {
-            return Err(SmlError::LengthMismatch { input: u.len(), output: y.len() });
-        }
-        if period == 0 {
-            return Err(SmlError::NotWholePeriods { samples: u.len(), period });
-        }
-        let periods = (u.len() / period).saturating_sub(transient_periods);
-        if periods < 4 {
-            return Err(SmlError::TooFewPeriods { periods });
-        }
-        let range = transient_periods * period..(transient_periods + periods) * period;
+        let range = steady_periods(u, y, period, transient_periods)?;
         Self::from_periods(&u[range.clone()], &y[range], ts, period, lines)
+    }
+
+    /// `from_record` at the excited lines of the input: the same periods (the first
+    /// `transient_periods` and the incomplete one at the end left out) give the lines by
+    /// `excited_lines` and then the data. Returns the data and the lines `k`; `NoExcitedLine` if
+    /// none is found.
+    pub fn from_record_excited(u: &[T], y: &[T], ts: T, period: usize, transient_periods: usize, options: &ExcitationOptions<T>) -> Result<(Self, Vec<usize>), SmlError>
+    where
+        T: FftNum,
+    {
+        let range = steady_periods(u, y, period, transient_periods)?;
+        let lines = excited_lines(&u[range.clone()], period, options);
+        if lines.is_empty() {
+            return Err(SmlError::NoExcitedLine);
+        }
+        let data = Self::from_periods(&u[range.clone()], &y[range], ts, period, &lines)?;
+        Ok((data, lines))
     }
 
     /// The lines with `Ū` multiplied by the zero-order hold `h = e^(-jω ts / 2) sinc(ω ts / 2)`
@@ -246,6 +262,21 @@ impl<T: Float> SmlData<T> {
         let lines = self.lines.iter().filter(|l| (low..=high).contains(&(l.omega / two_pi))).copied().collect();
         Self { lines, periods: self.periods }
     }
+}
+
+/// Samples of the whole periods of `u`, `y` after the first `transient_periods` (at least 4).
+fn steady_periods<T>(u: &[T], y: &[T], period: usize, transient_periods: usize) -> Result<std::ops::Range<usize>, SmlError> {
+    if u.len() != y.len() {
+        return Err(SmlError::LengthMismatch { input: u.len(), output: y.len() });
+    }
+    if period == 0 {
+        return Err(SmlError::NotWholePeriods { samples: u.len(), period });
+    }
+    let periods = (u.len() / period).saturating_sub(transient_periods);
+    if periods < 4 {
+        return Err(SmlError::TooFewPeriods { periods });
+    }
+    Ok(transient_periods * period..(transient_periods + periods) * period)
 }
 
 /// Options of `excited_lines`.
@@ -555,7 +586,12 @@ pub fn identify_continuous<T: Float + RealField>(
 /// parameters remain `nθ = n + m + 1`; `result.model.denominator` includes `s^q` and
 /// `result.std_denominator` is 0 for the fixed coefficients (the leading 1 and the `q` trailing
 /// zeros). For the data of a zero-order-hold input, apply `SmlData::compensate_zero_order_hold`
-/// first. A line at `ω = 0` with integrators has `c = 0`: leave it out (`SmlData::in_band`).
+/// first.
+///
+/// With integrators, a line at `ω = 0` is an error (`ZeroFrequencyWithIntegrators`): `c = 0`
+/// there removes the output, and the residual of the input alone, about `|Ū| / σ̂_U`, cannot be
+/// reduced by the coefficients and would distort the cost, the cost test and the BIC. Leave it
+/// out (`SmlData::in_band` from a positive frequency).
 pub fn identify_continuous_with_delay<T: Float + RealField>(
     data: &SmlData<T>,
     denom_order: usize,
@@ -564,6 +600,11 @@ pub fn identify_continuous_with_delay<T: Float + RealField>(
     delay: T,
     options: &SmlOptions<T>,
 ) -> Result<SmlResultWithDelay<T>, SmlError> {
+    if integrators > 0
+        && let Some(index) = data.lines.iter().position(|l| l.omega == T::zero())
+    {
+        return Err(SmlError::ZeroFrequencyWithIntegrators { index });
+    }
     let scaled = SmlData {
         lines: data
             .lines

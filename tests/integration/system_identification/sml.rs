@@ -307,6 +307,13 @@ fn test_sml_continuous_with_delay() {
     assert_eq!(lines, (1..=100).collect::<Vec<usize>>());
     let raw = SmlData::from_record(&u, &y, TS, DELAY_PERIOD, 2, &lines).unwrap();
     assert_eq!(raw.periods, 8);
+    let (excited, excited_lines) = SmlData::from_record_excited(&u, &y, TS, DELAY_PERIOD, 2, &ExcitationOptions::default()).unwrap();
+    assert_eq!(excited_lines, lines);
+    for (a, b) in excited.lines.iter().zip(&raw.lines) {
+        assert_eq!((a.omega, a.u, a.y, a.var_u, a.var_y, a.cov_yu), (b.omega, b.u, b.y, b.var_u, b.var_y, b.cov_yu));
+    }
+    let zero = vec![0.0; u.len()];
+    assert_eq!(SmlData::from_record_excited(&zero, &y, TS, DELAY_PERIOD, 2, &ExcitationOptions::default()).unwrap_err(), SmlError::NoExcitedLine);
     let data = raw.compensate_zero_order_hold(TS).in_band(0.5, 80.0);
     assert_eq!(data.lines.len(), 81);
 
@@ -378,4 +385,18 @@ fn test_sml_line_costs() {
     let total: f64 = costs.iter().sum();
     assert!((total / result.cost - 1.0).abs() < 1e-9, "{total} vs {}", result.cost);
     assert!(result.cost_test(2.0));
+}
+
+/// A line at `ω = 0` is an error with integrators (it would leave a residual no coefficient can
+/// reduce), not without.
+#[test]
+fn test_sml_zero_frequency_with_integrators() {
+    let mut gaussian = gaussian_source(11);
+    let g = TransferFunction::continuous(&[100.0], &[1.0, 2.0, 100.0]);
+    let omegas: Vec<f64> = (0..40).map(|k| 0.5 * k as f64).collect();
+    let data = SmlData::new(synthetic_lines(&g, &omegas, 8, (0.01, 0.05), &mut gaussian), 8).unwrap();
+    let options = SmlOptions::default();
+    assert_eq!(sml::identify_continuous_with_delay(&data, 2, 0, 1, 0.0, &options).unwrap_err(), SmlError::ZeroFrequencyWithIntegrators { index: 0 });
+    assert!(sml::identify_continuous_with_delay(&data, 2, 0, 0, 0.0, &options).is_ok());
+    assert!(sml::identify_continuous_with_delay(&data.in_band(0.01, 100.0), 2, 0, 1, 0.0, &options).is_ok());
 }
