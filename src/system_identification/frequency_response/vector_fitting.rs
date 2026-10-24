@@ -36,6 +36,10 @@ pub enum VectorFittingError {
     /// The iteration failed.
     #[error("Failed to iterate (check data and iterations)")]
     IterationError,
+    /// A sample whose response is zero (or so small that `1 / |G|` is not finite), for the
+    /// relative error of `identify_relative`.
+    #[error("Zero response at sample {index}: no relative error")]
+    ZeroResponse { index: usize },
     /// The weights are not one per sample, or not all finite and non-negative.
     #[error("Invalid weights: {len} for {samples} samples, all finite and non-negative needed")]
     InvalidWeights { len: usize, samples: usize },
@@ -309,7 +313,8 @@ impl<T: Float + RealField> From<VectorFittingResult<T>> for TransferFunction<T, 
 /// problems are scaled to unit norm and solved by SVD.
 ///
 /// The error is absolute: on a response spanning decades, the bins of the largest gain dominate.
-/// `identify_weighted` weights it, e.g. by `1 / |G|` for the relative error.
+/// `identify_relative` minimizes the relative error instead, and `identify_weighted` any weighted
+/// one.
 ///
 /// Every sample needs a finite `ω >= 0` and a finite `G(jω)`, or `InvalidSample` is returned. A
 /// sample at `ω = 0` (DC) is fitted as the others (the basis `1 / (0 - a)` is finite for a pole
@@ -342,12 +347,27 @@ pub fn identify_weighted<T: Float + RealField + Sum>(
     fit(samples, Some(weights), n_poles, opts)
 }
 
-fn fit<T: Float + RealField + Sum>(
+/// `identify` minimizing the relative error `Σ |G_fit(jω_i) - G_i|^2 / |G_i|^2`: `identify_weighted`
+/// with `w_i = 1 / |G_i|`, so that every sample counts alike whatever its gain (on a response
+/// spanning decades, the absolute error of `identify` is dominated by the largest gains).
+/// `rms_errors` are those of the relative error. A sample with `G_i = 0` (e.g. an unexcited bin of
+/// [`welch`](crate::fft::welch)) has no relative error: `ZeroResponse`.
+pub fn identify_relative<T: Float + RealField + Sum>(
     samples: &[FrequencyResponse<T>],
-    weights: Option<&[T]>,
     n_poles: usize,
     opts: &VectorFittingOptions<T>,
 ) -> Result<VectorFittingResult<T>, VectorFittingError> {
+    validate(samples)?;
+    let weights: Vec<T> = samples.iter().map(|s| T::one() / s.value.norm()).collect();
+    if let Some(index) = weights.iter().position(|w| !w.is_finite()) {
+        return Err(VectorFittingError::ZeroResponse { index });
+    }
+    fit(samples, Some(&weights), n_poles, opts)
+}
+
+/// Errors of samples that cannot be fitted: none, a non-finite or negative `ω`, a non-finite
+/// response, or only DC.
+fn validate<T: Float>(samples: &[FrequencyResponse<T>]) -> Result<(), VectorFittingError> {
     if samples.is_empty() {
         return Err(VectorFittingError::EmptyData);
     }
@@ -358,6 +378,16 @@ fn fit<T: Float + RealField + Sum>(
     if samples.iter().all(|s| s.omega == T::zero()) {
         return Err(VectorFittingError::NoPositiveFrequency);
     }
+    Ok(())
+}
+
+fn fit<T: Float + RealField + Sum>(
+    samples: &[FrequencyResponse<T>],
+    weights: Option<&[T]>,
+    n_poles: usize,
+    opts: &VectorFittingOptions<T>,
+) -> Result<VectorFittingResult<T>, VectorFittingError> {
+    validate(samples)?;
     let weight = |i: usize| weights.map_or(T::one(), |w| w[i]);
 
     // ---- Step 1: Set initial poles ----

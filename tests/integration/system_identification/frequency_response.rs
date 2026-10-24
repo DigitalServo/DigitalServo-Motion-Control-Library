@@ -288,10 +288,11 @@ fn test_vector_fitting_welch_measurement() {
 
 /// `identify_weighted` by `1 / |G|` (relative error) on a response over three decades of gain:
 /// the high-frequency bins, which hardly count in the absolute error, are fitted as well as the
-/// low ones. Invalid weights are an error.
+/// low ones. `identify_relative` gives the same fit; a zero response and invalid weights are
+/// errors.
 #[test]
 fn test_vector_fitting_weighted() {
-    use dsmc::system_identification::frequency_response::vector_fitting::{identify, identify_weighted, VectorFittingError, VectorFittingOptions};
+    use dsmc::system_identification::frequency_response::vector_fitting::{identify, identify_relative, identify_weighted, VectorFittingError, VectorFittingOptions};
     use num_complex::Complex64;
 
     // Two real poles at 1 and 100 rad/s: 100 / ((s + 1) (s + 100)), 0.1 .. 1000 rad/s
@@ -308,6 +309,17 @@ fn test_vector_fitting_weighted() {
     };
     println!("fastest pole: weighted {:.2}, unweighted {:.2}", fast(&relative), fast(&absolute));
     assert!((fast(&relative) / 100.0 - 1.0).abs() < (fast(&absolute) / 100.0 - 1.0).abs());
+
+    // identify_relative is identify_weighted by 1 / |G|; a zero response has no relative error
+    let wrapper = identify_relative(&samples, 2, &opts).unwrap();
+    assert_eq!(wrapper.poles, relative.poles);
+    assert_eq!(wrapper.residues, relative.residues);
+    assert_eq!(wrapper.rms_errors, relative.rms_errors);
+    let mut zero = samples.clone();
+    zero[5].value = Complex64::new(0.0, 0.0);
+    assert!(matches!(identify_relative(&zero, 2, &opts), Err(VectorFittingError::ZeroResponse { index: 5 })));
+    zero[3].omega = f64::NAN;
+    assert!(matches!(identify_relative(&zero, 2, &opts), Err(VectorFittingError::InvalidSample { index: 3 })));
 
     assert!(matches!(identify_weighted(&samples, &weights[1..], 2, &opts), Err(VectorFittingError::InvalidWeights { len: 149, samples: 150 })));
     let mut negative = weights.clone();
