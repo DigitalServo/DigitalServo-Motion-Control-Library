@@ -15,9 +15,18 @@ pub enum VectorFittingError {
     /// No samples.
     #[error("No sampled data provided")]
     EmptyData,
-    /// A least-squares problem is singular.
+    /// A sample whose frequency is not finite and non-negative, or whose response is not finite.
+    #[error("Invalid sample {index}: finite ω >= 0 and finite G(jω) needed")]
+    InvalidSample { index: usize },
+    /// No sample with `ω > 0` to place the initial poles over (only DC).
+    #[error("No sample with ω > 0")]
+    NoPositiveFrequency,
+    /// A least-squares problem is singular, or its matrix is not finite.
     #[error("Matrix is singular or numerically unstable (check order and data)")]
     SingularMatrix,
+    /// The SVD of a least-squares problem did not converge within its iteration limit.
+    #[error("SVD did not converge")]
+    SvdNotConverged,
     /// No poles to fit with.
     #[error("Poles not set")]
     PolesNotSet,
@@ -301,6 +310,14 @@ impl<T: Float + RealField> From<VectorFittingResult<T>> for TransferFunction<T, 
 ///
 /// The error is absolute: on a response spanning decades, the bins of the largest gain dominate.
 /// `identify_weighted` weights it, e.g. by `1 / |G|` for the relative error.
+///
+/// Every sample needs a finite `ω >= 0` and a finite `G(jω)`, or `InvalidSample` is returned. A
+/// sample at `ω = 0` (DC) is fitted as the others (the basis `1 / (0 - a)` is finite for a pole
+/// `a ≠ 0`, and real: the imaginary part of the row is `0 = Im G(0)`); the initial poles are
+/// placed over the positive frequencies, and without one `NoPositiveFrequency` is returned. The DC
+/// bin of [`welch`](crate::fft::welch) is not the static gain (the mean of each segment is
+/// removed): drop it, e.g. by
+/// [`coherent_bins`](crate::FrequencyResponsesWithCoherence::coherent_bins).
 pub fn identify<T: Float + RealField + Sum>(
     samples: &[FrequencyResponse<T>],
     n_poles: usize,
@@ -333,6 +350,13 @@ fn fit<T: Float + RealField + Sum>(
 ) -> Result<VectorFittingResult<T>, VectorFittingError> {
     if samples.is_empty() {
         return Err(VectorFittingError::EmptyData);
+    }
+    let valid = |s: &FrequencyResponse<T>| s.omega.is_finite() && s.omega >= T::zero() && s.value.re.is_finite() && s.value.im.is_finite();
+    if let Some(index) = samples.iter().position(|s| !valid(s)) {
+        return Err(VectorFittingError::InvalidSample { index });
+    }
+    if samples.iter().all(|s| s.omega == T::zero()) {
+        return Err(VectorFittingError::NoPositiveFrequency);
     }
     let weight = |i: usize| weights.map_or(T::one(), |w| w[i]);
 
@@ -370,10 +394,11 @@ fn fit<T: Float + RealField + Sum>(
     Ok(VectorFittingResult { poles: poles_of(&blocks), residues: residues_of(&blocks, &c), d, e, rms_errors })
 }
 
-/// Complex pairs `-0.01 ω ± j ω` logarithmically spaced over the band, and a real pole `-ω_mid`
-/// for an odd order.
+/// Complex pairs `-0.01 ω ± j ω` logarithmically spaced over the band `[ω_min, ω_max]` of the
+/// positive frequencies (a DC sample is not on the log scale; at least one is positive), and a
+/// real pole `-sqrt(ω_min ω_max)` for an odd order.
 fn initial_blocks<T: Float>(samples: &[FrequencyResponse<T>], n_poles: usize) -> Vec<Block<T>> {
-    let w_min = samples.iter().fold(T::infinity(), |a, b| T::min(a, b.omega));
+    let w_min = samples.iter().filter(|s| s.omega > T::zero()).fold(T::infinity(), |a, b| T::min(a, b.omega));
     let w_max = samples.iter().fold(T::neg_infinity(), |a, b| T::max(a, b.omega));
 
     let n_pairs = n_poles / 2;
@@ -401,7 +426,10 @@ fn initial_blocks<T: Float>(samples: &[FrequencyResponse<T>], n_poles: usize) ->
 /// otherwise:   Σ c φ(s) + d + s e = G                 (c̃ empty)
 /// ```
 ///
-/// `φ` the real basis of the blocks. The columns are scaled to unit norm before the SVD solve.
+/// `φ` the real basis of the blocks. The columns are scaled to unit norm before the SVD solve. A
+/// matrix that is not finite (a pole on a sample `jω`) is `SingularMatrix`; the SVD is limited to
+/// `6 k^2` iterations (`k` the number of columns, the limit of LAPACK's `dbdsqr`), beyond which it
+/// is `SvdNotConverged` (nalgebra's `svd` iterates without limit, forever on a matrix with NaN).
 #[allow(clippy::type_complexity)]
 fn least_squares<T: Float + RealField>(
     samples: &[FrequencyResponse<T>],
@@ -444,6 +472,9 @@ fn least_squares<T: Float + RealField>(
         b[2 * i + 1] = w * g.im;
     }
 
+    if a.iter().chain(b.iter()).any(|v| !v.is_finite()) {
+        return Err(VectorFittingError::SingularMatrix);
+    }
     let scale: Vec<T> = (0..columns)
         .map(|j| {
             let norm = a.column(j).norm();
@@ -453,8 +484,10 @@ fn least_squares<T: Float + RealField>(
     for (j, &sc) in scale.iter().enumerate() {
         a.column_mut(j).unscale_mut(sc);
     }
+    let max_niter = 6 * columns * columns;
     let x = a
-        .svd(true, true)
+        .try_svd(true, true, T::default_epsilon(), max_niter)
+        .ok_or(VectorFittingError::SvdNotConverged)?
         .solve(&b, T::from(1e-12).unwrap())
         .map_err(|_| VectorFittingError::SingularMatrix)?;
     let x: Vec<T> = x.iter().zip(&scale).map(|(&v, &sc)| v / sc).collect();
@@ -475,7 +508,8 @@ fn least_squares<T: Float + RealField>(
 /// for a real pole and `[[a', a''], [-a'', a']]` for a pair `a' ± j a''`, `b` of blocks `1` and
 /// `[2, 0]`. The eigenvalues of a real matrix are real or exact conjugate pairs; those with
 /// `|Im| <= 1e-9 |λ|` are taken as real. Poles in the right half-plane are reflected to the left
-/// one; the blocks are sorted by the magnitude of the pole.
+/// one; the blocks are sorted by the magnitude of the pole. The Schur decomposition is limited to
+/// `30 max(10, n)` iterations (the limit of LAPACK's `dlahqr`), beyond which it is `ZerosNotFound`.
 fn zeros_of_sigma<T: Float + RealField>(blocks: &[Block<T>], c_tilde: &[T]) -> Result<Vec<Block<T>>, VectorFittingError> {
     let n = c_tilde.len();
     if n == 0 {
@@ -506,7 +540,7 @@ fn zeros_of_sigma<T: Float + RealField>(blocks: &[Block<T>], c_tilde: &[T]) -> R
         }
     }
 
-    let eigenvalues = nalgebra::linalg::Schur::try_new(h, T::default_epsilon(), 0)
+    let eigenvalues = nalgebra::linalg::Schur::try_new(h, T::default_epsilon(), 30 * n.max(10))
         .ok_or(VectorFittingError::ZerosNotFound)?
         .complex_eigenvalues();
     let mut new_blocks = Vec::with_capacity(n);

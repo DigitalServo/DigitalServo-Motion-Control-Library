@@ -104,7 +104,7 @@ fn psd_has_the_frequencies_of_welch() {
     let y = uniform_noise(n, 8);
     for n_segments in [1, 3, 8, 100] {
         let psd = power_spectral_density(&u, ts, n_segments);
-        let (g, _) = welch(&u, &y, ts, n_segments);
+        let g = welch(&u, &y, ts, n_segments);
         assert_eq!(psd.len(), g.len());
         for (p, r) in psd.iter().zip(&g) {
             assert_eq!(p.omega, r.omega);

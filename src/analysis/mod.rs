@@ -1,6 +1,6 @@
 //! System analysis tools.
 
-use std::marker::PhantomData;
+use std::{marker::PhantomData, ops::Deref};
 
 use nalgebra::Complex;
 
@@ -37,6 +37,105 @@ impl<T: Serialize> Serialize for FrequencyResponse<T> {
         state.serialize_field("re", &self.value.re)?;
         state.serialize_field("im", &self.value.im)?;
         state.end()
+    }
+}
+
+/// Frequency response `value = G(jω)` at angular frequency `omega` [rad/s] with its coherence (from
+/// [`welch`](fft::welch)).
+#[derive(Copy, Clone)]
+pub struct FrequencyResponseWithCoherence<T> {
+    /// Angular frequency [rad/s].
+    pub omega: T,
+    /// `G(jω)`.
+    pub value: Complex<T>,
+    /// Coherence `|P_yu|^2 / (P_uu P_yy)`, in `[0, 1]`.
+    pub coherence: T,
+}
+
+/// The response without the coherence.
+impl<T> From<FrequencyResponseWithCoherence<T>> for FrequencyResponse<T> {
+    fn from(val: FrequencyResponseWithCoherence<T>) -> Self {
+        FrequencyResponse { omega: val.omega, value: val.value }
+    }
+}
+
+/// Serialized flat as `[omega, re, im, coherence]`.
+impl<T: Serialize> Serialize for FrequencyResponseWithCoherence<T> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut state = serializer.serialize_struct("FrequencyResponseWithCoherence", 4)?;
+        state.serialize_field("omega", &self.omega)?;
+        state.serialize_field("re", &self.value.re)?;
+        state.serialize_field("im", &self.value.im)?;
+        state.serialize_field("coherence", &self.coherence)?;
+        state.end()
+    }
+}
+
+/// Frequency responses with their coherence, one per frequency in order (e.g. the bins of
+/// [`welch`](fft::welch)). Derefs to the slice of the responses (`len`, `iter`, indexing), and
+/// converts into `Vec<FrequencyResponse<T>>` (all of them) with `into`. Serialized as the sequence.
+#[derive(Clone, Serialize)]
+#[serde(transparent)]
+pub struct FrequencyResponsesWithCoherence<T>(pub Vec<FrequencyResponseWithCoherence<T>>);
+
+impl<T: Float> FrequencyResponsesWithCoherence<T> {
+    /// The responses that the data define: `ω > 0` and coherence at least `min_coherence` (e.g.
+    /// `0.9`), in order, without the coherence. The DC bin is dropped whatever its coherence (that
+    /// of [`welch`](fft::welch) is not the static gain: the mean of each segment is removed), and
+    /// so are the unexcited bins (coherence zero). The result can be passed to the identification
+    /// methods in
+    /// [`system_identification::frequency_response`](crate::system_identification::frequency_response).
+    ///
+    /// The coherence measures the noise and the nonlinearity, not the excitation: without noise,
+    /// the bins between the excited ones (window leakage) also have a coherence close to 1.
+    pub fn coherent_bins(&self, min_coherence: T) -> Vec<FrequencyResponse<T>> {
+        self.0
+            .iter()
+            .filter(|b| b.omega > T::zero() && b.coherence >= min_coherence)
+            .map(|&b| b.into())
+            .collect()
+    }
+}
+
+impl<T> Deref for FrequencyResponsesWithCoherence<T> {
+    type Target = [FrequencyResponseWithCoherence<T>];
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T> IntoIterator for FrequencyResponsesWithCoherence<T> {
+    type Item = FrequencyResponseWithCoherence<T>;
+    type IntoIter = std::vec::IntoIter<FrequencyResponseWithCoherence<T>>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl<'a, T> IntoIterator for &'a FrequencyResponsesWithCoherence<T> {
+    type Item = &'a FrequencyResponseWithCoherence<T>;
+    type IntoIter = std::slice::Iter<'a, FrequencyResponseWithCoherence<T>>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+impl<T> FromIterator<FrequencyResponseWithCoherence<T>> for FrequencyResponsesWithCoherence<T> {
+    fn from_iter<I: IntoIterator<Item = FrequencyResponseWithCoherence<T>>>(iter: I) -> Self {
+        Self(iter.into_iter().collect())
+    }
+}
+
+impl<T> From<Vec<FrequencyResponseWithCoherence<T>>> for FrequencyResponsesWithCoherence<T> {
+    fn from(val: Vec<FrequencyResponseWithCoherence<T>>) -> Self {
+        Self(val)
+    }
+}
+
+/// All the responses (with the DC bin, if any), without the coherence.
+impl<T> From<FrequencyResponsesWithCoherence<T>> for Vec<FrequencyResponse<T>> {
+    fn from(val: FrequencyResponsesWithCoherence<T>) -> Self {
+        val.0.into_iter().map(FrequencyResponse::from).collect()
     }
 }
 

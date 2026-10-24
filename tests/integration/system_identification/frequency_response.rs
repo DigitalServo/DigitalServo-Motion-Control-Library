@@ -268,7 +268,7 @@ fn test_vector_fitting_welch_measurement() {
     };
     let scale = 0.03 * (y0.iter().map(|v| v * v).sum::<f64>() / y0.len() as f64).sqrt();
     let y: Vec<f64> = y0.iter().map(|v| v + scale * gaussian()).collect();
-    let (response, _) = welch(&u, &y, ts, 4);
+    let response: Vec<dsmc::FrequencyResponse<f64>> = welch(&u, &y, ts, 4).into();
     let samples: Vec<_> = response.into_iter().skip(1).take(150).collect();
     let response_true = g.frequency_transfer_function();
     // Errors against G(jω), and against the response of the held input, G(jω) e^(-jω ts / 2) to
@@ -313,4 +313,63 @@ fn test_vector_fitting_weighted() {
     let mut negative = weights.clone();
     negative[3] = -1.0;
     assert!(matches!(identify_weighted(&samples, &negative, 2, &opts), Err(VectorFittingError::InvalidWeights { .. })));
+}
+
+/// A sample with a negative or non-finite `ω`, or a non-finite response, is `InvalidSample`, and
+/// only DC is `NoPositiveFrequency`; the response of `welch` through `coherent_bins` is fitted.
+#[test]
+fn test_vector_fitting_invalid_samples() {
+    use dsmc::fft::welch;
+    use dsmc::FrequencyResponse;
+    use dsmc::system_identification::frequency_response::vector_fitting::{identify, VectorFittingError, VectorFittingOptions};
+    use dsmc::TransferFunctionWithDelay;
+    use num_complex::Complex64;
+
+    let ts = 1e-3;
+    let g = TransferFunction::continuous(&[1000.0], &[1.0, 20.0, 1000.0]);
+    let u = dsmc::signal::excitation::multisine(4.096, ts, 1.0 / 1.024, &(1..=150).collect::<Vec<usize>>(), |_| 1.0, 7).unwrap();
+    let y = TransferFunctionWithDelay::from(&g).simulate(ts, &u).unwrap();
+    let measured = welch(&u, &y, ts, 4);
+    let response: Vec<FrequencyResponse<f64>> = measured.clone().into();
+    let opts = VectorFittingOptions::default();
+    let mut invalid = response[1..].to_vec();
+    invalid[2].value = Complex64::new(f64::NAN, 0.0);
+    assert!(matches!(identify(&invalid, 2, &opts), Err(VectorFittingError::InvalidSample { index: 2 })));
+    let mut invalid = response[1..].to_vec();
+    invalid[4].omega = -1.0;
+    assert!(matches!(identify(&invalid, 2, &opts), Err(VectorFittingError::InvalidSample { index: 4 })));
+    assert!(matches!(identify(&response[..1], 2, &opts), Err(VectorFittingError::NoPositiveFrequency)));
+
+    let samples: Vec<_> = measured.coherent_bins(0.99).into_iter().filter(|s| s.omega < 2.0 * std::f64::consts::PI * 150.0).collect();
+    let result = identify(&samples, 2, &VectorFittingOptions { max_iter: 30, ..opts }).unwrap();
+    check_real_fit(&result, &[Complex64::new(-10.0, 30.0), Complex64::new(-10.0, -30.0)], 0.05);
+}
+
+/// A DC sample is fitted with the others (it was NaN initial poles, then an SVD of a NaN matrix that
+/// never returned): exact samples of `1000 / (s^2 + 20 s + 1000)` at 0 and 1 .. 1000 rad/s give
+/// the poles and the static gain 1; for an odd order the real initial pole is on the positive band.
+#[test]
+fn test_vector_fitting_dc_sample() {
+    use dsmc::FrequencyResponse;
+    use dsmc::system_identification::frequency_response::vector_fitting::{identify, VectorFittingOptions};
+    use num_complex::Complex64;
+
+    let g = TransferFunction::continuous(&[1000.0], &[1.0, 20.0, 1000.0]);
+    let response = g.frequency_transfer_function();
+    let samples: Vec<FrequencyResponse<f64>> = std::iter::once(0.0)
+        .chain((0..100).map(|k| 10f64.powf(3.0 * k as f64 / 99.0)))
+        .map(|omega| FrequencyResponse { omega, value: response.response(omega) })
+        .collect();
+    let opts = VectorFittingOptions { max_iter: 30, ..VectorFittingOptions::default() };
+    let result = identify(&samples, 2, &opts).unwrap();
+    for p in [Complex64::new(-10.0, 30.0), Complex64::new(-10.0, -30.0)] {
+        let error = result.poles.iter().map(|q| (q - p).norm() / p.norm()).fold(f64::INFINITY, f64::min);
+        assert!(error < 1e-6, "pole {p}: relative error {error:.3e}, poles {:?}", result.poles);
+    }
+    let fitted: TransferFunction<f64> = result.into();
+    let dc = fitted.frequency_transfer_function().response(0.0);
+    assert!((dc - 1.0).norm() < 1e-6, "G(0) = {dc}");
+
+    let odd = identify(&samples, 3, &opts).unwrap();
+    assert!(odd.poles.iter().all(|p| p.re.is_finite() && p.im.is_finite()), "{:?}", odd.poles);
 }

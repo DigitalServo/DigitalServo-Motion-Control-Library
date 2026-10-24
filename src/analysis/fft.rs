@@ -7,7 +7,7 @@ use rustfft::{num_complex::Complex, FftNum, FftPlanner};
 
 use serde::Serialize;
 
-use crate::analysis::FrequencyResponse;
+use crate::analysis::{FrequencyResponse, FrequencyResponseWithCoherence, FrequencyResponsesWithCoherence};
 
 use std::f64::consts::PI;
 
@@ -201,11 +201,12 @@ fn is_one_sided_edge(k: usize, n: usize) -> bool {
 /// of two, but at most `len`) with 50% overlap, mean removed per segment.
 ///
 /// Returns the response at `omega` \[rad/s\] and the coherence `|P_yu|^2 / (P_uu P_yy)` per
-/// frequency. A bin counts as unexcited, with zero response and coherence, where `P_uu` is at most
+/// frequency, one [`FrequencyResponseWithCoherence`] per bin in [`FrequencyResponsesWithCoherence`]. A bin counts as unexcited, with zero response and coherence, where `P_uu` is at most
 /// `1e-12` times its maximum over the bins (and the coherence is also zero where `P_yy` is at most
 /// `1e-12` times its maximum): the thresholds are relative, so the result does not depend on the
-/// units of `u` and `y`. Both are empty if `u` has fewer than 2 samples. The response can be passed
-/// to the identification methods in
+/// units of `u` and `y`. Empty if `u` has fewer than 2 samples. The bins that the data define
+/// ([`FrequencyResponsesWithCoherence::coherent_bins`]) can be passed to the identification
+/// methods in
 /// [`system_identification::frequency_response`](crate::system_identification::frequency_response).
 /// The power spectral density of a single signal with the same segments is
 /// [`power_spectral_density`].
@@ -218,10 +219,10 @@ pub fn welch<T: FftNum + Float + Sum + AddAssign + SubAssign + DivAssign + MulAs
     y: &[T],
     ts: T,
     n_segments: usize,
-) -> (Vec<FrequencyResponse<T>>, Vec<T>) {
+) -> FrequencyResponsesWithCoherence<T> {
     assert_eq!(u.len(), y.len(), "welch: input and output lengths differ");
     if u.len() < 2 {
-        return (vec![], vec![]);
+        return FrequencyResponsesWithCoherence(vec![]);
     }
 
     let mut puu: Vec<T> = vec![];
@@ -253,19 +254,14 @@ pub fn welch<T: FftNum + Float + Sum + AddAssign + SubAssign + DivAssign + MulAs
     }
 
     // G = Pyu / Puu
-    let mut ret: Vec<FrequencyResponse<T>> = Vec::with_capacity(bins);
-    let mut coherence = vec![T::zero(); bins];
-
     let (floor_u, floor_y) = (power_floor(&puu), power_floor(&pyy));
-
-    for k in 0..bins {
-        let omega = segments.omega(k);
-        let value = if puu[k] > floor_u { pyu[k] / puu[k] } else { Complex::from(T::zero()) };
-        ret.push(FrequencyResponse { omega, value });
-        coherence[k] = coherence_of(pyu[k], puu[k], pyy[k], floor_u, floor_y);
-    }
-
-    (ret, coherence)
+    (0..bins)
+        .map(|k| FrequencyResponseWithCoherence {
+            omega: segments.omega(k),
+            value: if puu[k] > floor_u { pyu[k] / puu[k] } else { Complex::from(T::zero()) },
+            coherence: coherence_of(pyu[k], puu[k], pyy[k], floor_u, floor_y),
+        })
+        .collect()
 }
 
 /// Segmentation used by Welch's method ([`welch`], [`power_spectral_density`]) and [`spectrogram`].
