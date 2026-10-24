@@ -31,7 +31,10 @@ fn test_levy() {
         samples.push(FrequencyResponse { omega, value });
     }
 
-    let ret = levy::sanathanan_koerner_identification(&samples, denom_order, numer_order, 5).unwrap();
+    let result = levy::sanathanan_koerner_identification(&samples, denom_order, numer_order, &levy::SanathananKoernerOptions::default()).unwrap();
+    println!("SK: {} steps, changes {:?}", result.iterations, result.changes);
+    assert!(result.converged, "{:?}", result.changes);
+    let ret = result.transfer_function;
 
     // True system: (-3s^2 + 10s + 100) / (2s^3 + 4s^2 + 200s + 10000)
     let expected = TransferFunction::continuous(&[-3.0, 10.0, 100.0], &[2.0, 4.0, 200.0, 10000.0]);
@@ -134,7 +137,8 @@ fn test_vector_fitting_into_transfer_function_scale() {
 /// Sanathanan-Koerner by the relative error on a response over three decades of gain (multiplicative
 /// errors of 1 .. 5 %): the RMS relative error of the fit against `G` is 0.2 % (poles near 1 and
 /// 100 rad/s), and 68 % by the absolute error, which the low-frequency bins of the largest gain
-/// dominate (poles near 1.2 and 6.3 rad/s). `sanathanan_koerner_relative` is
+/// dominate (poles near 1.2 and 6.3 rad/s); they converge in 6 and 24 steps (the absolute one
+/// slowly, its change shrinking by about 0.42 per step). `sanathanan_koerner_relative` is
 /// `sanathanan_koerner_weighted` by `1 / |G|`, and unit weights are
 /// `sanathanan_koerner_identification`; a zero response and invalid weights are errors.
 #[test]
@@ -146,9 +150,12 @@ fn test_sanathanan_koerner_relative() {
     let g = TransferFunction::continuous(&[100.0], &[1.0, 101.0, 100.0]);
     let omegas: Vec<f64> = (0..150).map(|k| 0.1 * 10f64.powf(4.0 * k as f64 / 149.0)).collect();
     let samples = noisy_samples(&g, &omegas, (0.01, 0.05));
-    let iterations = 10;
-    let relative = levy::sanathanan_koerner_relative(&samples, 2, 0, iterations).unwrap();
-    let absolute = levy::sanathanan_koerner_identification(&samples, 2, 0, iterations).unwrap();
+    let opts = levy::SanathananKoernerOptions::default();
+    let relative_result = levy::sanathanan_koerner_relative(&samples, 2, 0, &opts).unwrap();
+    let absolute_result = levy::sanathanan_koerner_identification(&samples, 2, 0, &opts).unwrap();
+    println!("steps: relative {} {:?}, absolute {} {:?}", relative_result.iterations, relative_result.changes, absolute_result.iterations, absolute_result.changes);
+    assert!(relative_result.converged && absolute_result.converged);
+    let (relative, absolute) = (relative_result.transfer_function, absolute_result.transfer_function);
 
     let truth = g.frequency_transfer_function();
     let rms_relative_error = |fit: &TransferFunction<f64>| {
@@ -162,20 +169,67 @@ fn test_sanathanan_koerner_relative() {
     assert!(e_absolute > 10.0 * e_relative, "absolute {e_absolute}, relative {e_relative}");
 
     let weights: Vec<f64> = samples.iter().map(|s| 1.0 / s.value.norm()).collect();
-    let weighted = levy::sanathanan_koerner_weighted(&samples, &weights, 2, 0, iterations).unwrap();
+    let weighted = levy::sanathanan_koerner_weighted(&samples, &weights, 2, 0, &opts).unwrap().transfer_function;
     assert_eq!(weighted.numerator.0, relative.numerator.0);
     assert_eq!(weighted.denominator.0, relative.denominator.0);
-    let unit = levy::sanathanan_koerner_weighted(&samples, &vec![1.0; samples.len()], 2, 0, iterations).unwrap();
+    let unit = levy::sanathanan_koerner_weighted(&samples, &vec![1.0; samples.len()], 2, 0, &opts).unwrap().transfer_function;
     assert_eq!(unit.numerator.0, absolute.numerator.0);
     assert_eq!(unit.denominator.0, absolute.denominator.0);
 
     let mut zero = samples.clone();
     zero[5].value = Complex64::new(0.0, 0.0);
-    assert!(matches!(levy::sanathanan_koerner_relative(&zero, 2, 0, iterations), Err(LevyIdentificationError::ZeroResponse { index: 5 })));
-    assert!(matches!(levy::sanathanan_koerner_weighted(&samples, &weights[1..], 2, 0, iterations), Err(LevyIdentificationError::InvalidWeights { len: 149, samples: 150 })));
+    assert!(matches!(levy::sanathanan_koerner_relative(&zero, 2, 0, &opts), Err(LevyIdentificationError::ZeroResponse { index: 5 })));
+    assert!(matches!(levy::sanathanan_koerner_weighted(&samples, &weights[1..], 2, 0, &opts), Err(LevyIdentificationError::InvalidWeights { len: 149, samples: 150 })));
     let mut negative = weights.clone();
     negative[3] = -1.0;
-    assert!(matches!(levy::sanathanan_koerner_weighted(&samples, &negative, 2, 0, iterations), Err(LevyIdentificationError::InvalidWeights { .. })));
+    assert!(matches!(levy::sanathanan_koerner_weighted(&samples, &negative, 2, 0, &opts), Err(LevyIdentificationError::InvalidWeights { .. })));
+}
+
+/// The Sanathanan-Koerner iteration stops at `max_iter` without converging (not an error), with one
+/// change per step from the second; `max_iter = 1` is Levy's method and `max_iter = 0` an error.
+/// Invalid samples are errors of Levy's method and of every variant of the iteration.
+#[test]
+fn test_sanathanan_koerner_convergence() {
+    use dsmc::system_identification::frequency_response::levy::{self, LevyIdentificationError, SanathananKoernerOptions};
+
+    let g = TransferFunction::continuous(&[100.0], &[1.0, 101.0, 100.0]);
+    let omegas: Vec<f64> = (0..150).map(|k| 0.1 * 10f64.powf(4.0 * k as f64 / 149.0)).collect();
+    let samples = noisy_samples(&g, &omegas, (0.01, 0.05));
+
+    let limited = levy::sanathanan_koerner_identification(&samples, 2, 0, &SanathananKoernerOptions { max_iter: 5, ..SanathananKoernerOptions::default() }).unwrap();
+    assert!(!limited.converged);
+    assert_eq!((limited.iterations, limited.changes.len()), (5, 4));
+    assert!(limited.changes.windows(2).all(|c| c[1] < c[0]), "{:?}", limited.changes);
+    let converged = levy::sanathanan_koerner_identification(&samples, 2, 0, &SanathananKoernerOptions::default()).unwrap();
+    assert!(converged.converged && converged.iterations > 5 && *converged.changes.last().unwrap() < 1e-8, "{:?}", converged.changes);
+
+    let one = levy::sanathanan_koerner_identification(&samples, 2, 0, &SanathananKoernerOptions { max_iter: 1, ..SanathananKoernerOptions::default() }).unwrap();
+    let levy = levy::identify(&samples, 2, 0).unwrap();
+    assert!(!one.converged && one.iterations == 1 && one.changes.is_empty());
+    assert_eq!(one.transfer_function.denominator.0, levy.denominator.0);
+    assert_eq!(one.transfer_function.numerator.0, levy.numerator.0);
+    let none = levy::sanathanan_koerner_identification(&samples, 2, 0, &SanathananKoernerOptions { max_iter: 0, ..SanathananKoernerOptions::default() });
+    assert!(matches!(none, Err(LevyIdentificationError::IterationError)));
+
+    // Samples with a non-finite or negative ω, or a non-finite response, are InvalidSample in Levy
+    // and every Sanathanan-Koerner variant (before the weights: not ZeroResponse); none is EmptyData
+    let opts = SanathananKoernerOptions::default();
+    let weights = vec![1.0; samples.len()];
+    for (index, omega, value) in [(2, Some(f64::NAN), None), (4, Some(-1.0), None), (6, Some(f64::INFINITY), None), (8, None, Some(f64::NAN))] {
+        let mut bad = samples.clone();
+        if let Some(omega) = omega {
+            bad[index].omega = omega;
+        }
+        if let Some(value) = value {
+            bad[index].value.re = value;
+        }
+        let expected = |r: Result<(), LevyIdentificationError>| matches!(r, Err(LevyIdentificationError::InvalidSample { index: i }) if i == index);
+        assert!(expected(levy::identify(&bad, 2, 0).map(|_| ())), "Levy, sample {index}");
+        assert!(expected(levy::sanathanan_koerner_identification(&bad, 2, 0, &opts).map(|_| ())), "SK, sample {index}");
+        assert!(expected(levy::sanathanan_koerner_weighted(&bad, &weights, 2, 0, &opts).map(|_| ())), "weighted, sample {index}");
+        assert!(expected(levy::sanathanan_koerner_relative(&bad, 2, 0, &opts).map(|_| ())), "relative, sample {index}");
+    }
+    assert!(matches!(levy::identify::<f64>(&[], 2, 0), Err(LevyIdentificationError::EmptyData)));
 }
 
 /// Samples of the noisy responses of the Sanathanan-Koerner and vector fitting tests: `G(jω)` at
