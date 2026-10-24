@@ -17,6 +17,11 @@
 //! steady state (the transient periods left out) has no leakage, so the model is that of the lines
 //! alone.
 //!
+//! `SmlIdentifier` does the steps from a raw record: the period, the excited lines, the transient
+//! periods, the zero-order hold and the band, then identifies a model per structure
+//! (`SmlIdentifier::identify`) or searches the structure by the BIC (`SmlIdentifier::search`);
+//! `identify` and `search` do the same in one call. The other functions are the steps one by one.
+//!
 //! References: J. Schoukens, R. Pintelon, Y. Rolain, "Frequency-domain system identification
 //! using non-parametric noise models estimated from a small number of data sets", Automatica 33(6),
 //! 1997; R. Pintelon, J. Schoukens, "System Identification: A Frequency Domain Approach", 2nd ed.,
@@ -29,8 +34,14 @@ use thiserror::Error;
 
 use crate::{Continuous, Discrete, Polynomial, TransferFunction, TransferFunctionWithDelay};
 
+mod identifier;
+mod search;
+pub use identifier::{identify, SmlIdentifier, SmlIdentifierOptions};
+pub use search::{search, SmlCandidate, SmlSearch, SmlSearchOptions, SmlStructure};
+
 /// Errors of the SML estimator.
 #[derive(Clone, Debug, Error, PartialEq)]
+#[non_exhaustive]
 pub enum SmlError {
     /// The input and output have different lengths.
     #[error("input and output lengths differ: {input} vs {output}")]
@@ -57,6 +68,9 @@ pub enum SmlError {
     /// No excited line found in the input (see `SmlData::from_record_excited`).
     #[error("no excited line in the input")]
     NoExcitedLine,
+    /// No period found in the input (see `SmlIdentifier::new`).
+    #[error("no period found in the input")]
+    NoPeriod,
     /// Fewer real equations `2 F` than the parameters `nθ` plus one.
     #[error("{lines} lines for {parameters} parameters (2 F > nθ needed)")]
     TooFewLines { lines: usize, parameters: usize },

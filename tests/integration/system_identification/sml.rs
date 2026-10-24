@@ -2,7 +2,7 @@
 
 use dsmc::signal::excitation::multisine;
 use dsmc::system_identification::frequency_response::levy;
-use dsmc::system_identification::frequency_response::sml::{self, ExcitationOptions, SmlData, SmlError, SmlOptions, SpectralLine};
+use dsmc::system_identification::frequency_response::sml::{self, ExcitationOptions, SmlData, SmlError, SmlIdentifier, SmlIdentifierOptions, SmlOptions, SmlSearchOptions, SmlStructure, SpectralLine};
 use dsmc::{FrequencyResponse, TransferFunction, TransferFunctionWithDelay};
 use num_complex::Complex64;
 
@@ -399,4 +399,104 @@ fn test_sml_zero_frequency_with_integrators() {
     assert_eq!(sml::identify_continuous_with_delay(&data, 2, 0, 1, 0.0, &options).unwrap_err(), SmlError::ZeroFrequencyWithIntegrators { index: 0 });
     assert!(sml::identify_continuous_with_delay(&data, 2, 0, 0, 0.0, &options).is_ok());
     assert!(sml::identify_continuous_with_delay(&data.in_band(0.01, 100.0), 2, 0, 1, 0.0, &options).is_ok());
+}
+
+/// `SmlIdentifier` gives the same data and models as the steps one by one: the period detected,
+/// the transient periods and the incomplete one left out, the band, the hold compensated for the
+/// continuous-time models and not for the discrete-time ones.
+#[test]
+fn test_sml_identifier() {
+    let mut gaussian = gaussian_source(0x9e37_79b9_7f4a_7c15);
+    let (u, y) = delayed_data(&mut gaussian);
+    let options = SmlIdentifierOptions { transient_periods: 2, band: Some((0.5, 80.0)), ..Default::default() };
+    let identifier = SmlIdentifier::new(&u, &y, TS, &options).unwrap();
+    assert_eq!(identifier.period(), DELAY_PERIOD);
+    assert_eq!(identifier.excited_lines(), (1..=100).collect::<Vec<usize>>());
+    assert_eq!((identifier.data().lines.len(), identifier.data().periods), (81, 8));
+
+    let (raw, _) = SmlData::from_record_excited(&u, &y, TS, DELAY_PERIOD, 2, &ExcitationOptions::default()).unwrap();
+    let raw = raw.in_band(0.5, 80.0);
+    let plant = delayed_plant();
+    let sml_options = SmlOptions::default();
+    let fit = identifier.identify(2, 0, 1, plant.delay, &sml_options).unwrap();
+    let expected = sml::identify_continuous_with_delay(&raw.compensate_zero_order_hold(TS), 2, 0, 1, plant.delay, &sml_options).unwrap();
+    assert_eq!((&fit.model.tf.numerator.0, &fit.model.tf.denominator.0), (&expected.model.tf.numerator.0, &expected.model.tf.denominator.0));
+    assert_eq!(fit.result.cost, expected.result.cost);
+    let total: f64 = identifier.line_costs(&fit).iter().sum();
+    assert!((total / fit.result.cost - 1.0).abs() < 1e-9);
+
+    let discrete = identifier.identify_discrete(4, 3, 3, &sml_options).unwrap();
+    let expected = sml::identify_discrete(&raw, TS, 4, 3, 3, &sml_options).unwrap();
+    assert_eq!(discrete.cost, expected.cost);
+    let total: f64 = identifier.line_costs_discrete(&discrete.model).iter().sum();
+    assert!((total / discrete.cost - 1.0).abs() < 1e-9);
+
+    // Without the hold: the continuous-time data are the measured lines
+    let options = SmlIdentifierOptions { period: Some(DELAY_PERIOD), transient_periods: 2, zero_order_hold: false, ..Default::default() };
+    let identifier = SmlIdentifier::new(&u, &y, TS, &options).unwrap();
+    assert_eq!(identifier.continuous_data().lines[0].u, identifier.data().lines[0].u);
+    assert_eq!(identifier.data().lines.len(), 100);
+}
+
+#[test]
+fn test_sml_identifier_errors() {
+    let mut gaussian = gaussian_source(5);
+    let noise: Vec<f64> = (0..8 * PERIOD).map(|_| gaussian()).collect();
+    let options = SmlIdentifierOptions::default();
+    assert_eq!(SmlIdentifier::new(&noise, &noise, TS, &options).unwrap_err(), SmlError::NoPeriod);
+    assert_eq!(SmlIdentifier::new(&noise, &noise[1..], TS, &options).unwrap_err(), SmlError::LengthMismatch { input: 8 * PERIOD, output: 8 * PERIOD - 1 });
+    let options = SmlIdentifierOptions { period: Some(PERIOD), transient_periods: 5, ..Default::default() };
+    assert_eq!(SmlIdentifier::new(&noise, &noise, TS, &options).unwrap_err(), SmlError::TooFewPeriods { periods: 3 });
+    // Given period, input without excited lines
+    let options = SmlIdentifierOptions { period: Some(PERIOD), ..Default::default() };
+    assert_eq!(SmlIdentifier::new(&noise, &noise, TS, &options).unwrap_err(), SmlError::NoExcitedLine);
+}
+
+/// `sml::identify` gives the model of `SmlIdentifier::identify`.
+#[test]
+fn test_sml_identify_in_one_call() {
+    let mut gaussian = gaussian_source(0x9e37_79b9_7f4a_7c15);
+    let (u, y) = delayed_data(&mut gaussian);
+    let record = SmlIdentifierOptions { transient_periods: 2, band: Some((0.5, 80.0)), ..Default::default() };
+    let options = SmlOptions::default();
+    let fit = sml::identify(&u, &y, TS, 2, 0, 1, 0.003, &record, &options).unwrap();
+    let expected = SmlIdentifier::new(&u, &y, TS, &record).unwrap().identify(2, 0, 1, 0.003, &options).unwrap();
+    assert_eq!(fit.model.tf.denominator.0, expected.model.tf.denominator.0);
+    assert_eq!(fit.result.cost, expected.result.cost);
+    assert_eq!(sml::identify(&u, &y[1..], TS, 2, 0, 1, 0.003, &record, &options).unwrap_err(), SmlError::LengthMismatch { input: u.len(), output: y.len() - 1 });
+}
+
+/// The search over `(n, m, q, delay)` finds the structure and the dead time of the plant
+/// `(2, 0, 1, 3 ms)`; the candidates that cannot be identified (too few lines) are kept with
+/// their error, and they and the ones stopped at `max_iterations` are not ranked; `sml::search`
+/// gives the same.
+#[test]
+fn test_sml_search() {
+    let mut gaussian = gaussian_source(0x9e37_79b9_7f4a_7c15);
+    let (u, y) = delayed_data(&mut gaussian);
+    let record = SmlIdentifierOptions { transient_periods: 2, band: Some((0.5, 80.0)), ..Default::default() };
+    let identifier = SmlIdentifier::new(&u, &y, TS, &record).unwrap();
+    let delays = [0.0, 0.001, 0.002, 0.003, 0.004, 0.005];
+    let mut structures = SmlStructure::grid(0..=3, 0..=1, 0..=2, delays);
+    assert_eq!(structures.len(), 7 * 3 * 6);
+    // 2 F = 162 real equations for nθ = 162 parameters
+    structures.push(SmlStructure::new(100, 61, 0, 0.0));
+    let search = identifier.search(&structures, &SmlSearchOptions::default());
+    println!("{search}");
+    let selected = search.selected().unwrap();
+    assert_eq!(selected.structure, SmlStructure::new(2, 0, 1, 0.003));
+    assert!(selected.fit().unwrap().result.cost_test(2.0));
+    assert_eq!(search.candidates.last().unwrap().outcome.as_ref().unwrap_err(), &SmlError::TooFewLines { lines: 81, parameters: 162 });
+    let ranked = search.ranked();
+    assert!(ranked.windows(2).all(|w| w[0].bic() <= w[1].bic()));
+    // Without the ones not identified or stopped at max_iterations (structures far from the plant)
+    assert_eq!(ranked.len(), search.candidates.iter().filter(|c| c.selectable()).count());
+    assert!(ranked.len() > 100);
+
+    // The lowest BIC alone selects the same here
+    let lowest = identifier.search(&structures, &SmlSearchOptions { bic_margin: 0.0, ..Default::default() });
+    assert_eq!(lowest.selected().unwrap().structure, ranked[0].structure);
+
+    let one_call = sml::search(&u, &y, TS, &structures, &record, &SmlSearchOptions::default()).unwrap();
+    assert_eq!(one_call.selected, search.selected);
 }
