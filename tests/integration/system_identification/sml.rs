@@ -2,8 +2,8 @@
 
 use dsmc::signal::excitation::multisine;
 use dsmc::system_identification::frequency_response::levy;
-use dsmc::system_identification::frequency_response::sml::{self, SmlData, SmlError, SmlOptions, SpectralLine};
-use dsmc::{FrequencyResponse, TransferFunction};
+use dsmc::system_identification::frequency_response::sml::{self, ExcitationOptions, SmlData, SmlError, SmlOptions, SpectralLine};
+use dsmc::{FrequencyResponse, TransferFunction, TransferFunctionWithDelay};
 use num_complex::Complex64;
 
 use super::*;
@@ -213,4 +213,169 @@ fn test_sml_errors() {
     let data = SmlData::from_periods(&u, &y, TS, PERIOD, &[1, 2]).unwrap();
     assert_eq!(sml::identify_discrete(&data, TS, 2, 1, 1, &SmlOptions::default()).unwrap_err(), SmlError::TooFewLines { lines: 2, parameters: 4 });
     assert_eq!(sml::identify_discrete(&data, 0.0, 1, 0, 0, &SmlOptions::default()).unwrap_err(), SmlError::InvalidSamplingPeriod);
+}
+
+/// A multisine on every third line of 2 ..= 101, with amplitudes `∝ k^2` (a ratio of 2500 in
+/// amplitude, 6e6 in power), plus white noise of 1e-4 times the RMS on the input over 6 periods:
+/// exactly the excited lines are found, the weakest included, and no line of the noise.
+#[test]
+fn test_sml_excited_lines() {
+    let mut gaussian = gaussian_source(0x2545_f491_4f6c_dd1d);
+    let periods = 6;
+    let lines: Vec<usize> = (2..=101).step_by(3).collect();
+    let f0 = 1.0 / (PERIOD as f64 * TS);
+    let u: Vec<f64> = multisine((periods * PERIOD) as f64 * TS, TS, f0, &lines, |k| (k * k) as f64, 7).unwrap();
+    let noisy: Vec<f64> = u.iter().map(|v| v + 1e-4 * gaussian()).collect();
+    assert_eq!(sml::excited_lines(&noisy, PERIOD, &ExcitationOptions::default()), lines);
+    // Noise-free (computed) input: the floor alone separates the lines from the rounding
+    assert_eq!(sml::excited_lines(&u, PERIOD, &ExcitationOptions::default()), lines);
+    // Too few periods
+    assert!(sml::excited_lines(&u[..PERIOD], PERIOD, &ExcitationOptions::default()).is_empty());
+}
+
+/// `from_record` leaves out the transient periods and the incomplete period at the end.
+#[test]
+fn test_sml_from_record() {
+    let mut gaussian = gaussian_source(3);
+    let (u, y) = measured(6, (0.05, 0.2), &mut gaussian);
+    let lines = excited_lines();
+    let tail = 100;
+    let (mut u_record, mut y_record) = (u.clone(), y.clone());
+    u_record.extend_from_slice(&u[..tail]);
+    y_record.extend_from_slice(&y[..tail]);
+    let from_record = SmlData::from_record(&u_record, &y_record, TS, PERIOD, 1, &lines).unwrap();
+    let from_periods = SmlData::from_periods(&u[PERIOD..], &y[PERIOD..], TS, PERIOD, &lines).unwrap();
+    assert_eq!(from_record.periods, 5);
+    for (a, b) in from_record.lines.iter().zip(&from_periods.lines) {
+        assert_eq!((a.u, a.y, a.var_u, a.var_y, a.cov_yu), (b.u, b.y, b.var_u, b.var_y, b.cov_yu));
+    }
+    assert_eq!(SmlData::from_record(&u_record, &y_record, TS, PERIOD, 3, &lines).unwrap_err(), SmlError::TooFewPeriods { periods: 3 });
+    assert_eq!(SmlData::from_record(&u_record, &y_record[1..], TS, PERIOD, 1, &lines).unwrap_err(), SmlError::LengthMismatch { input: u_record.len(), output: y_record.len() - 1 });
+}
+
+/// `scaled`, `response` and `response_std` of a line.
+#[test]
+fn test_sml_spectral_line() {
+    let line = SpectralLine { omega: 1.0, u: Complex64::new(2.0, 0.0), y: Complex64::new(0.0, 4.0), var_u: 0.01, var_y: 0.04, cov_yu: Complex64::new(0.0, 0.0) };
+    assert!((line.response() - Complex64::new(0.0, 2.0)).norm() < 1e-15);
+    // (0.04 + 4 · 0.01) / 4
+    assert!((line.response_std() - 0.02f64.sqrt()).abs() < 1e-15);
+    let (h, c) = (Complex64::from_polar(0.5, 0.3), Complex64::from_polar(2.0, -1.0));
+    let scaled = line.scaled(h, c);
+    assert!((scaled.response() - line.response() * c / h).norm() < 1e-14);
+    assert!((scaled.response_std() - line.response_std() * 4.0).abs() < 1e-14);
+    assert!((scaled.var_u - 0.0025).abs() < 1e-16 && (scaled.var_y - 0.16).abs() < 1e-15);
+}
+
+const DELAY_PERIOD: usize = 1024;
+
+/// `G(s) = e^(-0.003 s) 2e4 / (s (s^2 + 2 ζ ω s + ω^2))`, `ω = 2π 20`, `ζ = 0.1`.
+fn delayed_plant() -> TransferFunctionWithDelay<f64> {
+    let w = 2.0 * std::f64::consts::PI * 20.0;
+    TransferFunctionWithDelay::new(TransferFunction::continuous(&[2e4], &[1.0, 0.2 * w, w * w, 0.0]), 0.003)
+}
+
+/// The plant behind a zero-order hold at 1 kHz, driven by a multisine on lines 1 ..= 100 (up to
+/// 98 Hz) of 1024 samples, flat at the output, for 2 transient + 8 periods and an incomplete
+/// period; noise of 0.01 % / 2 % of the RMS on the input / output (the input, shaped like `1 / |G|`,
+/// is weak at the low lines).
+fn delayed_data(gaussian: &mut impl FnMut() -> f64) -> (Vec<f64>, Vec<f64>) {
+    let plant = delayed_plant();
+    let total = 10 * DELAY_PERIOD + 300;
+    let f0 = 1.0 / (DELAY_PERIOD as f64 * TS);
+    let lines: Vec<usize> = (1..=100).collect();
+    let response = |k: usize| plant.frequency_response(2.0 * std::f64::consts::PI * f0 * k as f64).norm();
+    let u0: Vec<f64> = multisine(total as f64 * TS, TS, f0, &lines, |k| 1.0 / response(k), 5).unwrap();
+    let y0 = plant.simulate(TS, &u0).unwrap();
+    let rms = |x: &[f64]| (x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64).sqrt();
+    let (su, sy) = (1e-4 * rms(&u0), 0.02 * rms(&y0[2 * DELAY_PERIOD..]));
+    (u0.iter().map(|v| v + su * gaussian()).collect(), y0.iter().map(|v| v + sy * gaussian()).collect())
+}
+
+/// Integrator, resonance and dead time from zero-order-hold data: the excited lines and the
+/// period are found from the input, the hold compensated; the coefficients are recovered within
+/// a few standard deviations, the fixed ones have zero deviation, the line costs add up to the
+/// cost, which passes the cost test. Without the hold compensation, or with too few poles, the
+/// cost test fails and the BIC is higher.
+#[test]
+fn test_sml_continuous_with_delay() {
+    let mut gaussian = gaussian_source(0x9e37_79b9_7f4a_7c15);
+    let (u, y) = delayed_data(&mut gaussian);
+    assert_eq!(dsmc::signal::detect_period(&u[2 * DELAY_PERIOD..], 4 * DELAY_PERIOD), Some(DELAY_PERIOD));
+    let steady = &u[2 * DELAY_PERIOD..10 * DELAY_PERIOD];
+    let lines = sml::excited_lines(steady, DELAY_PERIOD, &ExcitationOptions::default());
+    assert_eq!(lines, (1..=100).collect::<Vec<usize>>());
+    let raw = SmlData::from_record(&u, &y, TS, DELAY_PERIOD, 2, &lines).unwrap();
+    assert_eq!(raw.periods, 8);
+    let data = raw.compensate_zero_order_hold(TS).in_band(0.5, 80.0);
+    assert_eq!(data.lines.len(), 81);
+
+    let plant = delayed_plant();
+    let options = SmlOptions::default();
+    let fit = sml::identify_continuous_with_delay(&data, 2, 0, 1, plant.delay, &options).unwrap();
+    let result = &fit.result;
+    println!("{:?}\nstd {:?} {:?}\ncost {:.1}, expected {:.1} ± {:.1}", fit.model, result.std_numerator, result.std_denominator, result.cost, result.expected_cost, result.cost_std);
+    assert!(result.converged(), "{:?}", result.termination);
+    assert_eq!((result.lines, result.periods, result.parameters), (81, 8, 3));
+    assert_eq!(fit.model.delay, plant.delay);
+    let (a, b) = (&fit.model.tf.denominator, &fit.model.tf.numerator);
+    assert_eq!(a.len(), 4);
+    assert_eq!((a[0], a[3]), (1.0, 0.0));
+    assert_eq!((result.std_denominator[0], result.std_denominator[3]), (0.0, 0.0));
+    let truth = plant.tf.denominator.iter().chain(plant.tf.numerator.iter());
+    for ((&estimate, &truth), &std) in a.iter().chain(b.iter()).zip(truth).zip(result.std_denominator.iter().chain(&result.std_numerator)) {
+        assert!((estimate - truth).abs() <= 4.0 * std + 1e-12, "{estimate} vs {truth} (std {std:e})");
+        assert!((estimate - truth).abs() <= 0.01 * truth.abs(), "{estimate} vs {truth}");
+    }
+
+    let costs = sml::line_costs_with_delay(&data, &fit.model);
+    assert_eq!(costs.len(), 81);
+    let total: f64 = costs.iter().sum();
+    assert!((total / result.cost - 1.0).abs() < 1e-9, "{total} vs {}", result.cost);
+    assert!(result.cost_test(2.0));
+
+    // The hold left uncompensated (a phase lag of ω ts / 2): a model error
+    let uncompensated = sml::identify_continuous_with_delay(&raw.in_band(0.5, 80.0), 2, 0, 1, plant.delay, &options).unwrap();
+    println!("uncompensated: cost {:.1}", uncompensated.result.cost);
+    assert!(!uncompensated.result.cost_test(2.0));
+    // One pole too few: worse by the cost test and the BIC (and the AIC)
+    let low = sml::identify_continuous_with_delay(&data, 1, 0, 1, plant.delay, &options).unwrap();
+    println!("BIC {:.1} vs {:.1} of one pole fewer", result.bic(), low.result.bic());
+    assert!(!low.result.cost_test(2.0));
+    assert!(result.bic() < low.result.bic() && result.aic() < low.result.aic());
+}
+
+/// `line_costs` (continuous) and `line_costs_discrete` add up to the cost; the BIC and AIC by
+/// their formulas. The right structure passes the cost test at 2 standard deviations in most
+/// (not all) of 20 noise realizations.
+#[test]
+fn test_sml_line_costs() {
+    let mut gaussian = gaussian_source(0x2545_f491_4f6c_dd1d);
+    let runs = 20;
+    let mut passed = 0;
+    for run in 0..runs {
+        let (u, y) = measured(6, (0.05, 0.2), &mut gaussian);
+        let data = SmlData::from_periods(&u, &y, TS, PERIOD, &excited_lines()).unwrap();
+        let result = sml::identify_discrete(&data, TS, 2, 1, 1, &SmlOptions::default()).unwrap();
+        let total: f64 = sml::line_costs_discrete(&data, TS, &result.model).iter().sum();
+        assert!((total / result.cost - 1.0).abs() < 1e-9, "{total} vs {}", result.cost);
+        passed += result.cost_test(2.0) as usize;
+        if run == 0 {
+            // 2V / r + nθ ln(2F), r = (M - 1) / (M - 2)
+            let r = 5.0 / 4.0;
+            assert!((result.bic() - (2.0 * result.cost / r + 4.0 * 200f64.ln())).abs() < 1e-9);
+            assert!((result.aic() - (2.0 * result.cost / r + 8.0)).abs() < 1e-9);
+        }
+    }
+    println!("cost test passed {passed} / {runs}");
+    assert!(passed >= 16);
+
+    let g = TransferFunction::continuous(&[1000.0], &[1.0, 2.0, 1000.0]);
+    let omegas: Vec<f64> = (1..=120).map(|k| 0.5 * k as f64).collect();
+    let data = SmlData::new(synthetic_lines(&g, &omegas, 8, (0.01, 0.05), &mut gaussian), 8).unwrap();
+    let result = sml::identify_continuous(&data, 2, 0, &SmlOptions::default()).unwrap();
+    let costs = sml::line_costs(&data, &result.model);
+    let total: f64 = costs.iter().sum();
+    assert!((total / result.cost - 1.0).abs() < 1e-9, "{total} vs {}", result.cost);
+    assert!(result.cost_test(2.0));
 }

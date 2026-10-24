@@ -27,7 +27,7 @@ use num_traits::Float;
 use rustfft::{FftNum, FftPlanner};
 use thiserror::Error;
 
-use crate::{Continuous, Discrete, Polynomial, TransferFunction};
+use crate::{Continuous, Discrete, Polynomial, TransferFunction, TransferFunctionWithDelay};
 
 /// Errors of the SML estimator.
 #[derive(Clone, Debug, Error, PartialEq)]
@@ -75,6 +75,37 @@ pub struct SpectralLine<T> {
     pub var_y: T,
     /// Covariance of `Ȳ` and `Ū`: `σ̂_YU = 1/(M (M - 1)) Σ_m (Y^[m] - Ȳ) (U^[m] - Ū)*`.
     pub cov_yu: Complex<T>,
+}
+
+impl<T: Float> SpectralLine<T> {
+    /// The line with `Ū` multiplied by `h` and `Ȳ` by `c`, and the (co)variances accordingly:
+    /// `σ̂²_U |h|^2`, `σ̂²_Y |c|^2`, `σ̂_YU c h̄`. E.g. `h` a known input filter (the zero-order hold,
+    /// see `SmlData::compensate_zero_order_hold`), `c` a known factor of the model moved to the
+    /// output (see `identify_continuous_with_delay`).
+    pub fn scaled(&self, h: Complex<T>, c: Complex<T>) -> Self {
+        Self {
+            omega: self.omega,
+            u: self.u * h,
+            y: self.y * c,
+            var_u: self.var_u * h.norm_sqr(),
+            var_y: self.var_y * c.norm_sqr(),
+            cov_yu: self.cov_yu * c * h.conj(),
+        }
+    }
+
+    /// Measured response `Ĝ = Ȳ / Ū`.
+    pub fn response(&self) -> Complex<T> {
+        self.y / self.u
+    }
+
+    /// Standard deviation of `Ĝ` to first order,
+    /// `sqrt(max(0, (σ̂²_Y + |Ĝ|^2 σ̂²_U - 2 Re(Ĝ̄ σ̂_YU)) / |Ū|^2))`.
+    pub fn response_std(&self) -> T {
+        let g = self.response();
+        let two = T::one() + T::one();
+        let var = (self.var_y + g.norm_sqr() * self.var_u - two * (g.conj() * self.cov_yu).re) / self.u.norm_sqr();
+        Float::sqrt(Float::max(var, T::zero()))
+    }
 }
 
 /// Spectral lines of `M` periods, the data of the SML estimator.
@@ -168,6 +199,112 @@ impl<T: Float> SmlData<T> {
             .collect();
         Self::new(lines, periods)
     }
+
+    /// `from_periods` on a raw record: the first `transient_periods` periods (the transient from
+    /// rest) and the incomplete period at the end are left out. At least 4 whole periods must
+    /// remain (`TooFewPeriods` otherwise).
+    pub fn from_record(u: &[T], y: &[T], ts: T, period: usize, transient_periods: usize, lines: &[usize]) -> Result<Self, SmlError>
+    where
+        T: FftNum,
+    {
+        if u.len() != y.len() {
+            return Err(SmlError::LengthMismatch { input: u.len(), output: y.len() });
+        }
+        if period == 0 {
+            return Err(SmlError::NotWholePeriods { samples: u.len(), period });
+        }
+        let periods = (u.len() / period).saturating_sub(transient_periods);
+        if periods < 4 {
+            return Err(SmlError::TooFewPeriods { periods });
+        }
+        let range = transient_periods * period..(transient_periods + periods) * period;
+        Self::from_periods(&u[range.clone()], &y[range], ts, period, lines)
+    }
+
+    /// The lines with `Ū` multiplied by the zero-order hold `h = e^(-jω ts / 2) sinc(ω ts / 2)`
+    /// (`sinc x = sin x / x`) of the sampling period `ts` (see `SpectralLine::scaled`): the data of
+    /// a held input, fitted by a continuous-time model `G(s)` of the plant behind the hold, as
+    /// `Y = G(jω) h Ū` (up to aliasing, small where `|G|` rolls off well below the Nyquist
+    /// frequency).
+    pub fn compensate_zero_order_hold(&self, ts: T) -> Self {
+        let two = T::one() + T::one();
+        let lines = self
+            .lines
+            .iter()
+            .map(|l| {
+                let x = l.omega * ts / two;
+                let sinc = if x == T::zero() { T::one() } else { Float::sin(x) / x };
+                l.scaled(Complex::new(T::zero(), -x).exp() * sinc, Complex::new(T::one(), T::zero()))
+            })
+            .collect();
+        Self { lines, periods: self.periods }
+    }
+
+    /// The lines of frequency `ω / 2π` in `[low, high]` \[Hz\].
+    pub fn in_band(&self, low: T, high: T) -> Self {
+        let two_pi = T::from(2.0 * std::f64::consts::PI).unwrap();
+        let lines = self.lines.iter().filter(|l| (low..=high).contains(&(l.omega / two_pi))).copied().collect();
+        Self { lines, periods: self.periods }
+    }
+}
+
+/// Options of `excited_lines`.
+#[derive(Clone, Debug)]
+pub struct ExcitationOptions<T> {
+    /// Lowest power `|Ū|^2` of an excited line relative to the highest (DC left out), above the
+    /// rounding of a computed input. Small (default 1e-12), so that steeply shaped amplitudes
+    /// (e.g. `∝ k^2`, for a flat output of a double integrator) keep their low lines: a fraction of
+    /// the maximum would drop them, and with them the rigid-body mode.
+    pub floor: T,
+    /// Lowest `|Ū|^2 / σ̂²_U` of an excited line (default 100). At a line not excited, of a noisy
+    /// input, the ratio follows `F(2, 2(M - 1))`: above 100 with probability
+    /// `(1 + 100 / (M - 1))^-(M - 1)`, 2.5e-5 for `M = 4`.
+    pub snr: T,
+}
+
+impl<T: Float> Default for ExcitationOptions<T> {
+    fn default() -> Self {
+        Self { floor: T::from(1e-12).unwrap(), snr: T::from(100).unwrap() }
+    }
+}
+
+/// Excited lines `k` (`1 ..= period / 2`, DC left out) of the periodic input `u` (`M` whole periods
+/// of `period` samples in steady state, the transient left out; an incomplete period at the end is
+/// ignored), to pass to `SmlData::from_periods`. From the DFT `U^[m](k)` of each period, `Ū` and
+/// `σ̂²_U = 1/(M (M - 1)) Σ_m |U^[m] - Ū|^2` (as `SmlData::from_periods`), a line is excited if
+///
+/// ```text
+/// |Ū(k)|^2 >= floor · max_(k' >= 1) |Ū(k')|^2   and   |Ū(k)|^2 >= snr · σ̂²_U(k)
+/// ```
+///
+/// (see `ExcitationOptions`). Empty for fewer than 2 periods or a zero `period`.
+pub fn excited_lines<T: Float + FftNum>(u: &[T], period: usize, options: &ExcitationOptions<T>) -> Vec<usize> {
+    if period == 0 || u.len() / period < 2 {
+        return Vec::new();
+    }
+    let periods = u.len() / period;
+    let fft = FftPlanner::new().plan_fft_forward(period);
+    let half = period / 2;
+    let zero = Complex::new(T::zero(), T::zero());
+    let spectra: Vec<Vec<Complex<T>>> = u[..periods * period]
+        .chunks(period)
+        .map(|chunk| {
+            let mut buffer: Vec<Complex<T>> = chunk.iter().map(|&v| Complex::new(v, T::zero())).collect();
+            fft.process(&mut buffer);
+            buffer.truncate(half + 1);
+            buffer
+        })
+        .collect();
+    let m = T::from(periods).unwrap();
+    let (power, variance): (Vec<T>, Vec<T>) = (0..=half)
+        .map(|k| {
+            let mean = spectra.iter().fold(zero, |acc, s| acc + s[k]) / m;
+            let var = spectra.iter().fold(T::zero(), |acc, s| acc + (s[k] - mean).norm_sqr()) / (m * (m - T::one()));
+            (mean.norm_sqr(), var)
+        })
+        .unzip();
+    let max = power[1..].iter().fold(T::zero(), |acc, &p| Float::max(acc, p));
+    (1..=half).filter(|&k| power[k] > T::zero() && power[k] >= options.floor * max && power[k] >= options.snr * variance[k]).collect()
 }
 
 /// Options of the SML estimator.
@@ -224,6 +361,12 @@ pub struct SmlResult<T, D> {
     pub iterations: usize,
     /// Why the iterations stopped.
     pub termination: Termination,
+    /// Number of lines `F` of the data.
+    pub lines: usize,
+    /// Number of periods `M` of the data.
+    pub periods: usize,
+    /// Number of free parameters `nθ = n + m + 1`.
+    pub parameters: usize,
 }
 
 impl<T, D> SmlResult<T, D> {
@@ -231,6 +374,102 @@ impl<T, D> SmlResult<T, D> {
     pub fn converged(&self) -> bool {
         self.termination == Termination::Converged
     }
+}
+
+impl<T: Float, D> SmlResult<T, D> {
+    /// Cost test `cost <= expected_cost + sigmas · cost_std` (e.g. `sigmas = 2`): `false` points to
+    /// a model error (order too low, delay, leakage). To choose a structure, prefer `bic`: with few
+    /// periods or a low signal-to-noise ratio the test is loose, and passes structures with fewer
+    /// poles and a much higher cost.
+    pub fn cost_test(&self, sigmas: T) -> bool {
+        self.cost <= self.expected_cost + sigmas * self.cost_std
+    }
+
+    /// Bayesian information criterion of the SML cost, `2V / r + nθ ln(2F)` with
+    /// `r = (M - 1) / (M - 2)`: `2V / r` is `-2 ln L` (up to a constant) of the residuals `e_k`, as
+    /// circular complex Gaussian of variance about `r` (`2F` real equations). The smaller the
+    /// better; it compares structures (orders, integrators, delay) on the same data.
+    ///
+    /// Not `Validation::bic` (`N ln V + p ln N` of the time-domain residuals): that one has the
+    /// noise variance unknown and estimated from the residuals, this one has it known from the
+    /// periods, so the cost enters linearly.
+    ///
+    /// Prefer it to `cost_test` to choose a structure: with few periods or a low signal-to-noise
+    /// ratio the cost test is loose, and passes structures with fewer poles and a much higher cost.
+    pub fn bic(&self) -> T {
+        information_criterion(self.cost, self.periods, self.parameters, Float::ln(T::from(2 * self.lines).unwrap()))
+    }
+
+    /// Akaike information criterion of the SML cost, `2V / r + 2 nθ` (see `bic`, of which it has the
+    /// smaller penalty for more than 3 lines; not `Validation::aic`).
+    pub fn aic(&self) -> T {
+        information_criterion(self.cost, self.periods, self.parameters, T::from(2).unwrap())
+    }
+}
+
+/// `2V / r + nθ penalty`, `r = (M - 1) / (M - 2)`.
+fn information_criterion<T: Float>(cost: T, periods: usize, parameters: usize, penalty: T) -> T {
+    let m = T::from(periods).unwrap();
+    let two = T::from(2).unwrap();
+    let r = (m - T::one()) / (m - two);
+    two * cost / r + T::from(parameters).unwrap() * penalty
+}
+
+/// Result of `identify_continuous_with_delay`.
+#[derive(Clone, Debug)]
+pub struct SmlResultWithDelay<T> {
+    /// Identified model `e^(-delay s) B(s) / (s^q A(s))`, `A` monic; `model.tf.denominator`
+    /// includes `s^q`.
+    pub model: TransferFunctionWithDelay<T>,
+    /// The SML result of the rational part `B / (s^q A)`; its `std_denominator` is 0 for the fixed
+    /// coefficients (the leading 1 and those of the integrators), and `parameters` is `n + m + 1`.
+    pub result: SmlResult<T, Continuous>,
+}
+
+/// Cost of each line `|e_k|^2 = |B Ū - A Ȳ|^2 / D_k`,
+/// `D_k = σ̂²_Y |A|^2 + σ̂²_U |B|^2 - 2 Re(σ̂_YU A B̄)`, for the continuous-time `model = B / A`
+/// (infinite where `D_k` is not positive). Their sum is the SML cost; each has the expected value
+/// of about `expected_cost / F`, so lines far above point to a local model error (or a
+/// disturbance).
+pub fn line_costs<T: Float>(data: &SmlData<T>, model: &TransferFunction<T, Continuous>) -> Vec<T> {
+    line_costs_of(data, |omega| {
+        let s = Complex::new(T::zero(), omega);
+        (evaluate(&model.numerator, s), evaluate(&model.denominator, s))
+    })
+}
+
+/// `line_costs` of the discrete-time `model` (polynomials in `z = e^(jω ts)`).
+pub fn line_costs_discrete<T: Float>(data: &SmlData<T>, ts: T, model: &TransferFunction<T, Discrete>) -> Vec<T> {
+    line_costs_of(data, |omega| {
+        let z = Complex::new(T::zero(), omega * ts).exp();
+        (evaluate(&model.numerator, z), evaluate(&model.denominator, z))
+    })
+}
+
+/// `line_costs` of `model = e^(-delay s) B / A`, as `B e^(-jω delay) / A`: on the data passed to
+/// `identify_continuous_with_delay`, their sum is its cost.
+pub fn line_costs_with_delay<T: Float>(data: &SmlData<T>, model: &TransferFunctionWithDelay<T>) -> Vec<T> {
+    line_costs_of(data, |omega| {
+        let s = Complex::new(T::zero(), omega);
+        ((s * -model.delay).exp() * evaluate(&model.tf.numerator, s), evaluate(&model.tf.denominator, s))
+    })
+}
+
+/// Polynomial of descending coefficients at `x`.
+fn evaluate<T: Float>(p: &Polynomial<T>, x: Complex<T>) -> Complex<T> {
+    p.iter().fold(Complex::new(T::zero(), T::zero()), |acc, &c| acc * x + c)
+}
+
+/// `|B Ū - A Ȳ|^2 / D_k` with `(B, A) = polynomials(ω)`.
+fn line_costs_of<T: Float>(data: &SmlData<T>, polynomials: impl Fn(T) -> (Complex<T>, Complex<T>)) -> Vec<T> {
+    data.lines
+        .iter()
+        .map(|l| {
+            let (b, a) = polynomials(l.omega);
+            let d = variance(l, a, b);
+            if d > T::zero() { (b * l.u - a * l.y).norm_sqr() / d } else { T::infinity() }
+        })
+        .collect()
 }
 
 /// SML estimate of the continuous-time model
@@ -302,6 +541,46 @@ pub fn identify_continuous<T: Float + RealField>(
     let std_denominator: Vec<T> = (0..=n).rev().map(|i| if i == n { T::zero() } else { fit.std[i] * factor(i) }).collect();
     let std_numerator: Vec<T> = (0..=m).rev().map(|j| fit.std[n + j] * factor(j)).collect();
     Ok(fit.result(data, TransferFunction::from_polynomials(Polynomial(numerator), Polynomial(denominator)), std_numerator, std_denominator))
+}
+
+/// SML estimate of the continuous-time model with `q = integrators` integrators and a known dead
+/// time `delay` \[s\]
+///
+/// ```text
+/// G(s) = e^(-delay s) B(s) / (s^q A(s)),   A monic of degree n = denom_order, B of degree m = numer_order
+/// ```
+///
+/// by `identify_continuous` of `B / A` on the lines with `Ȳ` multiplied by
+/// `c = (jω)^q e^(jω delay)` (`SpectralLine::scaled`; the noise (co)variances likewise). The free
+/// parameters remain `nθ = n + m + 1`; `result.model.denominator` includes `s^q` and
+/// `result.std_denominator` is 0 for the fixed coefficients (the leading 1 and the `q` trailing
+/// zeros). For the data of a zero-order-hold input, apply `SmlData::compensate_zero_order_hold`
+/// first. A line at `ω = 0` with integrators has `c = 0`: leave it out (`SmlData::in_band`).
+pub fn identify_continuous_with_delay<T: Float + RealField>(
+    data: &SmlData<T>,
+    denom_order: usize,
+    numer_order: usize,
+    integrators: usize,
+    delay: T,
+    options: &SmlOptions<T>,
+) -> Result<SmlResultWithDelay<T>, SmlError> {
+    let scaled = SmlData {
+        lines: data
+            .lines
+            .iter()
+            .map(|l| {
+                let c = Complex::new(T::zero(), l.omega).powi(integrators as i32) * Complex::new(T::zero(), l.omega * delay).exp();
+                l.scaled(Complex::new(T::one(), T::zero()), c)
+            })
+            .collect(),
+        periods: data.periods,
+    };
+    let mut result = identify_continuous(&scaled, denom_order, numer_order, options)?;
+    let mut denominator = result.model.denominator.0.clone();
+    denominator.resize(denominator.len() + integrators, T::zero());
+    result.std_denominator.resize(result.std_denominator.len() + integrators, T::zero());
+    result.model = TransferFunction::from_polynomials(result.model.numerator.clone(), Polynomial(denominator));
+    Ok(SmlResultWithDelay { model: TransferFunctionWithDelay::new(result.model.clone(), delay), result })
 }
 
 /// SML estimate of the discrete-time model (sampling period `ts` \[s\], `z = e^(jω ts)`)
@@ -395,6 +674,9 @@ impl<T: Float> Fit<T> {
             cost_std: Float::sqrt(f) * ratio * Float::sqrt((m - one) / (m - T::from(3).unwrap())),
             iterations: self.iterations,
             termination: self.termination,
+            lines: data.lines.len(),
+            periods: data.periods,
+            parameters: self.parameters,
         }
     }
 }
