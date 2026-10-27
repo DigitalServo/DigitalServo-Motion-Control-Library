@@ -96,15 +96,17 @@ let y: Vec<f64> = (0..100).map(|_| system.update(&[1.0]).unwrap()[0]).collect();
 ### Bode diagram and Nyquist plot
 
 ```rust
-use dsmc::{tf, BodeDiagramPlotter, FrequencyTransferFunction, NyquistPlotter, RadPerSec};
-use num_complex::Complex;
+use dsmc::{tf, BodeDiagramPlotter, NyquistPlotter, RadPerSec};
 
 let plant = tf!("1 / (s (0.01 s + 1))");
 let controller = tf!("(100 s + 1000) / s");
 
-// Any element can be put in series, e.g. a dead time of 1 ms
-let delay = FrequencyTransferFunction::new(|w: f64| Complex::new(0.0, -w * 1e-3).exp());
-let open_loop = &(&controller * &plant).frequency_transfer_function() * &delay;
+// Open loop with a dead time of 1 ms
+let open_loop = (&controller * &plant).frequency_transfer_function().with_delay(1e-3);
+
+// Frequency transfer functions can be put in series, e.g. a first-order low-pass filter
+let lpf = tf!("1 / (1e-4 s + 1)").frequency_transfer_function();
+let open_loop = &open_loop * &lpf;
 
 // Gain [dB] and phase [rad] from 0.1 Hz to 1 kHz
 let bode = BodeDiagramPlotter::<f64>::new(0.1, 1000.0, 0.1, true).plot(&open_loop);

@@ -50,6 +50,7 @@ fn test_frequency_transfer_function() {
     let delay = FrequencyTransferFunction::new(move |omega: f64| Complex::new(0.0, -omega * l).exp());
     let g_d = &g_s * &delay;
     let w = 50.0;
+    assert_eq!(g_s.with_delay(l).response(w), g_d.response(w));
     assert!((g_d.response(w).norm() - g_s.response(w).norm()).abs() < 1e-12);
     assert!((g_d.characteristics::<RadPerSec>(w, true).phase - (g_s.characteristics::<RadPerSec>(w, true).phase - w * l)).abs() < 1e-12);
 
