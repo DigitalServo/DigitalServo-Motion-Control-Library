@@ -54,6 +54,7 @@ impl<T: Float + FloatConst + 'static> FrequencyTransferFunction<T> {
     }
 
     /// Series dead time e^{-jω delay} G(jω), with `delay` in seconds.
+    /// A delay of `k` samples `z^-k` of a discrete-time G is exactly `with_delay(k * ts)`.
     pub fn with_delay(&self, delay: T) -> Self {
         let g = self.clone();
         Self::new(move |omega| g.response(omega) * Complex::new(T::zero(), -omega * delay).exp())
