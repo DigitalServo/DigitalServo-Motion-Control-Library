@@ -14,7 +14,7 @@ pub mod fft;
 pub use bode_diagram::BodeDiagramPlotter;
 pub use frequency_transfer_function::FrequencyTransferFunction;
 pub use frequency_unit::{FrequencyUnit, Hz, RadPerSec};
-pub use nyquist::NyquistPlotter;
+pub use nyquist::{AdaptiveNyquistPlotter, NyquistPlotter};
 pub use statistics::Statistics;
 
 use num_traits::{Float, FloatConst};

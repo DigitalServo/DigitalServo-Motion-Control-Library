@@ -102,3 +102,50 @@ fn test_frequency_transfer_function() {
     }
     assert!(bode_u.last().unwrap().phase < -4.0 * std::f64::consts::PI);
 }
+
+#[test]
+fn test_adaptive_nyquist() {
+    use dsmc::{AdaptiveNyquistPlotter, TransferFunction};
+
+    // Rigid body with a lightly damped mode at 300 Hz (ζ = 0.001) under a PID controller
+    let wr = 2.0 * std::f64::consts::PI * 300.0;
+    let zeta = 1e-3;
+    let plant = TransferFunction::continuous(&[wr * wr], &[1.0, 0.0, 0.0]) * TransferFunction::continuous(&[1.0], &[1.0, 2.0 * zeta * wr, wr * wr]);
+    let omega = 300.0;
+    let pid = TransferFunction::continuous(&[3.0 * omega, 3.0 * omega * omega, omega * omega * omega], &[1.0, 0.0]);
+    let tf = pid * plant;
+    let g = tf.frequency_transfer_function();
+
+    let max_angle = 2f64.to_radians();
+    let nyq = AdaptiveNyquistPlotter::<f64>::new(10.0, 2000.0).plot(&tf);
+    let fixed = NyquistPlotter::<f64>::new(10.0, 2000.0, 0.01).plot(&tf);
+
+    // Both ends included, strictly increasing, far fewer points than a fixed step of 0.01 Hz
+    assert!((nyq[0].omega - 2.0 * std::f64::consts::PI * 10.0).abs() < 1e-9);
+    assert!((nyq.last().unwrap().omega - 2.0 * std::f64::consts::PI * 2000.0).abs() < 1e-9);
+    assert!(nyq.windows(2).all(|w| w[1].omega > w[0].omega));
+    assert!(nyq.len() * 20 < fixed.len(), "{} points", nyq.len());
+
+    // Smooth: the locus turns little at each point and |ln(G_2 / G_1)| is bounded
+    for w in nyq.windows(3) {
+        let turn = ((w[2].value - w[1].value) / (w[1].value - w[0].value)).arg().abs();
+        assert!(turn < 2.0 * max_angle, "turn {turn} at {}", w[1].omega);
+    }
+    for w in nyq.windows(2) {
+        assert!((w[1].value / w[0].value).ln().norm() < 0.1 + 1e-12);
+    }
+
+    // The resonance circle is resolved: its peak |G| is reached to within 0.1 %
+    let peak = |r: &[dsmc::FrequencyResponse<f64>]| r.iter().map(|r| r.value.norm()).fold(0.0, f64::max);
+    let peak_true = (0..=20000).map(|i| g.response(wr * (0.99 + 0.02 * i as f64 / 20000.0)).norm()).fold(0.0, f64::max);
+    assert!((peak(&nyq) / peak_true - 1.0).abs() < 1e-3);
+
+    // From zero frequency: a first-order lag ends at G(0) = 1
+    let lag = AdaptiveNyquistPlotter::<f64>::new(0.0, 100.0).plot(tf!("10 / (s + 10)"));
+    assert_eq!(lag[0].omega, 0.0);
+    assert!((lag[0].value.re - 1.0).abs() < 1e-12);
+
+    // The bound on the number of points
+    let capped = AdaptiveNyquistPlotter::<f64>::new(10.0, 2000.0).max_points(100).plot(&tf);
+    assert!(capped.len() <= 100);
+}

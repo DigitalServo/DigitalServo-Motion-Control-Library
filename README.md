@@ -96,7 +96,7 @@ let y: Vec<f64> = (0..100).map(|_| system.update(&[1.0]).unwrap()[0]).collect();
 ### Bode diagram and Nyquist plot
 
 ```rust
-use dsmc::{tf, BodeDiagramPlotter, NyquistPlotter, RadPerSec};
+use dsmc::{tf, AdaptiveNyquistPlotter, BodeDiagramPlotter, NyquistPlotter, RadPerSec};
 
 let plant = tf!("1 / (s (0.01 s + 1))");
 let controller = tf!("(100 s + 1000) / s");
@@ -113,6 +113,8 @@ let bode = BodeDiagramPlotter::<f64>::new(0.1, 1000.0, 0.1, true).plot(&open_loo
 // The same in rad/s
 let bode_rad = BodeDiagramPlotter::<f64, RadPerSec>::new(1.0, 6000.0, 1.0, true).plot(&open_loop);
 let nyquist = NyquistPlotter::<f64>::new(0.1, 1000.0, 0.1).plot(&open_loop);
+// Adaptive step: dense where the locus turns (e.g. around a lightly damped mode), sparse elsewhere
+let nyquist = AdaptiveNyquistPlotter::<f64>::new(0.1, 1000.0).plot(&open_loop);
 
 // Single points
 let c = open_loop.characteristics::<RadPerSec>(100.0, true);
