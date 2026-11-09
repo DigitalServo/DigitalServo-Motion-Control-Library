@@ -4,6 +4,7 @@ use std::{marker::PhantomData, ops::Deref};
 
 use nalgebra::Complex;
 
+mod adaptive_grid;
 mod bode_diagram;
 mod frequency_transfer_function;
 mod frequency_unit;
@@ -11,7 +12,7 @@ mod nyquist;
 mod statistics;
 pub mod fft;
 
-pub use bode_diagram::BodeDiagramPlotter;
+pub use bode_diagram::{AdaptiveBodeDiagramPlotter, BodeDiagramPlotter};
 pub use frequency_transfer_function::FrequencyTransferFunction;
 pub use frequency_unit::{FrequencyUnit, Hz, RadPerSec};
 pub use nyquist::{AdaptiveNyquistPlotter, NyquistPlotter};

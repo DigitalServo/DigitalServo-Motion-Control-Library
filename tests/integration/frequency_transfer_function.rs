@@ -149,3 +149,81 @@ fn test_adaptive_nyquist() {
     let capped = AdaptiveNyquistPlotter::<f64>::new(10.0, 2000.0).max_points(100).plot(&tf);
     assert!(capped.len() <= 100);
 }
+
+#[test]
+fn test_adaptive_bode() {
+    use dsmc::{AdaptiveBodeDiagramPlotter, AdaptiveNyquistPlotter, TransferFunction};
+
+    // Rigid body with a lightly damped mode at 300 Hz (ζ = 0.001) under a PID controller
+    let wr = 2.0 * std::f64::consts::PI * 300.0;
+    let zeta = 1e-3;
+    let plant = TransferFunction::continuous(&[wr * wr], &[1.0, 0.0, 0.0]) * TransferFunction::continuous(&[1.0], &[1.0, 2.0 * zeta * wr, wr * wr]);
+    let omega = 300.0;
+    let pid = TransferFunction::continuous(&[3.0 * omega, 3.0 * omega * omega, omega * omega * omega], &[1.0, 0.0]);
+    let tf = pid * plant;
+    let g = tf.frequency_transfer_function();
+
+    let bode = AdaptiveBodeDiagramPlotter::<f64>::new(1.0, 10000.0, true).plot(&tf);
+    let fixed = BodeDiagramPlotter::<f64>::new(1.0, 10000.0, 0.01, true).plot(&tf);
+
+    // Both ends exactly, strictly increasing, far fewer points than a fixed step of 0.01 Hz
+    assert_eq!(bode[0].frequency, 1.0);
+    assert_eq!(bode.last().unwrap().frequency, 10000.0);
+    assert!(bode.windows(2).all(|w| w[1].frequency > w[0].frequency));
+    assert!(bode.len() * 100 < fixed.len(), "{} points", bode.len());
+
+    // Steps bounded by max_log_step = 0.1 (0.87 dB, 0.1 rad); the phase is continuous
+    let np = 20.0 / std::f64::consts::LN_10;
+    for w in bode.windows(2) {
+        assert!((w[1].gain - w[0].gain).abs() <= 0.1 * np + 1e-9);
+        assert!((w[1].phase - w[0].phase).abs() <= 0.1 + 1e-9);
+    }
+
+    // Linear interpolation of ln G in log f between neighbors follows the true response
+    let hz = |f: f64| 2.0 * std::f64::consts::PI * f;
+    let mut worst: f64 = 0.0;
+    for w in bode.windows(2) {
+        let (ga, gb) = (g.response(hz(w[0].frequency)), g.response(hz(w[1].frequency)));
+        for k in 1..10 {
+            let t = k as f64 / 10.0;
+            let f = w[0].frequency * (w[1].frequency / w[0].frequency).powf(t);
+            let error = ((g.response(hz(f)) / ga).ln() - (gb / ga).ln() * t).norm();
+            worst = worst.max(error);
+        }
+    }
+    assert!(worst < 0.02, "worst {worst}");
+
+    // The resonance peak is resolved to within 0.1 %
+    let near = |c: &&dsmc::FrequencyCharacteristics<f64>| (c.frequency / 300.0 - 1.0).abs() < 0.01;
+    let peak = bode.iter().filter(near).map(|c| c.gain).fold(f64::MIN, f64::max);
+    let peak_true = (0..=20000).map(|i| g.response(wr * (0.99 + 0.02 * i as f64 / 20000.0)).norm()).fold(0.0, f64::max);
+    assert!((10f64.powf(peak / 20.0) / peak_true - 1.0).abs() < 1e-3);
+
+    // Unwrapped phase of a dead time over many turns, and the linear gain
+    let l = 1e-3;
+    let lag = tf!("10 / (s + 10)");
+    let delayed = lag.frequency_transfer_function().with_delay(l);
+    let bode_d = AdaptiveBodeDiagramPlotter::<f64>::new(0.1, 2000.0, false).plot(&delayed);
+    for c in &bode_d {
+        let w = hz(c.frequency);
+        assert!((c.phase - (-(w / 10.0).atan() - w * l)).abs() < 1e-9);
+        assert!((c.gain - 10.0 / (w * w + 100.0).sqrt()).abs() < 1e-12);
+    }
+    assert!(bode_d.last().unwrap().phase < -4.0 * std::f64::consts::PI);
+
+    // Initial grid: initial_points gives the number of points whatever the decades,
+    // points_per_decade grows with them (a constant G is never refined)
+    let one = TransferFunction::continuous(&[1.0], &[1.0]);
+    for (from, to) in [(1.0f64, 10.0), (1.0, 1e5)] {
+        let decades = (to / from).log10().round() as usize;
+        assert_eq!(AdaptiveBodeDiagramPlotter::<f64>::new(from, to, true).initial_points(7).plot(&one).len(), 7);
+        assert_eq!(AdaptiveBodeDiagramPlotter::<f64>::new(from, to, true).points_per_decade(7).plot(&one).len(), 7 * decades + 1);
+        assert_eq!(AdaptiveNyquistPlotter::<f64>::new(from, to).initial_points(7).plot(&one).len(), 7);
+    }
+    assert_eq!(AdaptiveBodeDiagramPlotter::<f64>::new(0.0, 100.0, true).initial_points(5).plot(&one).len(), 5);
+
+    // A coarse initial grid is still refined around the mode
+    let coarse = AdaptiveBodeDiagramPlotter::<f64>::new(1.0, 10000.0, true).initial_points(9).plot(&tf);
+    let peak_coarse = coarse.iter().filter(near).map(|c| c.gain).fold(f64::MIN, f64::max);
+    assert!((10f64.powf(peak_coarse / 20.0) / peak_true - 1.0).abs() < 1e-3);
+}

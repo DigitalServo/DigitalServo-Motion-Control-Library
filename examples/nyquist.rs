@@ -1,11 +1,11 @@
 //! Nyquist plots and Bode diagrams of a PID controller with a double integrator, for gains scaled by
-//! 0.8 ..= 1.2, written to `out/nyquist/` and `out/bode/`. The Nyquist plots use an adaptive
-//! frequency step (`AdaptiveNyquistPlotter`).
+//! 0.8 ..= 1.2, written to `out/nyquist/` and `out/bode/`, with an adaptive frequency step
+//! (`AdaptiveNyquistPlotter`, `AdaptiveBodeDiagramPlotter`).
 //!
 //! `cargo run --example nyquist`
 
 use dsmc::logger::DataStorage;
-use dsmc::{AdaptiveNyquistPlotter, BodeDiagramPlotter, TransferFunction};
+use dsmc::{AdaptiveBodeDiagramPlotter, AdaptiveNyquistPlotter, TransferFunction};
 
 fn main() {
 
@@ -23,7 +23,7 @@ fn main() {
         let mut storage_b = DataStorage::new(format!("./out/bode/bode_alpha_{:.02}.csv", alpha)).unwrap();
 
         let plotter_n = AdaptiveNyquistPlotter::<f64>::new(10.0, 2000.0);
-        let plotter_b = BodeDiagramPlotter::<f64>::new(0.1, 1000.0, 0.01, true);
+        let plotter_b = AdaptiveBodeDiagramPlotter::<f64>::new(0.1, 1000.0, true);
 
         let tf_main = TransferFunction::continuous(&[alpha * kd, alpha * kp, alpha * ki], &[1.0, 0.0]);
         let tf_pl = TransferFunction::continuous(&[1.0], &[1.0, 0.0, 0.0]);
@@ -36,7 +36,7 @@ fn main() {
             }
         }
         {
-            let responses = plotter_b.frequency_response_s(&tf);
+            let responses = plotter_b.plot(&tf);
             for res in responses {
                 storage_b.add(&res).unwrap();
             }
